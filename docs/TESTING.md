@@ -44,6 +44,8 @@ The current suite includes:
 - config validation and loopback bind rejection tests;
 - root-confined filesystem adapter tests for traversal, absolute paths, hidden entries, symlink traversal, limits, cancellation, and read-only behavior;
 - SDK subprocess stdio tests through `cmd/gateway`;
+- process-level tests proving both production stdio/tunnel wrappers fail fast
+  and do not print configured host paths when the vault root is unavailable;
 - SDK Streamable HTTP tests through `/mcp`;
 - `/healthz` and `/readyz` tests, including fail-closed readiness when the root disappears.
 - structured telemetry tests for SQLite persistence, JSONL output, tool-call success and errors, HTTP request events, MCP request events, gateway lifecycle events, sink degradation, and subprocess stdio events written to a temp SQLite database.

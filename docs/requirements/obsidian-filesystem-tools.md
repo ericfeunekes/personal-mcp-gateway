@@ -26,7 +26,8 @@ ChatGPT can inspect the local Obsidian vault through narrow read-only MCP tools 
 - MCP implementation: official Go MCP SDK first; direct MCP implementation only as a fallback.
 - Search launch shape: `search` is filename/path/title-oriented at launch; `grep` owns bounded content search.
 - Runtime search dependency: `ripgrep` is an optional fast path when present, with a bounded Go fallback for correctness.
-- Local supervision: run foreground during implementation and tunnel proof; target `launchd` after idle impact and health/readiness are proven.
+- Local supervision: use foreground mode for implementation and short debugging;
+  use the proven `launchd` profile for always-on access.
 
 ## In Scope
 
@@ -79,6 +80,10 @@ The Obsidian vault is the source of truth. The gateway is a read-only adapter an
 - `AC-OBS-006`: Idle gateway impact is measured and documented before always-on local use. Proof: local process observation for idle CPU, memory, and file descriptors per `docs/TESTING.md`.
 - `AC-OBS-007`: `search` does not scan file contents at launch except through explicitly bounded search behavior added after measurement. Proof: tests showing filename/path/title matching stays separate from `grep`.
 
+`AC-OBS-006` was met on 2026-07-10 for the current stdio tunnel profile. The
+recorded baseline and automatic-recovery probe are in
+`docs/runbooks/openai-tunnel.md`.
+
 ## Deferred Telemetry Decisions
 
 - First-slice audit metadata is defined in `docs/gateway.md`: canonical known
@@ -96,10 +101,13 @@ The Obsidian vault is the source of truth. The gateway is a read-only adapter an
 - `GAP-OBS-001`: `read`, `grep`, `search`, and `stat` schemas and handlers are not implemented.
 - `GAP-OBS-002`: ChatGPT app installation, simple tool-name discovery, and
   read-only action classification are proven. A bounded model-driven `ls` call
-  is proven; model-driven `resolve` is not.
+  is proven in ChatGPT, and model-driven `resolve` is proven through Codex using
+  the installed app. A ChatGPT-web-specific `resolve` invocation is not.
 - `GAP-OBS-003`: Root confinement and path-denial proof must be extended when future read, search, grep, and stat tools are implemented.
-- `GAP-OBS-004`: Real-vault performance and idle machine impact are not measured.
+- `GAP-OBS-004`: Search performance over the real vault is not measured. Idle
+  impact for the current runtime is measured.
 - `GAP-OBS-005`: OpenAI tunnel foreground and LaunchAgent startup, ChatGPT app
   installation, live metadata refresh, and a bounded ChatGPT `ls` call are
-  proven for the stdio profile; model-driven `resolve` and idle-impact
-  readiness are not proven.
+  proven for the stdio profile. Codex model-driven `resolve`, idle-impact
+  readiness, and automatic crash recovery are also proven; only a
+  ChatGPT-web-specific `resolve` invocation remains for surface parity.

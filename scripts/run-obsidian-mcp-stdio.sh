@@ -18,11 +18,11 @@ fail() {
 }
 
 if [[ -z "${OBSIDIAN_ROOT:-}" ]]; then
-  fail "OBSIDIAN_ROOT is required. Set it in $env_file."
+  fail "OBSIDIAN_ROOT is required in the configured local environment file."
 fi
 
 if [[ ! -d "$OBSIDIAN_ROOT" ]]; then
-  fail "OBSIDIAN_ROOT does not exist or is not a directory: $OBSIDIAN_ROOT"
+  fail "OBSIDIAN_ROOT does not exist or is not a directory."
 fi
 
 state_dir="${MCP_GATEWAY_STATE_DIR:-$HOME/Library/Application Support/personal-mcp-gateway}"
@@ -31,7 +31,7 @@ mkdir -p -- "$(dirname -- "$telemetry_db")"
 
 if [[ -n "${GATEWAY_BIN:-}" ]]; then
   if [[ ! -x "$GATEWAY_BIN" ]]; then
-    fail "GATEWAY_BIN is set but is not executable: $GATEWAY_BIN"
+    fail "configured GATEWAY_BIN is not executable."
   fi
   exec "$GATEWAY_BIN" stdio \
     --obsidian-root "$OBSIDIAN_ROOT" \

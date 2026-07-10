@@ -156,6 +156,59 @@ func TestRunConfigErrorsAreSanitized(t *testing.T) {
 	}
 }
 
+func TestProductionWrappersSanitizeMissingRoot(t *testing.T) {
+	missingRoot := filepath.Join(t.TempDir(), "private-vault")
+	envFile := filepath.Join(t.TempDir(), "local.env")
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+
+	tests := []struct {
+		name   string
+		script string
+		env    []string
+	}{
+		{
+			name:   "MCP stdio wrapper",
+			script: filepath.Join(repoRoot, "scripts", "run-obsidian-mcp-stdio.sh"),
+		},
+		{
+			name:   "tunnel wrapper",
+			script: filepath.Join(repoRoot, "scripts", "run-obsidian-tunnel.sh"),
+			env: []string{
+				"CONTROL_PLANE_TUNNEL_ID=tunnel_test",
+				"CONTROL_PLANE_API_KEY=test-runtime-key",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := exec.Command(tt.script)
+			cmd.Env = append(os.Environ(),
+				"MCP_GATEWAY_ENV_FILE="+envFile,
+				"OBSIDIAN_ROOT="+missingRoot,
+			)
+			cmd.Env = append(cmd.Env, tt.env...)
+			output, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatal("wrapper succeeded with a missing root")
+			}
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() != 1 {
+				t.Fatalf("wrapper error = %v, want exit code 1", err)
+			}
+			text := string(output)
+			if !strings.Contains(text, "OBSIDIAN_ROOT does not exist or is not a directory.") {
+				t.Fatalf("wrapper output = %q, want sanitized missing-root diagnostic", text)
+			}
+			for _, leaked := range []string{missingRoot, envFile} {
+				if strings.Contains(text, leaked) {
+					t.Fatalf("wrapper output leaked host path %q: %q", leaked, text)
+				}
+			}
+		})
+	}
+}
+
 func TestRunTelemetryStoreErrorsAreSanitized(t *testing.T) {
 	root := testutil.FixtureVault(t)
 	parentFile := filepath.Join(t.TempDir(), "not-a-dir")

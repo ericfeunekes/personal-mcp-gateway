@@ -25,10 +25,10 @@ require_env() {
   local name="$1"
   local value="${!name:-}"
   if [[ -z "$value" ]]; then
-    fail "$name is required. Set it in $env_file."
+    fail "$name is required in the configured local environment file."
   fi
   if [[ "$value" == *"..."* ]]; then
-    fail "$name still contains a placeholder value. Set it in $env_file."
+    fail "$name still contains a placeholder value in the configured local environment file."
   fi
 }
 
@@ -37,17 +37,17 @@ require_env CONTROL_PLANE_API_KEY
 require_env OBSIDIAN_ROOT
 
 if [[ ! -d "$OBSIDIAN_ROOT" ]]; then
-  fail "OBSIDIAN_ROOT does not exist or is not a directory: $OBSIDIAN_ROOT"
+  fail "OBSIDIAN_ROOT does not exist or is not a directory."
 fi
 
 tunnel_client="$repo_root/tools/tunnel-client/tunnel-client"
 if [[ ! -x "$tunnel_client" ]]; then
-  fail "repo-local tunnel client is not executable: $tunnel_client"
+  fail "repo-local tunnel client is missing or not executable."
 fi
 
 mcp_command="$repo_root/scripts/run-obsidian-mcp-stdio.sh"
 if [[ ! -x "$mcp_command" ]]; then
-  fail "MCP stdio wrapper is not executable: $mcp_command"
+  fail "repo-local MCP stdio wrapper is missing or not executable."
 fi
 
 profile_name="${TUNNEL_CLIENT_PROFILE:-obsidian-stdio}"

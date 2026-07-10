@@ -62,6 +62,8 @@ Phase 1 should prefer bounded live filesystem operations and keep two search sur
 - `GAP-OBS-001`: `read`, `grep`, `search`, and `stat` schemas and handlers are not implemented.
 - `GAP-OBS-002`: ChatGPT app installation, simple tool-name discovery, and
   read-only action classification are proven. A bounded model-driven `ls` call
-  is proven; model-driven `resolve` is not.
+  is proven in ChatGPT, and model-driven `resolve` is proven through Codex using
+  the installed app. A ChatGPT-web-specific `resolve` call is not independently
+  proven.
 - `GAP-OBS-003`: Root confinement and path-denial proof must be extended when future read, search, grep, and stat tools are implemented.
 - `GAP-OBS-004`: Search performance over the real vault has not been measured.
