@@ -66,6 +66,13 @@ environment reference (`env:CONTROL_PLANE_API_KEY`) so the key is not written
 into the profile. See `docs/runbooks/openai-tunnel.md` for the operator flow
 and latest foreground tunnel proof.
 
+The canonical always-on local deployment is `make release`, documented in
+`docs/runbooks/local-release.md`. It builds and probes the gateway binary before
+atomically replacing the configured `GATEWAY_BIN`, then restarts and verifies
+the LaunchAgent. Git synchronization is deliberately separate: `make update`
+fast-forwards a clean local `main` from `origin/main` before invoking the same
+release path.
+
 ## Telemetry
 
 Structured telemetry is part of the first reliability surface. The default sink

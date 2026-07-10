@@ -29,14 +29,17 @@ Proof must match the claim. This repo handles personal data, so green unit tests
 Canonical test command:
 
 ```bash
-go test ./...
+make test
 ```
+
+The target runs `go test -count=1 ./...` so a release gate executes the process
+and boundary tests rather than reusing prior successful test results.
 
 When running inside a restricted agent sandbox that cannot write the default Go
 build cache, keep the build cache repo-local:
 
 ```bash
-GOCACHE=$(pwd)/.gocache go test ./...
+GOCACHE=$(pwd)/.gocache go test -count=1 ./...
 ```
 
 The current suite includes:
@@ -46,6 +49,14 @@ The current suite includes:
 - SDK subprocess stdio tests through `cmd/gateway`;
 - process-level tests proving both production stdio/tunnel wrappers fail fast
   and do not print configured host paths when the vault root is unavailable;
+- process-level release tests proving clean-tree preflight, ordered test/build
+  execution, exact candidate installation, secret-safe output, rollback after
+  failed readiness, retained recovery artifacts when rollback is unconfirmed,
+  source/candidate mutation rejection, candidate/install path separation, and
+  main-only exact-remote updates;
+- a loopback boundary test proving live verification checks both tunnel
+  `/healthz` and `/readyz` after confirming the LaunchAgent is loaded from this
+  checkout's tunnel wrapper;
 - SDK Streamable HTTP tests through `/mcp`;
 - `/healthz` and `/readyz` tests, including fail-closed readiness when the root disappears.
 - structured telemetry tests for SQLite persistence, JSONL output, tool-call success and errors, HTTP request events, MCP request events, gateway lifecycle events, sink degradation, and subprocess stdio events written to a temp SQLite database.
@@ -93,6 +104,13 @@ If linting or race tests are added, document the exact commands here before trea
 ## Live-Service Proof
 
 Use live OpenAI tunnel/ChatGPT verification only for behavior that cannot be proven locally, such as connector compatibility for the `obsidian` server and its tool names. Record the date, server name, tool names tested, and observed result in closeout notes or the relevant requirement doc.
+
+For a local deployment change, `make release` is the canonical source-to-runtime
+proof. It includes the full suite, an MCP stdio `resolve(.)` probe against the
+exact candidate, byte-for-byte installed binary verification, LaunchAgent
+restart, and bounded tunnel liveness/readiness checks. This does not by itself
+prove that ChatGPT or another remote model selected and completed a tool call;
+that remains a separate live-surface proof.
 
 ## Codex Temp-Profile Proof
 

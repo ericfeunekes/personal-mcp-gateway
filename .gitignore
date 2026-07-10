@@ -9,6 +9,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .gocache/
+.build/
 scratch/
 
 logs/

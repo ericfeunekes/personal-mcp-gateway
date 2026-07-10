@@ -18,6 +18,7 @@ Read this file first when navigating `docs/`.
 - `RUNBOOKS.md` — index of operational procedures.
 - `runbooks/closeout.md` — checks before declaring work complete.
 - `runbooks/openai-tunnel.md` — foreground tunnel setup and local secret placement.
+- `runbooks/local-release.md` — local build, release, rollback, and main update procedure.
 
 ## Domain Docs
 
