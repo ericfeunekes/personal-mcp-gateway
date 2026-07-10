@@ -17,6 +17,9 @@ covers:
 3. **Implementation**: keep Go code inside the planned module boundaries; do not add a generic filesystem, shell, or HTTP proxy surface.
 4. **Proof**: run the proof mapped in `docs/TESTING.md`, including reliability and machine-impact checks when a change touches filesystem traversal, search, tunnel behavior, or process lifecycle.
 5. **Closeout**: follow `docs/runbooks/closeout.md` and update `docs/feature-gap-map.md` for anything not implemented or not proven.
+6. **Land and release**: after the change lands on `main`, run `make update` to
+   fast-forward the local checkout and deploy the exact tested commit. Use
+   `make release` only when the desired clean commit is already checked out.
 
 ## Work Routing
 
@@ -24,6 +27,7 @@ covers:
 - Obsidian tool behavior: read `docs/obsidian.md` and `docs/requirements/obsidian-filesystem-tools.md`.
 - OpenAI docs or tunnel assumptions: use the repo-local `openaiDeveloperDocs` MCP config in `.codex/config.toml`; verify current docs before implementation.
 - Reliability or resource limits: update `docs/TESTING.md` and the owning domain doc before encoding behavior.
+- Local deployment or update behavior: read `docs/runbooks/local-release.md`.
 
 ## Context Recovery
 

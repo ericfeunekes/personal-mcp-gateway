@@ -77,6 +77,11 @@ Stop and remove it with:
 scripts/uninstall-obsidian-tunnel-launchagent.sh
 ```
 
+Once the LaunchAgent exists, use the release flow rather than manually
+rebuilding its configured gateway binary. `make release` deploys the current
+clean commit; `make update` fast-forwards clean local `main` from GitHub first.
+See `docs/runbooks/local-release.md`.
+
 ## Current Boundary
 
 The stdio tunnel profile is the current live-smoke path because local tunnel

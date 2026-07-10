@@ -32,4 +32,4 @@ This project exposes personal data surfaces. Treat security boundaries as produc
 
 ## Build And Verify
 
-Canonical local proof is documented in `docs/TESTING.md`. Run `go test ./...` before declaring implementation changes complete.
+Canonical local proof is documented in `docs/TESTING.md`. Run `make test` before declaring implementation changes complete.

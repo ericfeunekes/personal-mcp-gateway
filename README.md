@@ -44,8 +44,29 @@ Local commands:
 ```bash
 go run ./cmd/gateway stdio --obsidian-root /absolute/path/to/vault
 go run ./cmd/gateway http --obsidian-root /absolute/path/to/vault --addr 127.0.0.1:8765
-go test ./...
+make test
 ```
+
+## Local Release
+
+After a code change has landed, update and deploy the local always-on runtime
+with:
+
+```bash
+make update
+```
+
+`make update` requires a clean `main`, fetches `origin`, fast-forwards to
+`origin/main`, requires an exact commit match, and then runs the complete local
+release. Use `make release`
+when the desired clean commit is already checked out. A release runs the full
+test suite, builds an ignored candidate, calls `resolve(.)` against that exact
+candidate over MCP stdio, installs it atomically at `GATEWAY_BIN`, restarts the
+LaunchAgent, and waits for tunnel liveness and readiness. If the restarted
+service fails verification, the prior executable is restored and restarted.
+
+See `docs/runbooks/local-release.md` for setup, target details, and proof
+boundaries.
 
 Telemetry defaults to a local SQLite database under the user config directory.
 Use `--telemetry-db /absolute/path/to/telemetry.sqlite` to choose the database,
@@ -94,3 +115,4 @@ surface-parity proof gate.
 - `docs/obsidian.md` owns the Obsidian MCP server contract.
 - `docs/requirements/obsidian-filesystem-tools.md` defines the first requirements slice.
 - `docs/TESTING.md` defines proof expectations for reliability, robustness, and minimal machine impact.
+- `docs/runbooks/local-release.md` defines the landed-code-to-local-runtime release and update flow.
