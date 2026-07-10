@@ -54,7 +54,10 @@ Current OpenAI Secure MCP Tunnel docs say `tunnel-client` runs inside the networ
 - stdio mode for fast local smoke tests and a possible `tunnel-client --mcp-command` profile.
 - HTTP mode on loopback for `tunnel-client --mcp-server-url http://127.0.0.1:<port>/mcp` after local HTTP tests pass.
 
-The initial implementation should use foreground processes. `launchd` is the target local supervisor only after the gateway, tunnel profile, health checks, and idle resource impact have been proven.
+Use foreground processes for implementation and short debugging sessions. The
+current always-on stdio profile uses `launchd`: gateway/tunnel health, bounded
+idle impact, and automatic recovery after a forced tunnel-process exit were
+proven on 2026-07-10.
 
 The repo-local foreground tunnel wrapper is `scripts/run-obsidian-tunnel.sh`.
 It loads ignored local settings from `.env.local`, generates a temp
@@ -139,12 +142,13 @@ ChatGPT connector, `launchd`, or always-on suitability.
 
 - `GAP-GW-002`: OpenAI Secure MCP Tunnel stdio startup, control-plane
   polling, ChatGPT app installation, and connector `initialize`/`tools/list`
-  are proven; a bounded model-driven ChatGPT `ls` call is proven and
-  model-driven `resolve` is not.
-- `GAP-GW-003`: Supervision-grade readiness, tunnel readiness, and idle-impact readiness are not proven.
-- `GAP-GW-005`: `launchd` LaunchAgent startup, manual restart recovery, and
-  post-restart connector metadata refresh are proven; automatic crash recovery
-  and idle-impact readiness are not proven.
-- `GAP-GW-006`: Sanitized model-driven ChatGPT `ls` telemetry has been
-  harvested; model-driven `resolve` telemetry has not. Local SDK subprocess
-  and HTTP tests continue to prove the broader server-side matrix only.
+  are proven. A bounded model-driven ChatGPT `ls` call and a Codex
+  model-driven `resolve` call through the installed app are proven; a
+  ChatGPT-web-specific `resolve` call is not independently proven.
+- `GAP-GW-003`: Current `launchd` readiness, bounded idle impact, and automatic
+  crash recovery are proven. A multi-day soak and sleep/wake recovery cycle
+  have not been measured.
+- `GAP-GW-006`: Sanitized model-driven ChatGPT `ls` and Codex `resolve`
+  telemetry have been harvested. ChatGPT-web-specific `resolve` telemetry has
+  not. Local SDK subprocess and HTTP tests continue to prove the broader
+  server-side matrix only.

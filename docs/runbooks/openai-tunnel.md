@@ -47,9 +47,9 @@ The script:
   user application-support directory.
 
 Use foreground mode for short manual smoke tests. Use the LaunchAgent below when
-ChatGPT connector testing must survive the current shell session. Idle resource
-impact still needs measurement before treating the tunnel as permanently
-always-on.
+ChatGPT connector testing must survive the current shell session. The current
+LaunchAgent profile passed bounded idle-impact and automatic-recovery proof on
+2026-07-10 and is suitable for always-on use under that measured contract.
 
 ## LaunchAgent Run
 
@@ -110,8 +110,7 @@ annotations and rebuilding the configured user-level gateway binary. Local
 telemetry records the corresponding `initialize` and `tools/list` requests.
 Manual LaunchAgent restart recovery is also proven: after `kickstart -k`, the
 service returned to `running` and ChatGPT completed another live metadata
-refresh through the restarted tunnel. Automatic crash recovery remains a
-separate proof gap.
+refresh through the restarted tunnel.
 
 The first bounded live attempt was interrupted by ChatGPT Work usage limits,
 but a later retry completed through the tunnel. At
@@ -120,6 +119,60 @@ stdio `tools/call` for `ls` with `path` present, `limit` 5, five returned
 entries, and a truncated result. No raw path or entry names were recorded.
 This proves model-driven ChatGPT `ls` execution without reading file contents.
 
-Complete first-slice connector proof still requires a model-driven `resolve`
-call and its corresponding sanitized SQLite `tool.call` row. Idle-impact and
-automatic crash-recovery proof also remain open.
+Later on 2026-07-10, Codex called `resolve` through the installed `Obsidian` app
+with the vault-relative root (`.`). The call returned an existing directory and
+sanitized SQLite telemetry recorded `tool=resolve`, `outcome=ok`, a relative
+path with zero segments, and no raw host path or note content. This proves a
+model-selected `resolve` call through the tunnel from the Codex OpenAI surface;
+it is not a ChatGPT-web conversation transcript.
+
+## Idle-Impact Baseline
+
+On 2026-07-10, the existing LaunchAgent had been continuously running for about
+3 hours 40 minutes before measurement. After one live tool call, seven idle
+samples were collected from `2026-07-10T18:22:59Z` through
+`2026-07-10T18:26:00Z` for the tunnel client, its Codex app-server sidecar, and
+the gateway child:
+
+- every instantaneous CPU sample was `0.0%`;
+- cumulative CPU time increased by 0.13 seconds across all three processes,
+  about 0.08% of one core over the window;
+- combined RSS remained below 37 MiB;
+- open descriptor counts were unchanged at 21, 23, and 12;
+- the gateway held zero vault files open at the start and end of the window;
+- startup construction uses root validation only, with no whole-vault walk or
+  directory read, and the open-file observation is consistent with that path;
+- an isolated LaunchAgent using the production tunnel wrapper, `KeepAlive=true`,
+  and the production 30-second throttle failed before tunnel startup when given
+  a synthetic unavailable root. It exited 1, scheduled bounded retries, kept
+  stdout empty, and wrote only a generic error without the configured root or
+  another host path. Process-level regression tests cover both production
+  wrappers.
+
+This is a bounded always-on idle baseline, not a multi-day leak soak or a
+sleep/wake test.
+
+## Automatic Crash-Recovery Proof
+
+At `2026-07-10T18:26:36Z`, the running tunnel-client PID received `SIGKILL`.
+No `launchctl kickstart`, reinstall, or other manual recovery action followed.
+`launchd` recorded signal 9, incremented the run count, and started a new tunnel
+process nine seconds after the fault. The new process recreated both child
+processes; its new loopback metrics endpoint reported `liveness=1` and
+`readiness=1`.
+
+At `2026-07-10T18:27:24.548116Z`, a second Codex model-driven `resolve` call
+completed through the recovered tunnel and produced a successful sanitized
+`tool.call` row under the new gateway run. This proves service recovery, not
+only process replacement.
+
+The wrapper path-sanitization fix was then projected into the real service with
+a second controlled `SIGKILL` at `2026-07-10T18:40:02Z`. `launchd` started the
+final-tree tunnel process five seconds later, recreated both children, and
+returned to `liveness=1` and `readiness=1`. At
+`2026-07-10T18:40:56.147842Z`, another Codex model-driven `resolve` call
+succeeded and produced a sanitized row under a third gateway run.
+
+The remaining surface-specific connector gap is a ChatGPT-web-prompted
+`resolve` call. The same installed app and tunnel path are proven from Codex,
+but that evidence should not be relabeled as ChatGPT-web proof.
