@@ -3,6 +3,8 @@ package mcp
 import (
 	"bufio"
 	"context"
+	_ "embed"
+	"encoding/base64"
 	"errors"
 	"io"
 	"net/http"
@@ -19,10 +21,26 @@ const (
 	ServerVersion = "0.1.0"
 )
 
+// iconSVG is Obsidian's unmodified official gradient mark, downloaded from
+// https://obsidian.md/images/obsidian-logo-gradient.svg.
+//
+//go:embed obsidian-mcp-icon.svg
+var iconSVG []byte
+
+func serverIcons() []sdk.Icon {
+	return []sdk.Icon{{
+		Source:   "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString(iconSVG),
+		MIMEType: "image/svg+xml",
+		Sizes:    []string{"any"},
+		Theme:    sdk.IconThemeDark,
+	}}
+}
+
 func NewServer(log *audit.Logger, transport string, knownTools []string) *sdk.Server {
 	server := sdk.NewServer(&sdk.Implementation{
 		Name:    ServerName,
 		Version: ServerVersion,
+		Icons:   serverIcons(),
 	}, &sdk.ServerOptions{
 		Capabilities: &sdk.ServerCapabilities{},
 	})

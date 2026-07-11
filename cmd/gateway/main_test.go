@@ -61,6 +61,14 @@ func TestStdioSubprocessServesMCP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Connect() failed: %v\nstderr:\n%s", err, stderr.String())
 	}
+	serverInfo := session.InitializeResult().ServerInfo
+	if serverInfo == nil || len(serverInfo.Icons) != 1 {
+		t.Fatalf("initialize server icons = %#v, want one icon", serverInfo)
+	}
+	icon := serverInfo.Icons[0]
+	if !strings.HasPrefix(icon.Source, "data:image/svg+xml;base64,") || icon.MIMEType != "image/svg+xml" || len(icon.Sizes) != 1 || icon.Sizes[0] != "any" || icon.Theme != sdk.IconThemeDark {
+		t.Fatalf("initialize server icon = %#v, want embedded scalable SVG", icon)
+	}
 	closed := false
 	defer func() {
 		if !closed {
