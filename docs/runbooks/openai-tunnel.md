@@ -57,14 +57,20 @@ For ChatGPT testing that must survive the current shell session, install and
 start the user LaunchAgent:
 
 ```bash
-scripts/install-obsidian-tunnel-launchagent.sh
+make install-launchagent
 ```
 
 The LaunchAgent label is
 `com.ericfeunekes.personal-mcp-gateway.obsidian-tunnel`. It runs
-`scripts/run-obsidian-tunnel.sh`, reads secrets from ignored `.env.local`, and
-writes tunnel-client stdout/stderr under
+`scripts/run-obsidian-tunnel.sh`, parses the allowlisted values in ignored
+`.env.local` as bounded data, and writes tunnel-client stdout/stderr under
 `~/Library/Logs/personal-mcp-gateway/`.
+
+The tunnel and MCP stdio wrappers never shell-source `.env.local`; command
+substitutions, shell commands, duplicate/unknown keys, oversized records, and
+unsupported expansion are rejected before runtime startup. `make
+install-launchagent` performs the same validation before building the release
+controller or invoking the private install adapter.
 
 On 2026-07-02, the LaunchAgent was installed and started successfully. Observed
 proof: launchd reported the service `running`, the tunnel health/admin endpoint
@@ -74,13 +80,54 @@ control-plane poll metrics advanced.
 Stop and remove it with:
 
 ```bash
-scripts/uninstall-obsidian-tunnel-launchagent.sh
+make uninstall-launchagent
 ```
+
+Install, restart, and uninstall are clear-only lifecycle operations. Their Make
+targets acquire the release lock and invoke private narrow LaunchAgent adapters;
+do not invoke files under `scripts/internal/` directly. A first-install rollback
+unloads the job before removing the unproven target but preserves its
+plist/configuration, so run `make install-launchagent` before a later release if
+the job remains unloaded.
 
 Once the LaunchAgent exists, use the release flow rather than manually
 rebuilding its configured gateway binary. `make release` deploys the current
 clean commit; `make update` fast-forwards clean local `main` from GitHub first.
 See `docs/runbooks/local-release.md`.
+
+## Release Activation Proof
+
+Tunnel liveness/readiness and authenticated model proof are separate boundaries.
+The release fast path is:
+
+```bash
+make release
+# For the release-lifecycle prerequisite, refresh server `obsidian` metadata,
+# observe exactly current tools `ls` and `resolve`, and have the model select and
+# complete one bounded shallow root `ls` in the authenticated OpenAI surface.
+make release-accept RELEASE_ID=<full-id>
+```
+
+If metadata refresh or the model-selected journey fails, run the exact rollback
+command printed by release instead:
+
+```bash
+make release-rollback RELEASE_ID=<full-id>
+```
+
+`make release` must end `pending` after local readiness and retain the previous
+runtime. `make release-status` is available after interruption or for bounded
+diagnostics; it is not an extra mandatory step in the successful flow. Never
+accept based only on `/healthz`, `/readyz`, `make verify-live`, local MCP smoke,
+or an old model journey. Record only the authenticated surface, server, metadata
+observation, selected tool/journey, sanitized release/hash identity, and outcome;
+do not record prompts, note names/content, vault paths, credentials, or raw
+environment data.
+
+The pending lifecycle and its live activation remain a proof contract until the
+current implementation has passed the merge suite, installed rollback drill,
+and a fresh authenticated pending-to-accept journey. The historical evidence
+below proves the prior tunnel and tool surface only.
 
 ## Current Boundary
 

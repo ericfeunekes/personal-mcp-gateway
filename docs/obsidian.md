@@ -1,7 +1,7 @@
 ---
 title: "Obsidian Domain"
 status: draft
-purpose: "Define the Obsidian MCP server contract and vault-safe filesystem-like read tools."
+purpose: "Define the Obsidian MCP server contract for vault-safe discovery, bounded reading, and authored-reference traversal."
 covers:
   - internal/tools/obsidian/
   - internal/fsx/
@@ -10,27 +10,34 @@ covers:
 
 # Obsidian Domain
 
-The `obsidian` MCP server exposes read-only, filesystem-like tools over one configured local vault. It should feel natural for ChatGPT to navigate notes, but correctness must not depend on hidden server-side state.
+The `obsidian` MCP server exposes read-only agent tools over one configured local vault. The surface favors familiar discovery, bounded source reading, and explicit graph operations. Correctness must not depend on hidden server-side state.
 
 ## Tool Vocabulary
 
-Initial tool names:
+Target tool names:
 
 - `ls`
-- `read`
-- `grep`
-- `search`
-- `stat`
 - `resolve`
+- `read`
+- `read_many`
+- `grep`
+- `links`
+- `traverse`
+- `backlinks`
+- `path_between`
 
-The MCP server name is the public integration boundary. Do not prefix tool names with `obsidian.` inside this server, and do not add non-Obsidian tools to this server.
+The MCP server name is the public integration boundary. Do not prefix tool names with `obsidian.` inside this server, and do not add non-Obsidian tools to this server. Do not expose separate `search`, `stat`, `graph_search`, shell, or generic query tools: `grep` is the content-discovery entry point, and `resolve` owns metadata.
+
+The target list is phased. `tools/list` advertises only fully implemented and proven tools, never disabled placeholders. `backlinks` and `path_between` remain absent until the numeric full-vault activation gate in the requirements passes.
 
 Implemented first-slice tools:
 
 - `resolve`: normalize explicit vault-relative `path` plus optional `base`, report existence and type, and deny unsafe paths with sanitized structured tool errors.
 - `ls`: list one directory level only, with deterministic ordering, hidden-entry filtering, symlink non-traversal, and a maximum limit of 500 entries.
 
-Not implemented yet: `read`, `grep`, `search`, and `stat`.
+These live implementations predate the target common contract: canonical stored-spelling/NFC identity, stateless `ls` pagination, explicit coverage/response budgets, and domain-owned telemetry summaries remain foundation work under `GAP-OBS-011`.
+
+Not implemented yet: `read`, `read_many`, `grep`, `links`, `traverse`, `backlinks`, and `path_between`.
 
 ## Stateless Path Model
 
@@ -46,24 +53,40 @@ Tools should accept explicit path context:
 
 ## Vault Boundary
 
-All paths are vault-relative after normalization. The filesystem adapter must reject path traversal, symlink escapes, absolute paths unless explicitly admitted by config, hidden local databases, secret directories, and any file outside the configured vault root.
+All tool paths are vault-relative after normalization. The filesystem adapter must reject absolute tool inputs, path traversal, symlink escapes, hidden local databases, secret directories, and any file outside the configured vault root. Only process startup config may supply the absolute vault root. Content and reference tools operate on Markdown files; `ls` and `resolve` may still report safe attachment metadata.
 
-## Search Strategy
+## Retrieval Strategy
 
-Phase 1 should prefer bounded live filesystem operations and keep two search surfaces separate:
+Use composable operations rather than one overloaded search tool:
 
-- `search` should start as filename/path/title-oriented lookup for navigation.
-- `grep` should own bounded content search.
+- `grep` finds source evidence by content with deterministic path and line provenance.
+- `read` extracts one explicit source unit; `read_many` batches a known working set.
+- `links` parses and locally resolves outbound authored references from one note without a vault-wide scan.
+- `traverse` builds a bounded request-local catalog of Markdown paths inside explicit scopes, then reads reached notes lazily with shallow defaults.
+- `backlinks` and `path_between` use live request-local whole-scope scans and remain unadvertised until their full-vault performance gate passes.
 
-`ripgrep` may be used as an implementation detail if available and wrapped with timeouts, output limits, and root confinement. It is an optional fast path, not a required global install. Keep a Go fallback for correctness and tests. Do not add a persistent indexer until live proof shows it is needed.
+`ripgrep` may be used as an implementation detail if its regex and ordering semantics match the implementation fallback. It is an optional fast path, not a required global install. Do not add a persistent indexer until full-vault measurement shows it is needed and freshness, invalidation, recovery, and ownership requirements are settled.
+
+## Graph And Coverage Model
+
+Graph edges are authored Obsidian wikilinks and Markdown links. Heading and block fragments are edge attributes; tags, shared properties, aliases, embeddings, and semantic similarity are not resolution inputs or edges. Missing, unresolved, ambiguous, external, and disallowed references remain visible boundary evidence. External targets are never fetched.
+
+Outbound traversal may cross exercise, health, initiative, food, and concept folders while remaining vault-confined. Explicit `scopes` decide which reached targets may be expanded and which files inbound operations may scan. Agents request backlinks separately rather than enabling bidirectional expansion by default.
+
+Every scan or graph result reports both result completeness and declared-query completeness, plus work performed and the budget that stopped it. Lower work budgets do not redefine scope. A negative answer is conclusive only for the declared scopes and maximum depth when that complete query was examined. Deterministic limits provide a stateless cursor; timeout, cancellation, or source change requires a restart. No server-side working directory or graph session is required.
+
+The detailed schemas, limits, resolution rules, acceptance criteria, and performance gates live in `docs/requirements/obsidian-filesystem-tools.md`.
 
 ## Current Gaps
 
-- `GAP-OBS-001`: `read`, `grep`, `search`, and `stat` schemas and handlers are not implemented.
-- `GAP-OBS-002`: ChatGPT app installation, simple tool-name discovery, and
-  read-only action classification are proven. A bounded model-driven `ls` call
-  is proven in ChatGPT, and model-driven `resolve` is proven through Codex using
-  the installed app. A ChatGPT-web-specific `resolve` call is not independently
-  proven.
-- `GAP-OBS-003`: Root confinement and path-denial proof must be extended when future read, search, grep, and stat tools are implemented.
-- `GAP-OBS-004`: Search performance over the real vault has not been measured.
+- `GAP-OBS-001`: `read`, `read_many`, and `grep` are not implemented.
+- `GAP-OBS-002`: ChatGPT and Codex proof covers the current `ls`/`resolve` surface only; the expanded agent workflow is not proven live.
+- `GAP-OBS-003`: Root confinement, denial, read-only, and sanitized-error proof is not extended to content, batch, cursor, reference, and graph operations.
+- `GAP-OBS-004`: Full-vault grep, backlink, and path-discovery latency, scan work, response size, and freshness trade-offs are not measured. The bounded exercise/health/marathon spike is complete.
+- `GAP-OBS-005`: Existing tunnel/runtime proof remains valid, but live metadata refresh and representative model-selected calls must be repeated after the tool list expands.
+- `GAP-OBS-006`: `links`, the scoped request-local path catalog, and outbound `traverse` are not implemented.
+- `GAP-OBS-007`: The full-vault activation gate for live request-local `backlinks` and `path_between` has not been run or passed; the tools are neither implemented nor advertised.
+- `GAP-OBS-008`: Per-tool safe telemetry summaries for read, grep, batch, links, traversal, backlinks, and path discovery are not implemented.
+- `GAP-OBS-009`: Safe telemetry summaries for newly activated retrieval and graph tools have not been proven in JSONL and SQLite.
+- `GAP-OBS-010`: Live request-local `backlinks` and `path_between` are not implemented for pre-activation benchmark and proof.
+- `GAP-OBS-011`: The currently advertised `resolve` and `ls` tools do not yet implement stored-spelling/NFC canonical identity, stateless `ls` cursors, common coverage/response budgets, or domain-owned safe telemetry summaries.

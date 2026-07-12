@@ -9,185 +9,147 @@ go_command="${GO:-go}"
 uid="$(id -u)"
 
 fail() {
-  printf 'personal-mcp-gateway release: %s\n' "$1" >&2
+  printf 'error=%s message=%s\n' "$1" "$2" >&2
   exit 1
 }
 
+# shellcheck source=internal/release-config.sh
+if ! source "$script_dir/internal/release-config.sh" >/dev/null 2>&1; then
+  fail release_config 'release configuration is invalid'
+fi
+
+# Release control and host verification never need model or tunnel credentials.
+unset CONTROL_PLANE_API_KEY OPENAI_API_KEY
+
+if "$script_dir/release-activation.sh" resume-if-active; then
+  exit 0
+else
+  resume_status=$?
+  if (( resume_status != 3 )); then
+    exit "$resume_status"
+  fi
+fi
+
 if [[ -n "${MCP_GATEWAY_ENV_FILE:-}" && "$MCP_GATEWAY_ENV_FILE" != "$env_file" ]]; then
-  fail "release uses the repo-local .env.local consumed by the LaunchAgent."
+  fail release_config 'release configuration is invalid'
 fi
 unset MCP_GATEWAY_ENV_FILE
 
-"$script_dir/release-preflight.sh"
-commit="$(git -C "$repo_root" rev-parse --verify HEAD)" || fail "unable to resolve the release commit."
+if ! "$script_dir/release-preflight.sh" >/dev/null 2>&1; then
+  fail release_preflight_failed 'release preflight failed'
+fi
+commit="$(git -C "$repo_root" rev-parse --verify HEAD 2>/dev/null)" || fail release_preflight_failed 'release preflight failed'
 
 if [[ -f "$env_file" ]]; then
-  # shellcheck disable=SC1090
-  source "$env_file"
+  load_release_config "$env_file" || fail release_config 'release configuration is invalid'
 fi
-
-# Release orchestration does not need tunnel credentials. Do not propagate them
-# into tests, builds, smoke probes, or failure diagnostics.
 unset CONTROL_PLANE_API_KEY OPENAI_API_KEY
 
 candidate="${GATEWAY_CANDIDATE:-$repo_root/.build/personal-mcp-gateway}"
+controller="${RELEASE_ACTIVATION_CANDIDATE:-$repo_root/.build/release-activation}"
 label="${LAUNCHD_LABEL:-com.ericfeunekes.personal-mcp-gateway.obsidian-tunnel}"
 
 if [[ -z "${GATEWAY_BIN:-}" ]]; then
-  fail "GATEWAY_BIN is required in the configured local environment file."
+  fail release_config 'release configuration is invalid'
 fi
 if [[ "$GATEWAY_BIN" != /* ]]; then
-  fail "GATEWAY_BIN must be an absolute path."
+  fail release_config 'release configuration is invalid'
 fi
 if [[ "$candidate" != /* ]]; then
-  fail "GATEWAY_CANDIDATE must be an absolute path."
+  fail release_config 'release configuration is invalid'
+fi
+if [[ "$controller" != /* ]]; then
+  fail release_config 'release configuration is invalid'
 fi
 if [[ -z "${OBSIDIAN_ROOT:-}" || ! -d "$OBSIDIAN_ROOT" ]]; then
-  fail "OBSIDIAN_ROOT is required and must name an existing directory."
+  fail release_config 'release configuration is invalid'
 fi
 
 candidate_dir="$(dirname -- "$candidate")"
 install_dir="$(dirname -- "$GATEWAY_BIN")"
-mkdir -p -- "$candidate_dir" "$install_dir"
-candidate_dir="$(cd -- "$candidate_dir" && pwd -P)" || fail "unable to resolve the candidate directory."
-install_dir="$(cd -- "$install_dir" && pwd -P)" || fail "unable to resolve the install directory."
+mkdir -p -- "$candidate_dir" "$install_dir" 2>/dev/null || fail release_config 'release configuration is invalid'
+candidate_dir="$(cd -- "$candidate_dir" 2>/dev/null && pwd -P)" || fail release_config 'release configuration is invalid'
+install_dir="$(cd -- "$install_dir" 2>/dev/null && pwd -P)" || fail release_config 'release configuration is invalid'
 candidate="$candidate_dir/$(basename -- "$candidate")"
 GATEWAY_BIN="$install_dir/$(basename -- "$GATEWAY_BIN")"
 
 if [[ "$candidate" == "$GATEWAY_BIN" ]]; then
-  fail "the release candidate and installed gateway must use distinct paths."
+  fail release_config 'release configuration is invalid'
 fi
 if [[ -L "$candidate" || -L "$GATEWAY_BIN" ]]; then
-  fail "the release candidate and installed gateway must not be symbolic links."
+  fail release_config 'release configuration is invalid'
 fi
 if [[ -e "$candidate" && -e "$GATEWAY_BIN" && "$candidate" -ef "$GATEWAY_BIN" ]]; then
-  fail "the release candidate and installed gateway must not reference the same file."
+  fail release_config 'release configuration is invalid'
 fi
 if ! launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
-  fail "the tunnel LaunchAgent is not loaded; run make install-launchagent first."
+  fail runtime_unavailable 'supervised runtime is unavailable'
 fi
 
-printf 'release: running canonical tests\n'
-"$make_command" --no-print-directory -C "$repo_root" test
-printf 'release: building candidate\n'
-"$make_command" --no-print-directory -C "$repo_root" build
+if ! "$make_command" --no-print-directory -C "$repo_root" test >/dev/null 2>&1; then
+  fail release_test_failed 'release tests failed'
+fi
+if ! "$make_command" --no-print-directory -C "$repo_root" build >/dev/null 2>&1; then
+  fail release_build_failed 'release build failed'
+fi
+if ! "$make_command" --no-print-directory -C "$repo_root" build-release-controller >/dev/null 2>&1; then
+  fail release_build_failed 'release build failed'
+fi
 
 if [[ ! -x "$candidate" || -L "$candidate" ]]; then
-  fail "the release candidate was not built as a regular executable."
+  fail release_build_failed 'release build failed'
+fi
+if [[ ! -x "$controller" || -L "$controller" ]]; then
+  fail release_build_failed 'release build failed'
 fi
 if [[ -e "$GATEWAY_BIN" && "$candidate" -ef "$GATEWAY_BIN" ]]; then
-  fail "the built candidate and installed gateway reference the same file."
+  fail release_config 'release configuration is invalid'
 fi
 
-candidate_hash="$(shasum -a 256 "$candidate" | awk '{print $1}')"
-printf 'release: probing candidate over MCP stdio\n'
-cd "$repo_root"
-env GOCACHE="${GOCACHE:-$repo_root/.gocache}" "$go_command" run ./cmd/gateway-smoke \
+candidate_hash="$(shasum -a 256 "$candidate" 2>/dev/null | awk '{print $1}')" || fail release_build_failed 'release build failed'
+cd "$repo_root" 2>/dev/null || fail release_config 'release configuration is invalid'
+if ! env GOCACHE="${GOCACHE:-$repo_root/.gocache}" "$go_command" run ./cmd/gateway-smoke \
   --gateway-bin "$candidate" \
-  --obsidian-root "$OBSIDIAN_ROOT"
+  --obsidian-root "$OBSIDIAN_ROOT" >/dev/null 2>&1; then
+  fail release_smoke_failed 'release candidate smoke failed'
+fi
 
-smoked_hash="$(shasum -a 256 "$candidate" | awk '{print $1}')"
+smoked_hash="$(shasum -a 256 "$candidate" 2>/dev/null | awk '{print $1}')" || fail release_smoke_failed 'release candidate smoke failed'
 if [[ "$candidate_hash" != "$smoked_hash" ]]; then
-  fail "the release candidate changed during its MCP smoke probe."
+  fail release_changed 'release inputs changed during validation'
 fi
-"$script_dir/release-preflight.sh"
-current_commit="$(git -C "$repo_root" rev-parse --verify HEAD)" || fail "unable to recheck the release commit."
+if ! "$script_dir/release-preflight.sh" >/dev/null 2>&1; then
+  fail release_preflight_failed 'release preflight failed'
+fi
+current_commit="$(git -C "$repo_root" rev-parse --verify HEAD 2>/dev/null)" || fail release_preflight_failed 'release preflight failed'
 if [[ "$current_commit" != "$commit" ]]; then
-  fail "HEAD changed during release; refusing to install the candidate."
+  fail release_changed 'release inputs changed during validation'
 fi
-
-staged="$GATEWAY_BIN.next.$$"
-rollback="$GATEWAY_BIN.rollback.$$"
-restore_staged="$GATEWAY_BIN.restore.$$"
-had_previous=0
-installed_candidate=0
-
-rollback_release() {
-  local original_status="$1"
-  local restored=0
-  local recovery_ready=0
-  trap - EXIT INT TERM HUP
-  set +e
-
-  rm -f -- "$staged" "$restore_staged"
-  if (( installed_candidate == 1 )); then
-    if (( had_previous == 1 )); then
-      if install -m 0755 -- "$rollback" "$restore_staged" &&
-        mv -f -- "$restore_staged" "$GATEWAY_BIN"; then
-        restored=1
-        printf 'release: previous binary restored after failed rollout\n' >&2
-      else
-        printf 'release: automatic binary restoration failed; rollback copy retained beside the configured target\n' >&2
-      fi
-    else
-      if rm -f -- "$GATEWAY_BIN"; then
-        restored=1
-        printf 'release: removed the failed first installation\n' >&2
-      else
-        printf 'release: failed to remove the first failed installation\n' >&2
-      fi
-    fi
-
-    if (( restored == 1 )); then
-      health_url_file="${TUNNEL_HEALTH_URL_FILE:-${TMPDIR:-/tmp}/personal-mcp-gateway/tunnel-health.url}"
-      if rm -f -- "$health_url_file" &&
-        launchctl kickstart -k "gui/$uid/$label" >/dev/null 2>&1; then
-        if (( had_previous == 0 )); then
-          recovery_ready=1
-        elif "$script_dir/verify-live.sh" >/dev/null 2>&1; then
-          recovery_ready=1
-          printf 'release: rollback runtime is live and ready\n' >&2
-        fi
-      fi
-      if (( recovery_ready == 0 )); then
-        printf 'release: prior bytes were restored but runtime recovery is unconfirmed; rollback copy retained\n' >&2
-      fi
-    fi
-  fi
-
-  if (( installed_candidate == 0 || recovery_ready == 1 )); then
-    rm -f -- "$rollback"
-  fi
-  exit "$original_status"
-}
-
-trap 'rollback_release $?' EXIT
-trap 'exit 130' INT TERM HUP
-
-if [[ -e "$GATEWAY_BIN" ]]; then
-  if [[ ! -x "$GATEWAY_BIN" || -L "$GATEWAY_BIN" ]]; then
-    fail "the configured installed gateway is not a regular executable."
-  fi
-  cp -p -- "$GATEWAY_BIN" "$rollback"
-  had_previous=1
-fi
-
-install -m 0755 -- "$candidate" "$staged"
-staged_hash="$(shasum -a 256 "$staged" | awk '{print $1}')"
-if [[ "$candidate_hash" != "$staged_hash" ]]; then
-  fail "the staged binary does not match the tested release candidate."
-fi
-installed_candidate=1
-if ! mv -f -- "$staged" "$GATEWAY_BIN"; then
-  installed_candidate=0
-  fail "unable to atomically install the release candidate."
-fi
-
-installed_hash="$(shasum -a 256 "$GATEWAY_BIN" | awk '{print $1}')"
-if [[ "$candidate_hash" != "$installed_hash" ]]; then
-  fail "the installed binary does not match the tested release candidate."
-fi
-
 health_url_file="${TUNNEL_HEALTH_URL_FILE:-${TMPDIR:-/tmp}/personal-mcp-gateway/tunnel-health.url}"
-rm -f -- "$health_url_file"
-printf 'release: restarting tunnel LaunchAgent\n'
-launchctl kickstart -k "gui/$uid/$label"
-
-if ! "$script_dir/verify-live.sh"; then
-  fail "the restarted tunnel failed live verification."
+ready_timeout="${RELEASE_READY_TIMEOUT_SECONDS:-45}"
+ready_poll="${RELEASE_READY_POLL_SECONDS:-1}"
+if ! [[ "$ready_timeout" =~ ^[1-9][0-9]*$ ]]; then
+  fail release_config 'release configuration is invalid'
+fi
+if ! [[ "$ready_poll" =~ ^([0-9]+)(\.([0-9]{1,3}))?$ ]]; then
+  fail release_config 'release configuration is invalid'
+fi
+poll_whole="${BASH_REMATCH[1]}"
+poll_fraction="${BASH_REMATCH[3]:-0}000"
+poll_fraction="${poll_fraction:0:3}"
+ready_poll_ms=$((10#$poll_whole * 1000 + 10#$poll_fraction))
+if (( ready_poll_ms <= 0 )); then
+  fail release_config 'release configuration is invalid'
 fi
 
-installed_candidate=0
-rm -f -- "$rollback"
-trap - EXIT INT TERM HUP
-printf 'release complete: commit=%s sha256=%s\n' "${commit:0:12}" "${installed_hash:0:12}"
+exec "$script_dir/release-activation.sh" release \
+  --commit "$commit" \
+  --candidate "$candidate" \
+  --authority "$controller" \
+  --target "$GATEWAY_BIN" \
+  --label "$label" \
+  --repo-root "$repo_root" \
+  --environment "$env_file" \
+  --health-url-file "$health_url_file" \
+  --ready-timeout-seconds "$ready_timeout" \
+  --ready-poll-milliseconds "$ready_poll_ms"

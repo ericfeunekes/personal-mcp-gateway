@@ -5,17 +5,18 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
 env_file="${MCP_GATEWAY_ENV_FILE:-$repo_root/.env.local}"
 
-if [[ -f "$env_file" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "$env_file"
-  set +a
-fi
-
 fail() {
   printf 'personal-mcp-gateway: %s\n' "$1" >&2
   exit 1
 }
+
+# shellcheck source=internal/release-config.sh
+if ! source "$script_dir/internal/release-config.sh" >/dev/null 2>&1; then
+  fail "local environment configuration is invalid."
+fi
+if [[ -f "$env_file" ]] && ! load_release_config "$env_file"; then
+  fail "local environment configuration is invalid."
+fi
 
 if [[ -z "${OBSIDIAN_ROOT:-}" ]]; then
   fail "OBSIDIAN_ROOT is required in the configured local environment file."

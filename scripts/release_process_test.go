@@ -1,6 +1,7 @@
 package scripts_test
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -55,6 +56,120 @@ esac
 	}
 }
 
+func TestMakeReleaseCommandsPreserveScriptRecordsAndUsageSuffix(t *testing.T) {
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	sourceRoot := filepath.Dir(filepath.Dir(currentFile))
+	repo := t.TempDir()
+	makefile, err := os.ReadFile(filepath.Join(sourceRoot, "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "Makefile"), makefile, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(repo, "scripts", "release-activation.sh"), `#!/bin/sh
+case "$1" in
+  status) printf '%s\n' state=clear ;;
+  accept|rollback)
+    if [ -z "$3" ]; then printf '%s\n' 'error=usage message=invalid release command' >&2; exit 2; fi
+    printf '%s\n' state=clear
+    ;;
+  install-launchagent) printf '%s\n' called >>"$TEST_ADAPTER_LOG" ;;
+  *) exit 2 ;;
+esac
+`)
+	writeExecutable(t, filepath.Join(repo, "scripts", "update-local.sh"), `#!/bin/sh
+printf '%s\n' 'error=release_test_failed message=release tests failed' >&2
+exit 1
+`)
+	writeExecutable(t, filepath.Join(repo, "scripts", "release-local.sh"), `#!/bin/sh
+printf '%s\n' 'error=state_conflict message=event conflicts with release state' >&2
+printf '%s\n' 'state=pending id=release-0001 commit=0123456789ab sha256=candidate0000' >&2
+printf '%s\n' 'accept=make release-accept RELEASE_ID=release-0001' >&2
+printf '%s\n' 'rollback=make release-rollback RELEASE_ID=release-0001' >&2
+exit 1
+`)
+	configHelper, err := os.ReadFile(filepath.Join(sourceRoot, "scripts", "internal", "release-config.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(repo, "scripts", "internal", "release-config.sh"), string(configHelper))
+
+	run := func(args ...string) (string, string, int) {
+		t.Helper()
+		cmd := exec.Command("make", append([]string{"--no-print-directory", "-C", repo}, args...)...)
+		for _, value := range os.Environ() {
+			if !strings.HasPrefix(value, "MAKELEVEL=") && !strings.HasPrefix(value, "MAKEFLAGS=") && !strings.HasPrefix(value, "MFLAGS=") {
+				cmd.Env = append(cmd.Env, value)
+			}
+		}
+		cmd.Env = append(cmd.Env, "TEST_ADAPTER_LOG="+filepath.Join(repo, "adapter.log"))
+		var stdout, stderr strings.Builder
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		runErr := cmd.Run()
+		exit := 0
+		if runErr != nil {
+			var exitError *exec.ExitError
+			if !errors.As(runErr, &exitError) {
+				t.Fatalf("make start failed: %v", runErr)
+			}
+			exit = exitError.ExitCode()
+		}
+		return stdout.String(), stderr.String(), exit
+	}
+
+	stdout, stderr, exit := run("release-status")
+	if exit != 0 || stdout != "state=clear\n" || stderr != "" {
+		t.Fatalf("status exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+	stdout, stderr, exit = run("release-accept", "RELEASE_ID="+strings.Repeat("a", 64))
+	if exit != 0 || stdout != "state=clear\n" || stderr != "" {
+		t.Fatalf("accept exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+	stdout, stderr, exit = run("release-rollback")
+	if exit != 2 || stdout != "" || stderr != "error=usage message=invalid release command\nmake: *** [release-rollback] Error 2\n" {
+		t.Fatalf("usage exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+	stdout, stderr, exit = run("update")
+	if exit != 2 || stdout != "" || stderr != "error=release_test_failed message=release tests failed\nmake: *** [update] Error 1\n" {
+		t.Fatalf("update exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+	stdout, stderr, exit = run("release")
+	wantActiveRelease := "error=state_conflict message=event conflicts with release state\n" +
+		"state=pending id=release-0001 commit=0123456789ab sha256=candidate0000\n" +
+		"accept=make release-accept RELEASE_ID=release-0001\n" +
+		"rollback=make release-rollback RELEASE_ID=release-0001\n" +
+		"make: *** [release] Error 1\n"
+	if exit != 2 || stdout != "" || stderr != wantActiveRelease {
+		t.Fatalf("active release exit=%d stdout=%q stderr=%q want stderr=%q", exit, stdout, stderr, wantActiveRelease)
+	}
+
+	fakeGo := filepath.Join(repo, "fake-go")
+	writeExecutable(t, fakeGo, "#!/bin/sh\nexit 0\n")
+	sentinel := filepath.Join(repo, "restart-env-executed")
+	if err := os.WriteFile(filepath.Join(repo, ".env.local"), []byte("TUNNEL_HEALTH_URL_FILE=$(touch "+sentinel+")\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, exit = run("restart", "GO="+fakeGo)
+	if exit != 2 || stdout != "" || stderr != "error=release_config message=release configuration is invalid\nmake: *** [restart] Error 1\n" {
+		t.Fatalf("restart exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Fatalf("restart executed environment-file content: %v", err)
+	}
+	stdout, stderr, exit = run("install-launchagent", "GO="+fakeGo)
+	if exit != 2 || stdout != "" || stderr != "error=release_config message=release configuration is invalid\nmake: *** [install-launchagent] Error 1\n" {
+		t.Fatalf("install exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "adapter.log")); !os.IsNotExist(err) {
+		t.Fatalf("invalid install configuration reached adapter: %v", err)
+	}
+}
+
 func TestVerifyLiveChecksLaunchAgentLivenessAndReadiness(t *testing.T) {
 	var paths []string
 	var pathsMu sync.Mutex
@@ -100,6 +215,24 @@ func TestVerifyLiveChecksLaunchAgentLivenessAndReadiness(t *testing.T) {
 		t.Fatalf("probed paths = %q, want healthz and readyz", got)
 	}
 	assertFileContains(t, launchctlLog, "print gui/")
+}
+
+func TestVerifyLiveTreatsEnvironmentFileAsData(t *testing.T) {
+	repo := newScriptRepo(t, "verify-live.sh")
+	envFile := filepath.Join(repo, ".env.local")
+	sentinel := filepath.Join(repo, "verify-env-executed")
+	if err := os.WriteFile(envFile, []byte("TUNNEL_HEALTH_URL_FILE=$(touch "+sentinel+")\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(filepath.Join(repo, "scripts", "verify-live.sh"))
+	cmd.Env = append(testEnv(filepath.Join(repo, "bin")), "MCP_GATEWAY_ENV_FILE="+envFile)
+	output, err := cmd.CombinedOutput()
+	if err == nil || string(output) != "personal-mcp-gateway verification: local environment configuration is invalid.\n" {
+		t.Fatalf("verify hostile config err=%v output=%q", err, output)
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Fatalf("verify-live executed environment-file content: %v", err)
+	}
 }
 
 func TestVerifyLiveRejectsDegradedReadiness(t *testing.T) {
@@ -168,10 +301,13 @@ func TestVerifyLiveRejectsLaunchAgentFromAnotherCheckout(t *testing.T) {
 }
 
 func TestLocalReleaseInstallsExactCandidate(t *testing.T) {
-	repo, target, logFile, verifyCount, output, err := runLocalRelease(t, releaseOptions{previous: true})
-	if err != nil {
-		t.Fatalf("release failed: %v\n%s", err, output)
+	harness := newLocalReleaseHarness(t, releaseOptions{previous: true})
+	stdout, stderr, exit := harness.runChannels()
+	if exit != 0 || stderr != "" {
+		t.Fatalf("release exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
 	}
+	repo, target, logFile, verifyCount := harness.repo, harness.target, harness.logFile, harness.verifyCount
+	output := []byte(stdout)
 	assertFileContains(t, target, "candidate-binary")
 	if strings.Contains(string(output), "runtime-secret") {
 		t.Fatalf("release output leaked configured secret: %s", output)
@@ -179,23 +315,42 @@ func TestLocalReleaseInstallsExactCandidate(t *testing.T) {
 	if strings.Contains(string(output), "parent-runtime-secret") {
 		t.Fatalf("release output leaked inherited secret: %s", output)
 	}
-	if !strings.Contains(string(output), "release complete: commit=0123456789ab") {
-		t.Fatalf("release output = %q", output)
+	if strings.Contains(string(output), repo) {
+		t.Fatalf("release output leaked a private path: %s", output)
 	}
-	assertFileContains(t, logFile, "make:test\nmake:build\ngo:run ./cmd/gateway-smoke")
+	wantOutput := "state=pending id=release-0001 commit=0123456789ab sha256=candidate0000\n" +
+		"accept=make release-accept RELEASE_ID=release-0001\n" +
+		"rollback=make release-rollback RELEASE_ID=release-0001\n"
+	if string(output) != wantOutput {
+		t.Fatalf("release output = %q, want %q", output, wantOutput)
+	}
+	assertFileContains(t, logFile, "make:test\nmake:build\nmake:build-release-controller\ngo:run ./cmd/gateway-smoke")
 	assertFileContains(t, logFile, "launchctl:kickstart -k")
 	assertFileContains(t, verifyCount, "1")
-	rollbacks, err := filepath.Glob(filepath.Join(repo, "installed", "gateway.rollback.*"))
-	if err != nil {
-		t.Fatal(err)
+	active := releaseActiveDir(repo)
+	assertFileContains(t, filepath.Join(active, "state"), "pending")
+	assertFileContains(t, filepath.Join(active, "previous"), "previous-binary")
+	assertFileContains(t, filepath.Join(active, "candidate"), "candidate-binary")
+	if info, statErr := os.Stat(filepath.Join(active, "authority")); statErr != nil || info.Mode()&0o111 == 0 {
+		t.Fatalf("pinned authority is not executable: info=%v err=%v", info, statErr)
 	}
-	if len(rollbacks) != 0 {
-		t.Fatalf("successful release retained rollback files: %v", rollbacks)
+}
+
+func TestLocalReleaseSuppressesHostileGateOutput(t *testing.T) {
+	harness := newLocalReleaseHarness(t, releaseOptions{previous: true, failTests: true})
+	stdout, stderr, exit := harness.runChannels()
+	if exit != 1 || stdout != "" || stderr != "error=release_test_failed message=release tests failed\n" {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+	for _, sentinel := range []string{"runtime-secret", "private-sentinel", harness.repo} {
+		if strings.Contains(stdout+stderr, sentinel) {
+			t.Fatalf("public output leaked %q: stdout=%q stderr=%q", sentinel, stdout, stderr)
+		}
 	}
 }
 
 func TestLocalReleaseRestoresPreviousBinaryWhenReadinessFails(t *testing.T) {
-	_, target, logFile, verifyCount, output, err := runLocalRelease(t, releaseOptions{
+	repo, target, logFile, verifyCount, output, err := runLocalRelease(t, releaseOptions{
 		previous:              true,
 		failFirstVerification: true,
 	})
@@ -211,9 +366,11 @@ func TestLocalReleaseRestoresPreviousBinaryWhenReadinessFails(t *testing.T) {
 	if got := strings.Count(string(logData), "launchctl:kickstart -k"); got != 2 {
 		t.Fatalf("kickstart count = %d, want candidate restart plus rollback restart; log=%s", got, logData)
 	}
-	if !strings.Contains(string(output), "previous binary restored") ||
-		!strings.Contains(string(output), "rollback runtime is live and ready") {
+	if !strings.Contains(string(output), "error=deployment_failed") {
 		t.Fatalf("rollback output = %q", output)
+	}
+	if _, statErr := os.Stat(releaseActiveDir(repo)); !os.IsNotExist(statErr) {
+		t.Fatalf("successful recovery retained active state: %v", statErr)
 	}
 }
 
@@ -229,14 +386,9 @@ func TestLocalReleaseRetainsRollbackCopyWhenRecoveryCannotBeConfirmed(t *testing
 	if !strings.Contains(string(output), "runtime recovery is unconfirmed") {
 		t.Fatalf("unconfirmed recovery output = %q", output)
 	}
-	rollbacks, globErr := filepath.Glob(filepath.Join(repo, "installed", "gateway.rollback.*"))
-	if globErr != nil {
-		t.Fatal(globErr)
-	}
-	if len(rollbacks) != 1 {
-		t.Fatalf("rollback copies = %v, want one retained copy", rollbacks)
-	}
-	assertFileContains(t, rollbacks[0], "previous-binary")
+	active := releaseActiveDir(repo)
+	assertFileContains(t, filepath.Join(active, "state"), "rolling_back")
+	assertFileContains(t, filepath.Join(active, "previous"), "previous-binary")
 }
 
 func TestLocalReleaseRetainsRollbackCopyWhenRestoreFails(t *testing.T) {
@@ -252,17 +404,13 @@ func TestLocalReleaseRetainsRollbackCopyWhenRestoreFails(t *testing.T) {
 	if !strings.Contains(string(output), "automatic binary restoration failed") {
 		t.Fatalf("restore-failure output = %q", output)
 	}
-	rollbacks, globErr := filepath.Glob(filepath.Join(repo, "installed", "gateway.rollback.*"))
-	if globErr != nil {
-		t.Fatal(globErr)
-	}
-	if len(rollbacks) != 1 {
-		t.Fatalf("rollback copies = %v, want one retained copy", rollbacks)
-	}
+	active := releaseActiveDir(repo)
+	assertFileContains(t, filepath.Join(active, "state"), "rolling_back")
+	assertFileContains(t, filepath.Join(active, "previous"), "previous-binary")
 }
 
 func TestLocalReleaseRemovesFailedFirstInstallation(t *testing.T) {
-	_, target, _, verifyCount, output, err := runLocalRelease(t, releaseOptions{failFirstVerification: true})
+	repo, target, logFile, verifyCount, output, err := runLocalRelease(t, releaseOptions{failFirstVerification: true})
 	if err == nil {
 		t.Fatalf("release unexpectedly succeeded: %s", output)
 	}
@@ -270,8 +418,106 @@ func TestLocalReleaseRemovesFailedFirstInstallation(t *testing.T) {
 		t.Fatalf("first failed installation still exists: %v", statErr)
 	}
 	assertFileContains(t, verifyCount, "1")
-	if !strings.Contains(string(output), "removed the failed first installation") {
+	if !strings.Contains(string(output), "error=deployment_failed") {
 		t.Fatalf("first-install rollback output = %q", output)
+	}
+	assertFileContains(t, logFile, "launchctl:bootout")
+	if _, statErr := os.Stat(releaseActiveDir(repo)); !os.IsNotExist(statErr) {
+		t.Fatalf("successful first-install recovery retained active state: %v", statErr)
+	}
+}
+
+func TestLocalReleaseResumesPreparedTransactionBeforePreflight(t *testing.T) {
+	harness := newLocalReleaseHarness(t, releaseOptions{previous: true})
+	output, err := harness.run("STOP_AFTER_PREPARE=1")
+	if err == nil || !strings.Contains(string(output), "prepared test stop") {
+		t.Fatalf("prepared setup err=%v output=%q", err, output)
+	}
+	active := releaseActiveDir(harness.repo)
+	assertFileContains(t, filepath.Join(active, "state"), "prepared")
+	if err := os.WriteFile(harness.logFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	output, err = harness.run()
+	if err != nil {
+		t.Fatalf("prepared resume failed: %v\n%s", err, output)
+	}
+	assertFileContains(t, filepath.Join(active, "state"), "pending")
+	logData, readErr := os.ReadFile(harness.logFile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if strings.Contains(string(logData), "make:") || strings.Contains(string(logData), "go:") {
+		t.Fatalf("prepared resume rebuilt or reprobed: %s", logData)
+	}
+}
+
+func TestLocalReleaseGuidesEveryNonResumableActiveStateOnStderr(t *testing.T) {
+	harness := newLocalReleaseHarness(t, releaseOptions{previous: true})
+	if output, err := harness.run(); err != nil {
+		t.Fatalf("release failed: %v\n%s", err, output)
+	}
+	active := releaseActiveDir(harness.repo)
+	tests := []struct {
+		state    string
+		guidance string
+	}{
+		{"pending", "accept=make release-accept RELEASE_ID=release-0001\nrollback=make release-rollback RELEASE_ID=release-0001\n"},
+		{"accepting", "resume=make release-accept RELEASE_ID=release-0001\n"},
+		{"rolling_back", "resume=make release-rollback RELEASE_ID=release-0001\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.state, func(t *testing.T) {
+			if err := os.WriteFile(filepath.Join(active, "state"), []byte(test.state), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			stdout, stderr, exit := harness.runChannels()
+			want := "error=state_conflict message=event conflicts with release state\n" +
+				"state=" + test.state + " id=release-0001 commit=0123456789ab sha256=candidate0000\n" + test.guidance
+			if exit != 1 || stdout != "" || stderr != want {
+				t.Fatalf("exit=%d stdout=%q stderr=%q want=%q", exit, stdout, stderr, want)
+			}
+		})
+	}
+}
+
+func TestPendingReleaseDispatchesExactAccept(t *testing.T) {
+	harness := newLocalReleaseHarness(t, releaseOptions{previous: true})
+	if output, err := harness.run(); err != nil {
+		t.Fatalf("release failed: %v\n%s", err, output)
+	}
+
+	output, err := harness.dispatch("accept", "--release-id", "release-0001")
+	if err != nil || string(output) != "state=clear\n" {
+		t.Fatalf("accept err=%v output=%q", err, output)
+	}
+	assertFileContains(t, harness.target, "candidate-binary")
+	if _, statErr := os.Stat(releaseActiveDir(harness.repo)); !os.IsNotExist(statErr) {
+		t.Fatalf("accepted transaction remains active: %v", statErr)
+	}
+}
+
+func TestPendingReleaseDispatchesExactRollbackAndRejectsStaleID(t *testing.T) {
+	harness := newLocalReleaseHarness(t, releaseOptions{previous: true})
+	if output, err := harness.run(); err != nil {
+		t.Fatalf("release failed: %v\n%s", err, output)
+	}
+
+	output, err := harness.dispatch("rollback", "--release-id", "release-000")
+	if err == nil || !strings.Contains(string(output), "error=identity_mismatch") {
+		t.Fatalf("stale rollback err=%v output=%q", err, output)
+	}
+	assertFileContains(t, harness.target, "candidate-binary")
+	assertFileContains(t, filepath.Join(releaseActiveDir(harness.repo), "state"), "pending")
+
+	output, err = harness.dispatch("rollback", "--release-id", "release-0001")
+	if err != nil || !strings.Contains(string(output), "state=clear") {
+		t.Fatalf("rollback err=%v output=%q", err, output)
+	}
+	assertFileContains(t, harness.target, "previous-binary")
+	if _, statErr := os.Stat(releaseActiveDir(harness.repo)); !os.IsNotExist(statErr) {
+		t.Fatalf("rolled-back transaction remains active: %v", statErr)
 	}
 }
 
@@ -280,7 +526,7 @@ func TestLocalReleaseRejectsCandidateInstalledPathAlias(t *testing.T) {
 		previous:       true,
 		candidateAlias: true,
 	})
-	if err == nil || !strings.Contains(string(output), "must use distinct paths") {
+	if err == nil || string(output) != "error=release_config message=release configuration is invalid\n" {
 		t.Fatalf("aliased release err=%v output=%q", err, output)
 	}
 	assertFileContains(t, target, "previous-binary")
@@ -294,7 +540,7 @@ func TestLocalReleaseRejectsCandidateChangedDuringSmoke(t *testing.T) {
 		previous:                   true,
 		mutateCandidateDuringSmoke: true,
 	})
-	if err == nil || !strings.Contains(string(output), "changed during its MCP smoke") {
+	if err == nil || string(output) != "error=release_changed message=release inputs changed during validation\n" {
 		t.Fatalf("mutated-candidate release err=%v output=%q", err, output)
 	}
 	assertFileContains(t, target, "previous-binary")
@@ -305,7 +551,7 @@ func TestLocalReleaseRejectsCommitChangedDuringRelease(t *testing.T) {
 		previous:              true,
 		changeCommitOnRecheck: true,
 	})
-	if err == nil || !strings.Contains(string(output), "HEAD changed during release") {
+	if err == nil || string(output) != "error=release_changed message=release inputs changed during validation\n" {
 		t.Fatalf("changed-commit release err=%v output=%q", err, output)
 	}
 	assertFileContains(t, target, "previous-binary")
@@ -316,7 +562,7 @@ func TestLocalReleaseRejectsDirtyTreeOnSecondPreflight(t *testing.T) {
 		previous:            true,
 		failSecondPreflight: true,
 	})
-	if err == nil || !strings.Contains(string(output), "working tree must be clean") {
+	if err == nil || string(output) != "error=release_preflight_failed message=release preflight failed\n" {
 		t.Fatalf("second-preflight release err=%v output=%q", err, output)
 	}
 	assertFileContains(t, target, "previous-binary")
@@ -327,10 +573,168 @@ func TestLocalReleaseRejectsAlternateEnvironmentFile(t *testing.T) {
 		previous:     true,
 		alternateEnv: true,
 	})
-	if err == nil || !strings.Contains(string(output), "uses the repo-local .env.local") {
+	if err == nil || string(output) != "error=release_config message=release configuration is invalid\n" {
 		t.Fatalf("alternate-env release err=%v output=%q", err, output)
 	}
 	assertFileContains(t, target, "previous-binary")
+}
+
+func TestLocalReleaseTreatsEnvironmentFileAsBoundedData(t *testing.T) {
+	harness := newLocalReleaseHarness(t, releaseOptions{previous: true})
+	envFile := filepath.Join(harness.repo, ".env.local")
+	sentinel := filepath.Join(harness.repo, "must-not-exist")
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{"command substitution", "GATEWAY_BIN=$(touch " + sentinel + ")\n"},
+		{"backtick command", "GATEWAY_BIN=`touch " + sentinel + "`\n"},
+		{"exit command", "exit 7\n"},
+		{"output command", "GATEWAY_BIN=/tmp/gateway; printf leaked-output\n"},
+		{"unknown key", "GATEWAY_BIN=/tmp/gateway\nUNRECOGNIZED_RELEASE_KEY=value\n"},
+		{"duplicate key", "GATEWAY_BIN=/tmp/one\nGATEWAY_BIN=/tmp/two\n"},
+		{"oversized", "#" + strings.Repeat("x", 65536) + "\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := os.WriteFile(envFile, []byte(test.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			output, runErr := harness.run()
+			if runErr == nil || string(output) != "error=release_config message=release configuration is invalid\n" {
+				t.Fatalf("err=%v output=%q", runErr, output)
+			}
+			if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+				t.Fatalf("environment data executed a command: %v", err)
+			}
+		})
+	}
+}
+
+func TestLocalReleaseParsesQuotedValuesAndLeadingHome(t *testing.T) {
+	harness := newLocalReleaseHarness(t, releaseOptions{previous: true})
+	envText := fmt.Sprintf("GATEWAY_BIN=\"$HOME/%s\"\nOBSIDIAN_ROOT='%s'\nCONTROL_PLANE_API_KEY=runtime-secret\n", filepath.Base(harness.target), harness.vault)
+	if err := os.WriteFile(filepath.Join(harness.repo, ".env.local"), []byte(envText), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output, runErr := harness.run("HOME=" + filepath.Dir(harness.target))
+	if runErr != nil || !strings.HasPrefix(string(output), "state=pending id=release-0001") {
+		t.Fatalf("err=%v output=%q", runErr, output)
+	}
+}
+
+func TestRuntimeWrappersTreatEnvironmentFileAsBoundedData(t *testing.T) {
+	wrappers := []string{"run-obsidian-tunnel.sh", "run-obsidian-mcp-stdio.sh"}
+	tests := []struct {
+		name    string
+		content func(string) string
+	}{
+		{"command substitution", func(sentinel string) string { return "OBSIDIAN_ROOT=$(touch " + sentinel + ")\n" }},
+		{"backtick command", func(sentinel string) string { return "OBSIDIAN_ROOT=`touch " + sentinel + "`\n" }},
+		{"exit command", func(string) string { return "exit 0\n" }},
+		{"output command", func(string) string { return "printf hostile-output\n" }},
+	}
+	for _, wrapper := range wrappers {
+		for _, test := range tests {
+			t.Run(wrapper+"/"+test.name, func(t *testing.T) {
+				repo := newScriptRepo(t, wrapper)
+				envFile := filepath.Join(repo, ".env.local")
+				sentinel := filepath.Join(repo, "must-not-exist")
+				if err := os.WriteFile(envFile, []byte(test.content(sentinel)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				cmd := exec.Command(filepath.Join(repo, "scripts", wrapper))
+				cmd.Env = envWithOverrides(testEnv(filepath.Join(repo, "bin")), "MCP_GATEWAY_ENV_FILE="+envFile)
+				var stdout, stderr strings.Builder
+				cmd.Stdout = &stdout
+				cmd.Stderr = &stderr
+				if err := cmd.Run(); err == nil {
+					t.Fatalf("hostile configuration succeeded: stdout=%q stderr=%q", stdout.String(), stderr.String())
+				}
+				if stdout.String() != "" || stderr.String() != "personal-mcp-gateway: local environment configuration is invalid.\n" {
+					t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+				}
+				if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+					t.Fatalf("environment data executed a command: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestRuntimeWrappersParseQuotedAndHomePrefixedValues(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home with space")
+	vault := filepath.Join(home, "vault")
+	if err := os.MkdirAll(filepath.Join(home, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(vault, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("stdio", func(t *testing.T) {
+		repo := newScriptRepo(t, "run-obsidian-mcp-stdio.sh")
+		logFile := filepath.Join(repo, "stdio.log")
+		gateway := filepath.Join(home, "bin", "personal-mcp-gateway")
+		writeExecutable(t, gateway, "#!/bin/sh\nprintf '%s\\n' \"$*\" >\"$WRAPPER_LOG\"\n")
+		envFile := filepath.Join(repo, ".env.local")
+		config := "OBSIDIAN_ROOT=\"$HOME/vault\"\n" +
+			"GATEWAY_BIN=\"${HOME}/bin/personal-mcp-gateway\"\n" +
+			"MCP_GATEWAY_TELEMETRY_DB=\"$HOME/state/telemetry.sqlite\"\n"
+		if err := os.WriteFile(envFile, []byte(config), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(filepath.Join(repo, "scripts", "run-obsidian-mcp-stdio.sh"))
+		cmd.Env = envWithOverrides(testEnv(filepath.Join(repo, "bin")),
+			"HOME="+home,
+			"MCP_GATEWAY_ENV_FILE="+envFile,
+			"WRAPPER_LOG="+logFile,
+			"OBSIDIAN_ROOT=",
+			"GATEWAY_BIN=",
+			"MCP_GATEWAY_TELEMETRY_DB=",
+		)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("stdio wrapper failed: %v\n%s", err, output)
+		}
+		assertFileContains(t, logFile, "stdio --obsidian-root "+vault+" --telemetry-db "+filepath.Join(home, "state", "telemetry.sqlite"))
+	})
+
+	t.Run("tunnel", func(t *testing.T) {
+		repo := newScriptRepo(t, "run-obsidian-tunnel.sh")
+		logFile := filepath.Join(repo, "tunnel.log")
+		writeExecutable(t, filepath.Join(repo, "scripts", "run-obsidian-mcp-stdio.sh"), "#!/bin/sh\nexit 0\n")
+		writeExecutable(t, filepath.Join(repo, "tools", "tunnel-client", "tunnel-client"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$WRAPPER_LOG\"\n")
+		envFile := filepath.Join(repo, ".env.local")
+		config := "CONTROL_PLANE_TUNNEL_ID=\"tunnel-quoted\"\n" +
+			"CONTROL_PLANE_API_KEY='key with spaces'\n" +
+			"OBSIDIAN_ROOT=\"$HOME/vault\"\n" +
+			"TUNNEL_HEALTH_URL_FILE=\"${HOME}/state/health.url\"\n"
+		if err := os.WriteFile(envFile, []byte(config), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(filepath.Join(repo, "scripts", "run-obsidian-tunnel.sh"))
+		cmd.Env = envWithOverrides(testEnv(filepath.Join(repo, "bin")),
+			"HOME="+home,
+			"MCP_GATEWAY_ENV_FILE="+envFile,
+			"WRAPPER_LOG="+logFile,
+			"CONTROL_PLANE_TUNNEL_ID=",
+			"CONTROL_PLANE_API_KEY=",
+			"OBSIDIAN_ROOT=",
+		)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("tunnel wrapper failed: %v\n%s", err, output)
+		}
+		assertFileContains(t, logFile, "init --sample sample_mcp_stdio_local")
+		assertFileContains(t, logFile, "--tunnel-id tunnel-quoted")
+		assertFileContains(t, logFile, "run --profile obsidian-stdio")
+		if data, err := os.ReadFile(logFile); err != nil {
+			t.Fatal(err)
+		} else if strings.Contains(string(data), "key with spaces") {
+			t.Fatalf("tunnel command leaked API key: %q", data)
+		}
+	})
 }
 
 func TestLocalReleaseRollsBackOnStagedHashMismatch(t *testing.T) {
@@ -345,9 +749,14 @@ func TestLocalReleaseRollsBackOnStagedHashMismatch(t *testing.T) {
 }
 
 func TestUpdateFastForwardsMainBeforeRelease(t *testing.T) {
-	repo := newScriptRepo(t, "update-local.sh")
+	repo := newScriptRepo(t, "update-local.sh", "release-activation.sh")
+	localHead := "0123456789abcdef0123456789abcdef01234567"
+	remoteHead := "89abcdef0123456789abcdef0123456789abcdef"
 	binDir := filepath.Join(repo, "bin")
 	logFile := filepath.Join(repo, "calls.log")
+	controllerSource := filepath.Join(repo, "fake-release-controller")
+	writeExecutable(t, controllerSource, fakeReleaseController)
+	home := installFakePasswdTools(t, repo, binDir)
 	writeExecutable(t, filepath.Join(binDir, "git"), `#!/bin/sh
 case "$*" in
   *"branch --show-current"*) printf '%s\n' "${FAKE_BRANCH:-main}" ;;
@@ -355,22 +764,71 @@ case "$*" in
     if [ "${FAKE_GIT_STATUS_ERROR:-0}" = 1 ]; then exit 3; fi
     printf '%s' "${FAKE_GIT_STATUS:-}"
     ;;
-  *"rev-parse HEAD"*) printf '%s\n' "${FAKE_HEAD:-same-commit}" ;;
-  *"rev-parse origin/main"*) printf '%s\n' "${FAKE_ORIGIN_HEAD:-same-commit}" ;;
-  *"merge --ff-only origin/main"*)
+	  *"rev-parse HEAD"*)
+    count=0
+    if [ -f "$UPDATE_HEAD_COUNT" ]; then count=$(cat "$UPDATE_HEAD_COUNT"); fi
+    count=$((count + 1)); printf '%s' "$count" >"$UPDATE_HEAD_COUNT"
+	    if [ "$count" -gt 2 ] && [ "${FAKE_MERGE_ERROR:-0}" != 1 ] && [ "${FAKE_FINAL_HEAD_MISMATCH:-0}" != 1 ]; then printf '%s\n' "$FAKE_ORIGIN_HEAD"; else printf '%s\n' "$FAKE_HEAD"; fi
+    ;;
+	  *"rev-parse --verify FETCH_HEAD^{commit}"*)
+	    if [ -f "$FETCH_REWRITE_MARKER" ]; then printf '%s\n' "$FAKE_REWRITTEN_HEAD"; else printf '%s\n' "$FAKE_ORIGIN_HEAD"; fi
+	    ;;
+	  *"merge --ff-only "*)
     printf 'git:%s\n' "$*" >>"$CALL_LOG"
     if [ "${FAKE_MERGE_ERROR:-0}" = 1 ]; then exit 4; fi
     ;;
   *) printf 'git:%s\n' "$*" >>"$CALL_LOG" ;;
 esac
 `)
-	writeExecutable(t, filepath.Join(binDir, "make"), "#!/bin/sh\nprintf 'make:%s\\n' \"$*\" >>\"$CALL_LOG\"\n")
+	writeExecutable(t, filepath.Join(repo, "scripts", "release-local.sh"), `#!/bin/sh
+printf '%s\n' release-local >>"$CALL_LOG"
+if [ "${FAKE_RELEASE_ERROR:-0}" = 1 ]; then
+  printf '%s\n' 'error=release_test_failed message=release tests failed' >&2
+  exit 1
+fi
+`)
+	writeExecutable(t, filepath.Join(binDir, "make"), `#!/bin/sh
+target=""
+for arg in "$@"; do target="$arg"; done
+printf 'make:%s\n' "$target" >>"$CALL_LOG"
+if [ "$target" = build-release-controller ]; then
+  mkdir -p "$(dirname "$RELEASE_ACTIVATION_CANDIDATE")"
+  cp "$FAKE_CONTROLLER_SOURCE" "$RELEASE_ACTIVATION_CANDIDATE"
+  chmod 755 "$RELEASE_ACTIVATION_CANDIDATE"
+  : >"$FETCH_REWRITE_MARKER"
+fi
+`)
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "update-local.sh"))
-	cmd.Env = append(testEnv(binDir), "CALL_LOG="+logFile, "MAKE=make")
+	baseEnv := append(testEnv(binDir),
+		"CALL_LOG="+logFile,
+		"MAKE=make",
+		"PASSWD_HOME="+home,
+		"TEST_REPO="+repo,
+		"FAKE_CONTROLLER_SOURCE="+controllerSource,
+		"RELEASE_ACTIVATION_CANDIDATE="+filepath.Join(repo, ".build", "release-activation"),
+		"UPDATE_HEAD_COUNT="+filepath.Join(repo, "update-head-count"),
+		"FAKE_HEAD="+localHead,
+		"FAKE_ORIGIN_HEAD="+remoteHead,
+		"FAKE_REWRITTEN_HEAD="+strings.Repeat("c", 40),
+		"FETCH_REWRITE_MARKER="+filepath.Join(repo, "fetch-rewritten"),
+	)
+	resetHeadCount := func() {
+		t.Helper()
+		for _, path := range []string{filepath.Join(repo, "update-head-count"), filepath.Join(repo, "fetch-rewritten")} {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+		}
+	}
+	resetHeadCount()
+	cmd.Env = baseEnv
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("update failed: %v\n%s", err, output)
+	}
+	if len(output) != 0 {
+		t.Fatalf("successful update emitted intermediate output: %q", output)
 	}
 	logData, err := os.ReadFile(logFile)
 	if err != nil {
@@ -378,47 +836,92 @@ esac
 	}
 	logText := string(logData)
 	fetch := strings.Index(logText, "fetch origin")
-	merge := strings.Index(logText, "merge --ff-only origin/main")
-	release := strings.Index(logText, "make:--no-print-directory -C "+repo+" release")
-	if fetch < 0 || merge <= fetch || release <= merge {
+	buildController := strings.Index(logText, "make:build-release-controller")
+	merge := strings.Index(logText, "merge --ff-only "+remoteHead)
+	release := strings.Index(logText, "release-local")
+	if fetch < 0 || buildController <= fetch || merge <= buildController || release <= merge {
 		t.Fatalf("update call order = %q", logText)
+	}
+	if strings.Contains(logText, "merge --ff-only FETCH_HEAD") || strings.Contains(logText, "make:release") {
+		t.Fatalf("update used a mutable ref or nested make: %q", logText)
+	}
+	if strings.Contains(logText, "merge --ff-only "+strings.Repeat("c", 40)) {
+		t.Fatalf("update followed rewritten FETCH_HEAD: %q", logText)
 	}
 
 	cmd = exec.Command(filepath.Join(repo, "scripts", "update-local.sh"))
-	cmd.Env = append(testEnv(binDir), "CALL_LOG="+logFile, "MAKE=make", "FAKE_BRANCH=feature")
+	resetHeadCount()
+	cmd.Env = append(baseEnv, "FAKE_RELEASE_ERROR=1")
 	output, err = cmd.CombinedOutput()
-	if err == nil || !strings.Contains(string(output), "main branch") {
+	if err == nil || string(output) != "error=release_test_failed message=release tests failed\n" {
+		t.Fatalf("release failure err=%v output=%q", err, output)
+	}
+
+	active := releaseActiveDir(repo)
+	if err := os.MkdirAll(active, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(active, "authority"), fakeReleaseController)
+	if err := os.WriteFile(logFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command(filepath.Join(repo, "scripts", "update-local.sh"))
+	resetHeadCount()
+	cmd.Env = baseEnv
+	output, err = cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "release transaction is active") {
+		t.Fatalf("active update err=%v output=%q", err, output)
+	}
+	logData, err = os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText = string(logData)
+	if !strings.Contains(logText, "fetch origin") || !strings.Contains(logText, "make:build-release-controller") ||
+		strings.Contains(logText, "merge --ff-only") || strings.Contains(logText, "release-local") {
+		t.Fatalf("active update call order = %q", logText)
+	}
+	if err := os.RemoveAll(active); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd = exec.Command(filepath.Join(repo, "scripts", "update-local.sh"))
+	resetHeadCount()
+	cmd.Env = append(baseEnv, "FAKE_BRANCH=feature")
+	output, err = cmd.CombinedOutput()
+	if err == nil || string(output) != "error=update_preflight_failed message=update preflight failed\n" {
 		t.Fatalf("non-main update err=%v output=%q", err, output)
 	}
 
 	cmd = exec.Command(filepath.Join(repo, "scripts", "update-local.sh"))
-	cmd.Env = append(testEnv(binDir), "CALL_LOG="+logFile, "MAKE=make", "FAKE_GIT_STATUS= M README.md")
+	resetHeadCount()
+	cmd.Env = append(baseEnv, "FAKE_GIT_STATUS= M README.md")
 	output, err = cmd.CombinedOutput()
-	if err == nil || !strings.Contains(string(output), "working tree must be clean") {
+	if err == nil || string(output) != "error=update_preflight_failed message=update preflight failed\n" {
 		t.Fatalf("dirty update err=%v output=%q", err, output)
 	}
 
 	cmd = exec.Command(filepath.Join(repo, "scripts", "update-local.sh"))
-	cmd.Env = append(testEnv(binDir),
-		"CALL_LOG="+logFile,
-		"MAKE=make",
-		"FAKE_HEAD=local-only-commit",
-		"FAKE_ORIGIN_HEAD=landed-commit",
+	resetHeadCount()
+	cmd.Env = append(baseEnv,
+		"FAKE_FINAL_HEAD_MISMATCH=1",
 	)
 	output, err = cmd.CombinedOutput()
-	if err == nil || !strings.Contains(string(output), "exactly match origin/main") {
-		t.Fatalf("ahead-main update err=%v output=%q", err, output)
+	if err == nil || !strings.Contains(string(output), "source update failed") {
+		t.Fatalf("mismatched-final-head update err=%v output=%q", err, output)
 	}
 
 	cmd = exec.Command(filepath.Join(repo, "scripts", "update-local.sh"))
-	cmd.Env = append(testEnv(binDir), "CALL_LOG="+logFile, "MAKE=make", "FAKE_GIT_STATUS_ERROR=1")
+	resetHeadCount()
+	cmd.Env = append(baseEnv, "FAKE_GIT_STATUS_ERROR=1")
 	output, err = cmd.CombinedOutput()
-	if err == nil || !strings.Contains(string(output), "unable to inspect the working tree") {
+	if err == nil || string(output) != "error=update_preflight_failed message=update preflight failed\n" {
 		t.Fatalf("failed-status update err=%v output=%q", err, output)
 	}
 
 	cmd = exec.Command(filepath.Join(repo, "scripts", "update-local.sh"))
-	cmd.Env = append(testEnv(binDir), "CALL_LOG="+logFile, "MAKE=make", "FAKE_MERGE_ERROR=1")
+	resetHeadCount()
+	cmd.Env = append(baseEnv, "FAKE_MERGE_ERROR=1")
 	output, err = cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("failed merge update succeeded: %s", output)
@@ -427,6 +930,7 @@ esac
 
 type releaseOptions struct {
 	previous                   bool
+	failTests                  bool
 	failFirstVerification      bool
 	failAllVerification        bool
 	failRestore                bool
@@ -438,14 +942,32 @@ type releaseOptions struct {
 	alternateEnv               bool
 }
 
+type localReleaseHarness struct {
+	t           *testing.T
+	repo        string
+	target      string
+	vault       string
+	logFile     string
+	verifyCount string
+	env         []string
+}
+
 func runLocalRelease(t *testing.T, options releaseOptions) (repo, target, logFile, verifyCount string, output []byte, runErr error) {
 	t.Helper()
-	repo = newScriptRepo(t, "release-local.sh", "release-preflight.sh")
+	harness := newLocalReleaseHarness(t, options)
+	output, runErr = harness.run()
+	return harness.repo, harness.target, harness.logFile, harness.verifyCount, output, runErr
+}
+
+func newLocalReleaseHarness(t *testing.T, options releaseOptions) *localReleaseHarness {
+	t.Helper()
+	repo := newScriptRepo(t, "release-local.sh", "release-preflight.sh", "release-activation.sh")
 	binDir := filepath.Join(repo, "bin")
-	logFile = filepath.Join(repo, "calls.log")
-	verifyCount = filepath.Join(repo, "verify-count")
+	logFile := filepath.Join(repo, "calls.log")
+	verifyCount := filepath.Join(repo, "verify-count")
 	candidate := filepath.Join(repo, ".build", "gateway")
-	target = filepath.Join(repo, "installed", "gateway")
+	controller := filepath.Join(repo, ".build", "release-activation")
+	target := filepath.Join(repo, "installed", "gateway")
 	if options.candidateAlias {
 		candidate = target
 	}
@@ -467,6 +989,9 @@ func runLocalRelease(t *testing.T, options releaseOptions) (repo, target, logFil
 	if options.previous {
 		writeExecutable(t, target, "#!/bin/sh\n# previous-binary\n")
 	}
+	home := installFakePasswdTools(t, repo, binDir)
+	controllerSource := filepath.Join(repo, "fake-release-controller")
+	writeExecutable(t, controllerSource, fakeReleaseController)
 	verifyScript := `#!/bin/sh
 count=0
 if [ -f "$VERIFY_COUNT" ]; then count=$(cat "$VERIFY_COUNT"); fi
@@ -516,10 +1041,20 @@ if [ -n "${CONTROL_PLANE_API_KEY:-}" ]; then printf '%%s\n' "$CONTROL_PLANE_API_
 target=""
 for arg in "$@"; do target="$arg"; done
 printf 'make:%%s\n' "$target" >>"$CALL_LOG"
+if [ "$target" = test ] && [ "${FAIL_TESTS:-0}" = 1 ]; then
+  printf 'hostile private-sentinel %%s\n' "$TEST_REPO"
+  printf 'hostile runtime-secret\n' >&2
+  exit 9
+fi
 if [ "$target" = build ]; then
   mkdir -p %q
   printf '#!/bin/sh\n# candidate-binary\n' >%q
   chmod 755 %q
+fi
+if [ "$target" = build-release-controller ]; then
+  mkdir -p "$(dirname "$RELEASE_ACTIVATION_CANDIDATE")"
+  cp "$FAKE_CONTROLLER_SOURCE" "$RELEASE_ACTIVATION_CANDIDATE"
+  chmod 755 "$RELEASE_ACTIVATION_CANDIDATE"
 fi
 `, filepath.Dir(candidate), candidate, candidate)
 	writeExecutable(t, filepath.Join(binDir, "make"), makeScript)
@@ -530,7 +1065,7 @@ target_path=""
 for arg in "$@"; do
   case "$arg" in -*) ;; *) source_path="$target_path"; target_path="$arg" ;; esac
 done
-if [ "${FAIL_RESTORE:-0}" = 1 ] && echo "$source_path" | grep -q '\.rollback\.'; then exit 8; fi
+if [ "${FAIL_RESTORE:-0}" = 1 ] && echo "$source_path" | grep -q '/previous$'; then exit 8; fi
 if [ "${CORRUPT_STAGE:-0}" = 1 ] && echo "$target_path" | grep -q '\.next\.'; then
   printf '#!/bin/sh\n# corrupt-stage\n' >"$target_path"
   chmod 755 "$target_path"
@@ -556,11 +1091,11 @@ exec "$REAL_INSTALL" "$@"
 	if options.alternateEnv {
 		alternateEnv = filepath.Join(repo, "alternate.env")
 	}
-	cmd := exec.Command(filepath.Join(repo, "scripts", "release-local.sh"))
-	cmd.Env = append(testEnv(binDir),
+	env := append(testEnv(binDir),
 		"CALL_LOG="+logFile,
 		"VERIFY_COUNT="+verifyCount,
 		"FAIL_FIRST_VERIFY="+failValue,
+		"FAIL_TESTS="+boolString(options.failTests),
 		"FAIL_ALL_VERIFY="+failAllValue,
 		"FAIL_RESTORE="+boolString(options.failRestore),
 		"CORRUPT_STAGE="+boolString(options.corruptStage),
@@ -573,15 +1108,236 @@ exec "$REAL_INSTALL" "$@"
 		"CONTROL_PLANE_API_KEY=parent-runtime-secret",
 		"MCP_GATEWAY_ENV_FILE="+alternateEnv,
 		"GATEWAY_CANDIDATE="+candidate,
+		"RELEASE_ACTIVATION_CANDIDATE="+controller,
 		"EXPECTED_CANDIDATE="+expectedCandidate,
 		"EXPECTED_VAULT="+vault,
+		"FAKE_CONTROLLER_SOURCE="+controllerSource,
+		"PASSWD_HOME="+home,
+		"TEST_REPO="+repo,
 		"MAKE=make",
 		"GO=go",
 		"TUNNEL_HEALTH_URL_FILE="+filepath.Join(repo, "health.url"),
 	)
-	output, runErr = cmd.CombinedOutput()
-	return repo, target, logFile, verifyCount, output, runErr
+	return &localReleaseHarness{t: t, repo: repo, target: target, vault: vault, logFile: logFile, verifyCount: verifyCount, env: env}
 }
+
+func (h *localReleaseHarness) run(extra ...string) ([]byte, error) {
+	h.t.Helper()
+	cmd := exec.Command(filepath.Join(h.repo, "scripts", "release-local.sh"))
+	cmd.Env = envWithOverrides(h.env, extra...)
+	return cmd.CombinedOutput()
+}
+
+func (h *localReleaseHarness) runChannels(extra ...string) (stdout, stderr string, exit int) {
+	h.t.Helper()
+	cmd := exec.Command(filepath.Join(h.repo, "scripts", "release-local.sh"))
+	cmd.Env = envWithOverrides(h.env, extra...)
+	var stdoutBuffer, stderrBuffer strings.Builder
+	cmd.Stdout = &stdoutBuffer
+	cmd.Stderr = &stderrBuffer
+	err := cmd.Run()
+	if err != nil {
+		var exitError *exec.ExitError
+		if !errors.As(err, &exitError) {
+			h.t.Fatalf("release start failed: %v", err)
+		}
+		exit = exitError.ExitCode()
+	}
+	return stdoutBuffer.String(), stderrBuffer.String(), exit
+}
+
+func (h *localReleaseHarness) dispatch(args ...string) ([]byte, error) {
+	h.t.Helper()
+	cmd := exec.Command(filepath.Join(h.repo, "scripts", "release-activation.sh"), args...)
+	cmd.Env = append([]string{}, h.env...)
+	return cmd.CombinedOutput()
+}
+
+func releaseActiveDir(repo string) string {
+	return filepath.Join(repo, "passwd-home", "Library", "Application Support", "personal-mcp-gateway", "release", "obsidian", "active")
+}
+
+func installFakePasswdTools(t *testing.T, repo, binDir string) string {
+	t.Helper()
+	home := filepath.Join(repo, "passwd-home")
+	trustedDir := filepath.Join(repo, "trusted-system-tools")
+	trustedID := filepath.Join(trustedDir, "id")
+	trustedDSCL := filepath.Join(trustedDir, "dscl")
+	writeExecutable(t, trustedID, `#!/bin/sh
+case "$1" in
+  -un) printf '%s\n' testuser ;;
+  -u) printf '%s\n' 501 ;;
+  *) exit 2 ;;
+esac
+`)
+	writeExecutable(t, trustedDSCL, `#!/bin/sh
+printf 'NFSHomeDirectory: %s\n' "$PASSWD_HOME"
+`)
+	rewriteDispatcherPasswdTools(t, repo, trustedID, trustedDSCL)
+	return home
+}
+
+const fakeReleaseController = `#!/bin/bash
+set -euo pipefail
+
+state_root="$PASSWD_HOME/Library/Application Support/personal-mcp-gateway/release/obsidian"
+active="$state_root/active"
+printf 'controller:%s\n' "${1:-status}" >>"$CALL_LOG"
+
+error_line() {
+  printf 'error=%s message=%s\n' "$1" "$2" >&2
+  exit 1
+}
+
+argument() {
+  local wanted="$1"
+  shift
+  while (( $# > 0 )); do
+    if [[ "$1" == "$wanted" && $# -gt 1 ]]; then printf '%s\n' "$2"; return 0; fi
+    shift
+  done
+  return 1
+}
+
+identity() {
+  printf 'state=%s id=%s commit=0123456789ab sha256=candidate0000\n' "$(cat "$active/state")" "$(cat "$active/id")"
+}
+
+clear_active() {
+  rm -rf -- "$active"
+}
+
+recover() {
+  printf '%s' rolling_back >"$active/state"
+  local target
+  target="$(cat "$active/target")"
+  if [[ -f "$active/previous" ]]; then
+    if ! install -m 755 "$active/previous" "$target"; then
+      error_line recovery_unconfirmed 'automatic binary restoration failed'
+    fi
+    launchctl kickstart -k "gui/$(id -u)/test-label" >/dev/null
+    if ! "$TEST_REPO/scripts/verify-live.sh"; then
+      error_line recovery_unconfirmed 'runtime recovery is unconfirmed'
+    fi
+    clear_active
+    return 0
+  fi
+  launchctl bootout "gui/$(id -u)/test-label" >/dev/null
+  rm -f -- "$target"
+  clear_active
+  printf '%s\n' 'removed the failed first installation'
+}
+
+guide_active() {
+  printf '%s\n' 'error=state_conflict message=event conflicts with release state' >&2
+  identity >&2
+  case "$(cat "$active/state")" in
+    pending)
+      printf 'accept=make release-accept RELEASE_ID=%s\n' "$(cat "$active/id")" >&2
+      printf 'rollback=make release-rollback RELEASE_ID=%s\n' "$(cat "$active/id")" >&2
+      ;;
+    accepting)
+      printf 'resume=make release-accept RELEASE_ID=%s\n' "$(cat "$active/id")" >&2
+      ;;
+    rolling_back)
+      printf 'resume=make release-rollback RELEASE_ID=%s\n' "$(cat "$active/id")" >&2
+      ;;
+  esac
+  exit 1
+}
+
+if [[ "${1:-status}" == release ]]; then
+  if [[ ! -d "$active" ]]; then
+    "$0" prepare "${@:2}" >/dev/null
+    exec "$active/authority" resume
+  fi
+  case "$(cat "$active/state")" in
+    prepared)
+      exec "$active/authority" resume
+      ;;
+    pending|accepting|rolling_back)
+      guide_active
+      ;;
+  esac
+fi
+
+case "${1:-status}" in
+  prepare)
+    mkdir -p -- "$state_root"
+    [[ ! -e "$active" ]] || error_line state_conflict 'a release transaction is already active'
+    mkdir -p -- "$active"
+    candidate="$(argument --candidate "$@")"
+    authority="$(argument --authority "$@")"
+    target="$(argument --target "$@")"
+    install -m 755 "$candidate" "$active/candidate"
+    install -m 755 "$authority" "$active/authority"
+    if [[ -f "$target" ]]; then install -m 755 "$target" "$active/previous"; fi
+    printf '%s' release-0001 >"$active/id"
+    printf '%s' "$target" >"$active/target"
+    printf '%s' prepared >"$active/state"
+    ;;
+  resume)
+    [[ -d "$active" ]] || error_line no_pending 'no release transaction is pending'
+    [[ "$(cat "$active/state")" == prepared ]] || error_line state_conflict 'release cannot be resumed from its current state'
+    if [[ "${STOP_AFTER_PREPARE:-0}" == 1 ]]; then error_line test_stop 'prepared test stop'; fi
+    target="$(cat "$active/target")"
+    next="$target.next.release-0001"
+    install -m 755 "$active/candidate" "$next"
+    if [[ "${CORRUPT_STAGE:-0}" == 1 ]]; then printf '#!/bin/sh\n# corrupt-stage\n' >"$next"; chmod 755 "$next"; fi
+    if [[ "$(shasum -a 256 "$next" | awk '{print $1}')" != "$(shasum -a 256 "$active/candidate" | awk '{print $1}')" ]]; then
+      rm -f -- "$next"
+      recover >/dev/null || true
+      error_line artifact_mismatch 'staged binary does not match the prepared candidate'
+    fi
+    mv -f -- "$next" "$target"
+    launchctl kickstart -k "gui/$(id -u)/test-label" >/dev/null
+    if ! "$TEST_REPO/scripts/verify-live.sh"; then
+      recover >/dev/null
+      error_line deployment_failed 'candidate readiness failed; previous runtime restored'
+    fi
+    printf '%s' pending >"$active/state"
+    identity
+    printf 'accept=make release-accept RELEASE_ID=%s\n' "$(cat "$active/id")"
+    printf 'rollback=make release-rollback RELEASE_ID=%s\n' "$(cat "$active/id")"
+    ;;
+  status)
+    if [[ ! -d "$active" ]]; then printf '%s\n' state=clear; exit 0; fi
+    identity
+    case "$(cat "$active/state")" in
+      prepared) printf '%s\n' 'resume=make release'; printf 'rollback=make release-rollback RELEASE_ID=%s\n' "$(cat "$active/id")" ;;
+      pending) printf 'accept=make release-accept RELEASE_ID=%s\n' "$(cat "$active/id")"; printf 'rollback=make release-rollback RELEASE_ID=%s\n' "$(cat "$active/id")" ;;
+      rolling_back) printf 'resume=make release-rollback RELEASE_ID=%s\n' "$(cat "$active/id")" ;;
+    esac
+    ;;
+  accept)
+    id="$(argument --release-id "$@")"
+    [[ -d "$active" && "$id" == "$(cat "$active/id")" ]] || error_line identity_mismatch 'release identity does not match'
+    [[ "$(cat "$active/state")" == pending ]] || error_line state_conflict 'release is not pending acceptance'
+    clear_active
+    printf '%s\n' state=clear
+    ;;
+  rollback)
+    id="$(argument --release-id "$@")"
+    [[ -d "$active" && "$id" == "$(cat "$active/id")" ]] || error_line identity_mismatch 'release identity does not match'
+    recover
+    printf '%s\n' state=clear
+    ;;
+  update-after-fetch)
+    [[ ! -d "$active" ]] || error_line state_conflict 'a release transaction is active'
+    repo="$(argument --repo "$@")"
+    expected="$(argument --expected-head "$@")"
+    remote="$(argument --expected-remote-oid "$@")"
+    [[ "$(git -C "$repo" branch --show-current)" == main ]] || error_line state_conflict 'source update failed'
+    [[ -z "$(git -C "$repo" status --porcelain --untracked-files=all)" ]] || error_line state_conflict 'source update failed'
+    [[ "$(git -C "$repo" rev-parse HEAD)" == "$expected" ]] || error_line state_conflict 'source update failed'
+    git -C "$repo" cat-file -e "$remote^{commit}" >/dev/null || error_line state_conflict 'source update failed'
+    git -C "$repo" merge --ff-only "$remote" >/dev/null || error_line state_conflict 'source update failed'
+    [[ "$(git -C "$repo" rev-parse HEAD)" == "$remote" ]] || error_line state_conflict 'source update failed'
+    printf '%s\n' 'state=clear action=update-after-fetch'
+    ;;
+  *) error_line usage 'unsupported fake controller command' ;;
+esac
+`
 
 func boolString(value bool) string {
 	if value {
@@ -608,6 +1364,11 @@ func newScriptRepo(t *testing.T, names ...string) string {
 		}
 		writeExecutable(t, filepath.Join(repo, "scripts", name), string(data))
 	}
+	configHelper, err := os.ReadFile(filepath.Join(sourceDir, "internal", "release-config.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(repo, "scripts", "internal", "release-config.sh"), string(configHelper))
 	return repo
 }
 
@@ -623,6 +1384,26 @@ func writeExecutable(t *testing.T, path, content string) {
 
 func testEnv(binDir string) []string {
 	return append(os.Environ(), "PATH="+binDir+":"+os.Getenv("PATH"))
+}
+
+func envWithOverrides(base []string, overrides ...string) []string {
+	result := append([]string(nil), base...)
+	for _, override := range overrides {
+		key, _, ok := strings.Cut(override, "=")
+		if !ok {
+			result = append(result, override)
+			continue
+		}
+		prefix := key + "="
+		filtered := result[:0]
+		for _, value := range result {
+			if !strings.HasPrefix(value, prefix) {
+				filtered = append(filtered, value)
+			}
+		}
+		result = append(filtered, override)
+	}
+	return result
 }
 
 func assertFileContains(t *testing.T, path, want string) {

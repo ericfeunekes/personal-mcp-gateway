@@ -21,6 +21,7 @@ Proof must match the claim. This repo handles personal data, so green unit tests
 | Read-only guarantee | Integration test with before/after fixture-vault snapshot | Any Obsidian tool change |
 | Search and listing limits | Large fixture tests with timeout, depth, byte, result, and cancellation assertions | Any traversal or search change |
 | Structured telemetry | SQLite and JSONL proof matrix covering event families, sanitized identifiers, sink degradation, and no raw path leaks | Any audit or tool-call behavior change |
+| Local release transaction lifecycle | Executable state/event matrix plus process tests for locking, crash-boundary reconciliation, exact-hash accept/rollback, first-install unload, recovery-artifact retention, and installed-service pending-to-terminal journeys | Any change to release, update, rollback, acceptance, or supervised-runtime activation behavior |
 | Obsidian server tool names in ChatGPT | Live smoke test through OpenAI Secure MCP Tunnel | Before treating connector compatibility as settled |
 | Minimal machine impact | Local process observation for idle CPU, memory, file descriptors, startup behavior, and no whole-vault startup scan | Before always-on usage |
 
@@ -42,7 +43,9 @@ build cache, keep the build cache repo-local:
 GOCACHE=$(pwd)/.gocache go test -count=1 ./...
 ```
 
-The current suite includes:
+The canonical suite includes the existing gateway proof below. The pending
+release implementation must add the stated lifecycle coverage before it is
+treated as accepted:
 
 - config validation and loopback bind rejection tests;
 - root-confined filesystem adapter tests for traversal, absolute paths, hidden entries, symlink traversal, limits, cancellation, and read-only behavior;
@@ -53,7 +56,14 @@ The current suite includes:
   execution, exact candidate installation, secret-safe output, rollback after
   failed readiness, retained recovery artifacts when rollback is unconfirmed,
   source/candidate mutation rejection, candidate/install path separation, and
-  main-only exact-remote updates;
+  main-only exact-remote updates. Pending-release changes require the full
+  state/event matrix, fail-fast contention, lock-held update races,
+  interrupted-transition fixtures, exact installed/artifact hashes, stale-ID
+  rejection, pinned-controller selection, first-install unload, and retained
+  recovery evidence. Dispatcher/process cases separately assert stdout, stderr,
+  and exit status; cover dangling `active`, child-start failure, clear-to-active
+  and authority-A-to-B races, one retry only, output above 64 KiB, exact active
+  guidance, and suppression of hostile gate/child diagnostics;
 - a loopback boundary test proving live verification checks both tunnel
   `/healthz` and `/readyz` after confirming the LaunchAgent is loaded from this
   checkout's tunnel wrapper;
@@ -108,9 +118,49 @@ Use live OpenAI tunnel/ChatGPT verification only for behavior that cannot be pro
 For a local deployment change, `make release` is the canonical source-to-runtime
 proof. It includes the full suite, an MCP stdio `resolve(.)` probe against the
 exact candidate, byte-for-byte installed binary verification, LaunchAgent
-restart, and bounded tunnel liveness/readiness checks. This does not by itself
-prove that ChatGPT or another remote model selected and completed a tool call;
-that remains a separate live-surface proof.
+restart, and bounded tunnel liveness/readiness checks. Passing those local gates
+must leave the transaction `pending` and rollback-capable; it does not prove that
+ChatGPT or another remote model selected and completed a tool call.
+
+The release proof contract is split into three current-state cells:
+
+1. Run the canonical merge proof, including the executable lifecycle matrix and
+   process/crash/concurrency coverage:
+
+   ```bash
+   GOCACHE=$(pwd)/.gocache go test -count=1 ./internal/releaseactivation ./cmd/release-activation ./scripts
+   GOCACHE=$(pwd)/.gocache go test -race -count=1 ./internal/releaseactivation ./cmd/release-activation ./scripts
+   make test
+   git diff --check
+   ```
+
+2. On an isolated synthetic LaunchAgent and then the installed service, prove a
+   release reaches `pending`, rejects missing/stale/wrong IDs without changing
+   state, and exact rollback restores the previous hash and ready runtime. For a
+   first installation, prove the job is unloaded before the candidate target is
+   removed while its plist/configuration remains available for a later install.
+   The isolated macOS drill is opt-in and uses a randomized label plus temporary
+   target/store paths:
+
+   ```bash
+   make build-release-controller
+   RUN_LIVE_RELEASE_FIRST_INSTALL=1 GOCACHE=$(pwd)/.gocache \
+     go test -count=1 ./internal/releaseactivation \
+     -run '^TestLiveFirstInstallLaunchAgent(Rollback|Helper)$'
+   ```
+3. In the authenticated OpenAI surface, refresh metadata for server `obsidian`,
+   observe exactly the current read-only `ls` and `resolve` tools, and have the
+   model select and complete one bounded shallow root `ls` call. Only then run
+   exact-ID acceptance and prove the candidate hash remains installed, ready,
+   and the transaction returns to `clear`. Later tool phases replace this
+   prerequisite journey with their own newly activated representative calls.
+
+Record sanitized release identity and hash prefixes, the authenticated surface,
+metadata observation, selected tool/journey, and terminal outcome. Do not record
+prompts, note names or content, vault paths, credentials, raw environment data,
+or private manifest fields. The installed drills establish a representative
+activation transaction, not power-loss durability, sleep/wake recovery,
+multi-day soak behavior, every prompt formulation, or future-vault performance.
 
 ## Codex Temp-Profile Proof
 

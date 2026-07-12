@@ -5,9 +5,17 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
 env_file="${MCP_GATEWAY_ENV_FILE:-$repo_root/.env.local}"
 
-if [[ -f "$env_file" ]]; then
-  # shellcheck disable=SC1090
-  source "$env_file"
+fail() {
+  printf 'personal-mcp-gateway verification: %s\n' "$1" >&2
+  exit 1
+}
+
+# shellcheck source=internal/release-config.sh
+if ! source "$script_dir/internal/release-config.sh" >/dev/null 2>&1; then
+  fail "local environment configuration is invalid."
+fi
+if [[ -f "$env_file" ]] && ! load_release_config "$env_file"; then
+  fail "local environment configuration is invalid."
 fi
 
 # Health verification never needs runtime credentials. Keep them out of curl,
@@ -19,11 +27,6 @@ health_url_file="${TUNNEL_HEALTH_URL_FILE:-${TMPDIR:-/tmp}/personal-mcp-gateway/
 timeout_seconds="${RELEASE_READY_TIMEOUT_SECONDS:-45}"
 poll_seconds="${RELEASE_READY_POLL_SECONDS:-1}"
 uid="$(id -u)"
-
-fail() {
-  printf 'personal-mcp-gateway verification: %s\n' "$1" >&2
-  exit 1
-}
 
 if ! [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
   fail "RELEASE_READY_TIMEOUT_SECONDS must be a positive integer."

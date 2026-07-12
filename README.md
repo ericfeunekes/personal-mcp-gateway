@@ -12,14 +12,21 @@ Initial target integrations:
 
 Run personal MCP tools locally, keep the origin private, and publish access to ChatGPT only through OpenAI's outbound Secure MCP Tunnel. The gateway should make personal data useful to external AI tools without creating a broad public API or a generic filesystem proxy.
 
-The first implementation target is an MCP server named `obsidian` with filesystem-like, read-only tools over the local vault:
+The target is an MCP server named `obsidian` with read-only agent tools over the local vault:
 
 - `ls`
-- `read`
-- `grep`
-- `search`
-- `stat`
 - `resolve`
+- `read`
+- `read_many`
+- `grep`
+- `links`
+- `traverse`
+- `backlinks`
+- `path_between`
+
+`grep` is the universal content-discovery entry point. Graph operations are
+explicit, bounded expansions over authored references; they do not perform
+semantic search or hidden vault-wide traversal.
 
 Tool calls should be stateless. They may accept path-like arguments and an explicit `base`, but server-side current-directory state should not be required for correctness.
 
@@ -59,11 +66,29 @@ make update
 `make update` requires a clean `main`, fetches `origin`, fast-forwards to
 `origin/main`, requires an exact commit match, and then runs the complete local
 release. Use `make release`
-when the desired clean commit is already checked out. A release runs the full
-test suite, builds an ignored candidate, calls `resolve(.)` against that exact
-candidate over MCP stdio, installs it atomically at `GATEWAY_BIN`, restarts the
-LaunchAgent, and waits for tunnel liveness and readiness. If the restarted
-service fails verification, the prior executable is restored and restarted.
+when the desired clean commit is already checked out. The agent-facing release
+surface is:
+
+```bash
+make release
+make release-status
+make release-accept RELEASE_ID=<full-id>
+make release-rollback RELEASE_ID=<full-id>
+```
+
+`make release` runs the local test, exact-candidate MCP, installation, restart,
+and readiness gates, then leaves the exact candidate `pending` with its previous
+runtime still recoverable. Refresh connector metadata and complete the required
+model-selected journey, then accept that full release ID; use exact rollback if
+the external proof fails. `make release-status` is a bounded diagnostic and
+recovery aid, not an extra step on the successful fast path. Local readiness is
+never treated as model proof.
+
+Release/update and repo-owned restart/install/uninstall commands share one
+fail-fast lifecycle lock. `make update` may fetch without it, but revalidates a
+clear release slot, clean `main`, and the fetched ref while holding the lock
+before fast-forwarding. An interrupted `prepared` release is resumed by rerunning
+`make release` with the same immutable candidate rather than rebuilding it.
 
 See `docs/runbooks/local-release.md` for setup, target details, and proof
 boundaries.
@@ -113,6 +138,6 @@ surface-parity proof gate.
 
 - `docs/ARCHITECTURE.md` records the gateway shape and domain boundaries.
 - `docs/obsidian.md` owns the Obsidian MCP server contract.
-- `docs/requirements/obsidian-filesystem-tools.md` defines the first requirements slice.
+- `docs/requirements/obsidian-filesystem-tools.md` defines the target agent tool surface and its performance gates.
 - `docs/TESTING.md` defines proof expectations for reliability, robustness, and minimal machine impact.
 - `docs/runbooks/local-release.md` defines the landed-code-to-local-runtime release and update flow.
