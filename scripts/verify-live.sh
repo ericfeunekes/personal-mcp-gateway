@@ -23,7 +23,7 @@ fi
 unset CONTROL_PLANE_API_KEY OPENAI_API_KEY
 
 label="${LAUNCHD_LABEL:-com.ericfeunekes.personal-mcp-gateway.obsidian-tunnel}"
-health_url_file="${TUNNEL_HEALTH_URL_FILE:-${TMPDIR:-/tmp}/personal-mcp-gateway/tunnel-health.url}"
+health_url_file="${TUNNEL_HEALTH_URL_FILE:-/tmp/personal-mcp-gateway/tunnel-health.url}"
 timeout_seconds="${RELEASE_READY_TIMEOUT_SECONDS:-45}"
 poll_seconds="${RELEASE_READY_POLL_SECONDS:-1}"
 uid="$(id -u)"

@@ -125,7 +125,7 @@ current_commit="$(git -C "$repo_root" rev-parse --verify HEAD 2>/dev/null)" || f
 if [[ "$current_commit" != "$commit" ]]; then
   fail release_changed 'release inputs changed during validation'
 fi
-health_url_file="${TUNNEL_HEALTH_URL_FILE:-${TMPDIR:-/tmp}/personal-mcp-gateway/tunnel-health.url}"
+health_url_file="${TUNNEL_HEALTH_URL_FILE:-/tmp/personal-mcp-gateway/tunnel-health.url}"
 ready_timeout="${RELEASE_READY_TIMEOUT_SECONDS:-45}"
 ready_poll="${RELEASE_READY_POLL_SECONDS:-1}"
 if ! [[ "$ready_timeout" =~ ^[1-9][0-9]*$ ]]; then

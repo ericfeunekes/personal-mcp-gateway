@@ -336,6 +336,22 @@ func TestLocalReleaseInstallsExactCandidate(t *testing.T) {
 	}
 }
 
+func TestLocalReleasePinsDefaultHealthMarkerOutsideCallerTMPDIR(t *testing.T) {
+	harness := newLocalReleaseHarness(t, releaseOptions{previous: true})
+	callerTMP := filepath.Join(harness.repo, "caller-tmp")
+	if err := os.MkdirAll(callerTMP, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, exit := harness.runChannels(
+		"TUNNEL_HEALTH_URL_FILE=",
+		"TMPDIR="+callerTMP,
+	)
+	if exit != 0 || stderr != "" || !strings.HasPrefix(stdout, "state=pending id=release-0001") {
+		t.Fatalf("release exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+	assertFileContains(t, harness.logFile, "health:/tmp/personal-mcp-gateway/tunnel-health.url\n")
+}
+
 func TestLocalReleaseSuppressesHostileGateOutput(t *testing.T) {
 	harness := newLocalReleaseHarness(t, releaseOptions{previous: true, failTests: true})
 	stdout, stderr, exit := harness.runChannels()
@@ -1262,13 +1278,14 @@ if [[ "${1:-status}" == release ]]; then
 fi
 
 case "${1:-status}" in
-  prepare)
+	prepare)
     mkdir -p -- "$state_root"
     [[ ! -e "$active" ]] || error_line state_conflict 'a release transaction is already active'
     mkdir -p -- "$active"
     candidate="$(argument --candidate "$@")"
     authority="$(argument --authority "$@")"
-    target="$(argument --target "$@")"
+	    target="$(argument --target "$@")"
+	    printf 'health:%s\n' "$(argument --health-url-file "$@")" >>"$CALL_LOG"
     install -m 755 "$candidate" "$active/candidate"
     install -m 755 "$authority" "$active/authority"
     if [[ -f "$target" ]]; then install -m 755 "$target" "$active/previous"; fi

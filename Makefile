@@ -57,10 +57,10 @@ update:
 restart:
 	@if ! $(MAKE) --no-print-directory build-release-controller >/dev/null 2>&1; then echo 'error=release_build_failed message=release build failed' >&2; exit 1; fi
 	@if ! source "$(CURDIR)/scripts/internal/release-config.sh" >/dev/null 2>&1; then echo 'error=release_config message=release configuration is invalid' >&2; exit 1; fi; \
-	health_url_file="$${TMPDIR:-/tmp}/personal-mcp-gateway/tunnel-health.url"; \
+	health_url_file="/tmp/personal-mcp-gateway/tunnel-health.url"; \
 	if [[ -f "$(CURDIR)/.env.local" ]]; then \
 	  if ! load_release_config "$(CURDIR)/.env.local"; then echo 'error=release_config message=release configuration is invalid' >&2; exit 1; fi; \
-	  health_url_file="$${TUNNEL_HEALTH_URL_FILE:-$${TMPDIR:-/tmp}/personal-mcp-gateway/tunnel-health.url}"; \
+	  health_url_file="$${TUNNEL_HEALTH_URL_FILE:-/tmp/personal-mcp-gateway/tunnel-health.url}"; \
 	fi; \
 	./scripts/release-activation.sh restart --repo-root "$(CURDIR)" --label "$(LAUNCHD_LABEL)" --health-url-file "$$health_url_file"
 
