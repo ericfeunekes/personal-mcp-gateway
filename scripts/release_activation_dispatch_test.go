@@ -6,8 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestReleaseActivationDispatcherClearStatus(t *testing.T) {
@@ -174,6 +177,73 @@ func TestReleaseActivationDispatcherRejectsOversizedOutput(t *testing.T) {
 	}
 }
 
+func TestReleaseActivationDispatcherDoesNotLimitControllerArtifactWrites(t *testing.T) {
+	repo, binDir, home := newDispatcherRepo(t)
+	authority := filepath.Join(home, "Library", "Application Support", "personal-mcp-gateway", "release", "obsidian", "active", "authority")
+	artifact := filepath.Join(repo, "candidate-artifact")
+	writeExecutable(t, authority, "#!/bin/sh\nhead -c 70000 /dev/zero >\"$ARTIFACT_PATH\"\nprintf '%s\\n' 'state=prepared release_id=test-release'\n")
+	stdout, stderr, exit := runDispatcherEnv(t, repo, binDir, []string{"ARTIFACT_PATH=" + artifact}, "status")
+	if exit != 0 || stdout != "state=prepared release_id=test-release\n" || stderr != "" {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+	info, err := os.Stat(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 70000 {
+		t.Fatalf("artifact size = %d, want 70000", info.Size())
+	}
+}
+
+func TestReleaseActivationDispatcherDoesNotHangOnDescendantHeldChannels(t *testing.T) {
+	repo, binDir, home := newDispatcherRepo(t)
+	authority := filepath.Join(home, "Library", "Application Support", "personal-mcp-gateway", "release", "obsidian", "active", "authority")
+	descendantPID := filepath.Join(repo, "descendant.pid")
+	writeExecutable(t, authority, "#!/bin/sh\nsleep 30 &\nprintf '%s' \"$!\" >\"$DESCENDANT_PID\"\nprintf '%s\\n' 'state=prepared release_id=test-release'\n")
+
+	started := time.Now()
+	stdout, stderr, exit := runDispatcherEnv(t, repo, binDir, []string{"DESCENDANT_PID=" + descendantPID}, "status")
+	elapsed := time.Since(started)
+	pIDBytes, err := os.ReadFile(descendantPID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pID, err := strconv.Atoi(string(pIDBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exit != 1 || stdout != "" || stderr != "error=authority_missing message=the release controller is unavailable\n" {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("dispatcher waited %s for descendant-held output channels", elapsed)
+	}
+	process, err := os.FindProcess(pID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Signal(syscall.Signal(0)); err == nil {
+		t.Fatalf("dispatcher left controller descendant %d running", pID)
+	}
+}
+
+func TestReleaseActivationDispatcherWatchdogBoundsNonTerminatingController(t *testing.T) {
+	repo, binDir, home := newDispatcherRepo(t)
+	rewriteDispatcherControllerTimeout(t, repo, "1")
+	authority := filepath.Join(home, "Library", "Application Support", "personal-mcp-gateway", "release", "obsidian", "active", "authority")
+	writeExecutable(t, authority, "#!/bin/sh\nwhile :; do printf 'unbounded-output'; done\n")
+
+	started := time.Now()
+	stdout, stderr, exit := runDispatcher(t, repo, binDir, "status")
+	elapsed := time.Since(started)
+	if exit != 1 || stdout != "" || stderr != "error=authority_missing message=the release controller is unavailable\n" {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("dispatcher watchdog took %s", elapsed)
+	}
+}
+
 func TestReleaseActivationDispatcherRetriesAuthorityMismatchOnlyOnce(t *testing.T) {
 	repo, binDir, home := newDispatcherRepo(t)
 	logFile := filepath.Join(repo, "attempts")
@@ -250,6 +320,21 @@ func rewriteDispatcherPasswdTools(t *testing.T, repo, trustedID, trustedDSCL str
 	text = strings.ReplaceAll(text, "/usr/bin/dscl", trustedDSCL)
 	if text == string(data) {
 		t.Fatal("dispatcher fixture did not contain trusted passwd-tool literals")
+	}
+	writeExecutable(t, path, text)
+}
+
+func rewriteDispatcherControllerTimeout(t *testing.T, repo, seconds string) {
+	t.Helper()
+	path := filepath.Join(repo, "scripts", "release-activation.sh")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const productionTimeout = "readonly controller_timeout_seconds=720"
+	text := strings.Replace(string(data), productionTimeout, "readonly controller_timeout_seconds="+seconds, 1)
+	if text == string(data) {
+		t.Fatal("dispatcher fixture did not contain controller timeout literal")
 	}
 	writeExecutable(t, path, text)
 }
