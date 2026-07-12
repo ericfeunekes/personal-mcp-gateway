@@ -194,7 +194,3 @@ ChatGPT connector, `launchd`, or always-on suitability.
   telemetry have been harvested. ChatGPT-web-specific `resolve` telemetry has
   not. Local SDK subprocess and HTTP tests continue to prove the broader
   server-side matrix only.
-- `GAP-GW-007`: The pending-release implementation is not accepted until its
-  lifecycle/process proof, installed pending-to-rollback drill, and authenticated
-  metadata/model pending-to-accept journey are current-state green. Readiness
-  evidence alone does not close this gap.

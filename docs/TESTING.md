@@ -162,6 +162,20 @@ or private manifest fields. The installed drills establish a representative
 activation transaction, not power-loss durability, sleep/wake recovery,
 multi-day soak behavior, every prompt formulation, or future-vault performance.
 
+### Current release-activation proof
+
+On 2026-07-12, commit `82e036e8a778` completed the full normal/race merge proof
+and the real randomized first-install LaunchAgent rollback drill. The installed
+rollback journey reached pending release prefix `879533cf5e89`, rejected missing
+and wrong IDs without changing that transaction, restored previous hash prefix
+`4c2ca327428f`, returned to `clear`, and was ready. A separate installed journey
+reached pending release prefix `0c58c7303cdf` with candidate hash prefix
+`8f06b65b2bf7`; authenticated metadata exposed exactly direct server tools `ls`
+and `resolve`, and model-selected `ls(path=".", limit=1)` succeeded with a bounded
+one-entry truncated response. Exact-ID acceptance returned to `clear`; the
+installed hash still matched `8f06b65b2bf7` and the service was live and ready.
+No note names or content were retained in this proof record.
+
 ## Codex Temp-Profile Proof
 
 For local Codex smoke tests, use a temp `CODEX_HOME` and `codex mcp add` so no

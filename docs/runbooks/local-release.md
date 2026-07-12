@@ -205,3 +205,7 @@ Run the isolated first-install check with the opt-in command in
 `docs/TESTING.md`. It creates only a randomized temporary LaunchAgent, target,
 and release store; success requires real `launchctl print` absence, target
 removal, and a clear transaction after rollback.
+
+The current accepted proof record is maintained in `docs/TESTING.md`. Repeat
+all three proof cells after changing lifecycle policy, dispatcher capture,
+installed-target replacement, supervision bindings, or advertised MCP tools.
