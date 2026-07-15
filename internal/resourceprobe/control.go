@@ -27,10 +27,12 @@ const maxCommandBytes = 32
 // never constructed during normal runtime and exposes no MCP, CLI, or network
 // surface.
 type Controller struct {
-	command  *os.File
-	ack      *os.File
-	activity *fsx.ActivityCounter
-	close    sync.Once
+	command      *os.File
+	ack          *os.File
+	activity     *fsx.ActivityCounter
+	runtimeGC    func()
+	readMemStats func(*runtime.MemStats)
+	close        sync.Once
 }
 
 // FromEnvironment returns nil when the private marker is absent and fails
@@ -108,7 +110,17 @@ func requirePipe(fd int) error {
 // New is the deterministic package-test constructor. Production uses
 // FromEnvironment so the controller cannot exist without inherited pipes.
 func New(command, ack *os.File, activity *fsx.ActivityCounter) *Controller {
-	return &Controller{command: command, ack: ack, activity: activity}
+	return newController(command, ack, activity, runtime.GC, runtime.ReadMemStats)
+}
+
+func newController(command, ack *os.File, activity *fsx.ActivityCounter, runtimeGC func(), readMemStats func(*runtime.MemStats)) *Controller {
+	return &Controller{
+		command:      command,
+		ack:          ack,
+		activity:     activity,
+		runtimeGC:    runtimeGC,
+		readMemStats: readMemStats,
+	}
 }
 
 func (c *Controller) Activity() *fsx.ActivityCounter {
@@ -118,10 +130,11 @@ func (c *Controller) Activity() *fsx.ActivityCounter {
 	return c.activity
 }
 
-// Run serves exact gc and snapshot commands. runtime.GC is blocking; its ack is
-// therefore causal evidence that the requested collection completed.
+// Run serves exact gc and snapshot commands. The gc acknowledgement includes
+// only aggregate runtime memory values read after blocking runtime.GC returns,
+// so one validated reply is causal evidence for both operations.
 func (c *Controller) Run(ctx context.Context) error {
-	if c == nil || c.command == nil || c.ack == nil || c.activity == nil {
+	if c == nil || c.command == nil || c.ack == nil || c.activity == nil || c.runtimeGC == nil || c.readMemStats == nil {
 		return errors.New("resource probe is not configured")
 	}
 	closed := make(chan struct{})
@@ -149,8 +162,16 @@ func (c *Controller) Run(ctx context.Context) error {
 		line := string(lineBytes)
 		switch line {
 		case "gc\n":
-			runtime.GC()
-			if _, err := io.WriteString(c.ack, "gc ok\n"); err != nil {
+			c.runtimeGC()
+			var memory runtime.MemStats
+			c.readMemStats(&memory)
+			if _, err := fmt.Fprintf(c.ack, "gc %d %d %d %d %d\n",
+				memory.HeapAlloc,
+				memory.HeapInuse,
+				memory.HeapObjects,
+				memory.HeapReleased,
+				memory.HeapSys,
+			); err != nil {
 				return errors.New("resource probe acknowledgement failed")
 			}
 		case "snapshot\n":

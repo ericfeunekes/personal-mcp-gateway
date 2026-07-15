@@ -300,15 +300,19 @@ func TestProbeCandidateResourcesUsesFreshProcessesAndEmitsOnlySanitizedAggregate
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !report.Passed || report.DescriptorCount != 2 || report.Cold.FreshProcessCount != 2 ||
-		len(report.Batches) != resourceBatchCount || !report.HighWaterWithinBound ||
-		!report.AllBatchFDsRecovered || !report.BatchEndsDoNotGrow ||
+	if !report.Passed || report.SchemaVersion != resourceReportVersion || report.DescriptorCount != 2 || report.Cold.FreshProcessCount != 2 ||
+		len(report.Batches) != resourceBatchCount || report.Baseline.MeasuredCallCount != 0 ||
+		!report.Baseline.GCAcknowledged || !report.Baseline.FDRecoveredAtEverySample ||
+		report.Baseline.Memory.HeapAllocBytes == 0 || report.Baseline.Memory.HeapSysBytes == 0 ||
+		report.GCAcknowledgementCount != resourceBatchCount+1 || !report.HighWaterWithinBound ||
+		!report.HeapAllocGrowthWithinBound || !report.RSSAfter30SecondsGrowthWithinBound || !report.AllFDsRecovered ||
 		!report.Idle.CPUWithinBound || !report.Idle.FDsRecovered || !report.Idle.NoExtraToolCalls ||
 		!report.Idle.NoVaultActivity || !report.Idle.DescriptorsUnchanged || report.Idle.DescriptorCountAfter != 2 {
 		t.Fatalf("resource report = %#v", report)
 	}
 	for _, batch := range report.Batches {
-		if batch.CallCount != resourceBatchCalls || !batch.GCAcknowledged {
+		if batch.CallCount != resourceBatchCalls || !batch.GCAcknowledged || !batch.FDRecoveredAtEverySample ||
+			batch.Memory.HeapAllocBytes == 0 || batch.Memory.HeapSysBytes == 0 {
 			t.Fatalf("batch did not satisfy the fixed call and GC contract: %#v", batch)
 		}
 	}
@@ -441,8 +445,10 @@ func TestSystemResourceSamplerAgainstBuiltCandidate(t *testing.T) {
 	if err != nil && err.Error() != "candidate resource gate failed" {
 		t.Fatalf("%v: %#v", err, report)
 	}
-	if report.Cold.FreshProcessCount != 2 || report.DescriptorCount != 2 || !report.HighWaterWithinBound ||
-		!report.AllBatchFDsRecovered || !report.Idle.CPUWithinBound || !report.Idle.FDsRecovered ||
+	if report.Cold.FreshProcessCount != 2 || report.DescriptorCount != 2 || report.Baseline.MeasuredCallCount != 0 ||
+		report.GCAcknowledgementCount != resourceBatchCount+1 || !report.HighWaterWithinBound ||
+		!report.HeapAllocGrowthWithinBound || !report.RSSAfter30SecondsGrowthWithinBound || !report.AllFDsRecovered ||
+		!report.Idle.CPUWithinBound || !report.Idle.FDsRecovered ||
 		!report.Idle.NoExtraToolCalls || !report.Idle.NoVaultActivity || !report.Idle.DescriptorsUnchanged {
 		t.Fatalf("resource report = %#v", report)
 	}
@@ -485,6 +491,65 @@ func TestEnvironmentWithOverridePreservesGODEBUGAndReplacesOnlyPrivateMarker(t *
 	}
 }
 
+func TestResourceControlParsesOnlyCanonicalBoundedGCMemoryAcknowledgements(t *testing.T) {
+	valid := "gc 1 2 3 4 5\n"
+	memory, err := requestGCReply(t, valid)
+	if err != nil || memory != (resourceMemorySnapshot{heapAlloc: 1, heapInuse: 2, heapObjects: 3, heapReleased: 4, heapSys: 5}) {
+		t.Fatalf("valid acknowledgement = %#v, %v", memory, err)
+	}
+	maximum := "18446744073709551615"
+	if _, err := requestGCReply(t, "gc "+maximum+" "+maximum+" "+maximum+" "+maximum+" "+maximum+"\n"); err != nil {
+		t.Fatalf("maximum bounded acknowledgement was rejected: %v", err)
+	}
+	for _, reply := range []string{
+		"gc 1 2 3 4\n",
+		"gc 1 2 3 4 5 6\n",
+		"gc -1 2 3 4 5\n",
+		"gc +1 2 3 4 5\n",
+		"gc 01 2 3 4 5\n",
+		"gc 18446744073709551616 2 3 4 5\n",
+		"gc\t1 2 3 4 5\n",
+		"gc  1 2 3 4 5\n",
+		"snapshot 1 2 3 4 5\n",
+		"gc 1 2 3 4 5",
+		"gc " + strings.Repeat("9", resourceAckMaxBytes) + "\n",
+	} {
+		name := reply
+		if len(name) > 12 {
+			name = name[:12]
+		}
+		t.Run(strings.ReplaceAll(name, "\n", "newline"), func(t *testing.T) {
+			if _, err := requestGCReply(t, reply); err == nil {
+				t.Fatalf("malformed acknowledgement was accepted: %q", reply)
+			}
+		})
+	}
+}
+
+func requestGCReply(t *testing.T, reply string) (resourceMemorySnapshot, error) {
+	t.Helper()
+	commandRead, commandWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ackRead, ackWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer commandRead.Close()
+	defer commandWrite.Close()
+	defer ackRead.Close()
+	control := &resourceControl{command: commandWrite, ack: ackRead, reader: bufio.NewReaderSize(ackRead, resourceAckMaxBytes)}
+	go func() {
+		_, _ = bufio.NewReader(commandRead).ReadString('\n')
+		_, _ = io.WriteString(ackWrite, reply)
+		_ = ackWrite.Close()
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	return control.gc(ctx, time.Second)
+}
+
 func TestDefaultResourceProbeContractIsFrozen(t *testing.T) {
 	got := defaultResourceProbeOptions()
 	want := resourceProbeOptions{
@@ -494,32 +559,39 @@ func TestDefaultResourceProbeContractIsFrozen(t *testing.T) {
 		IdleDuration:  60 * time.Second,
 		ControlTime:   5 * time.Second,
 	}
-	if !reflect.DeepEqual(got, want) || resourceBatchCount != 3 || resourceBatchCalls != 100 {
-		t.Fatalf("resource probe defaults = %#v, batches=%d, calls=%d", got, resourceBatchCount, resourceBatchCalls)
+	if !reflect.DeepEqual(got, want) || resourceReportVersion != 2 || resourceBatchCount != 3 || resourceBatchCalls != 100 ||
+		resourceHeapAllocGrowthLimitBytes != uint64(256*1024) || resourceRSSGrowthLimitBytes != int64(8*1024*1024) ||
+		resourceRSSLimitBytes != int64(64*1024*1024) {
+		t.Fatalf("resource probe defaults = %#v, version=%d batches=%d calls=%d heap=%d rss=%d hwm=%d", got, resourceReportVersion, resourceBatchCount, resourceBatchCalls, resourceHeapAllocGrowthLimitBytes, resourceRSSGrowthLimitBytes, resourceRSSLimitBytes)
 	}
 }
 
-func TestBatchEndsDoNotGrowTruthTable(t *testing.T) {
+func TestAlignedB0GrowthTruthTable(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		rss  [3]int64
-		want bool
+		name     string
+		heap     [3]uint64
+		rss      [3]int64
+		wantHeap uint64
+		wantRSS  int64
 	}{
-		{name: "flat", rss: [3]int64{1, 1, 1}, want: true},
-		{name: "plateau then rise", rss: [3]int64{1, 1, 2}, want: false},
-		{name: "rise then plateau", rss: [3]int64{1, 2, 2}, want: false},
-		{name: "strict rise", rss: [3]int64{1, 2, 3}, want: false},
-		{name: "decline", rss: [3]int64{3, 2, 1}, want: true},
-		{name: "rise then decline", rss: [3]int64{1, 3, 2}, want: true},
-		{name: "decline then recover", rss: [3]int64{2, 1, 2}, want: true},
+		{name: "flat", heap: [3]uint64{100, 100, 100}, rss: [3]int64{100, 100, 100}},
+		{name: "decline", heap: [3]uint64{99, 98, 97}, rss: [3]int64{99, 98, 97}},
+		{name: "b1 maximum", heap: [3]uint64{120, 110, 105}, rss: [3]int64{120, 110, 105}, wantHeap: 20, wantRSS: 20},
+		{name: "b2 maximum and b3 recovery", heap: [3]uint64{110, 130, 105}, rss: [3]int64{110, 130, 105}, wantHeap: 30, wantRSS: 30},
+		{name: "b3 maximum", heap: [3]uint64{110, 120, 140}, rss: [3]int64{110, 120, 140}, wantHeap: 40, wantRSS: 40},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			batches := make([]resourceBatchReport, 3)
+			baseline := resourceBaselineReport{Memory: resourceMemoryReport{HeapAllocBytes: 100}, RSSAfter30SecondsBytes: 100}
+			batches := make([]resourceBatchReport, resourceBatchCount)
 			for index := range batches {
+				batches[index].Memory.HeapAllocBytes = test.heap[index]
 				batches[index].RSSAfter30SecondsBytes = test.rss[index]
 			}
-			if got := batchEndsDoNotGrow(batches); got != test.want {
-				t.Fatalf("batchEndsDoNotGrow(%v) = %v, want %v", test.rss, got, test.want)
+			if got := maxHeapAllocGrowth(baseline, batches); got != test.wantHeap {
+				t.Fatalf("maxHeapAllocGrowth(%v) = %d, want %d", test.heap, got, test.wantHeap)
+			}
+			if got := maxRSSAfter30SecondsGrowth(baseline, batches); got != test.wantRSS {
+				t.Fatalf("maxRSSAfter30SecondsGrowth(%v) = %d, want %d", test.rss, got, test.wantRSS)
 			}
 		})
 	}
@@ -628,7 +700,7 @@ func TestWaitedHighWaterPreservesTransientRSSBreachAfterGC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if highWaterWithinBound(usage.highWaterRSSBytes, baseline.rssBytes) {
+	if highWaterWithinBound(usage.highWaterRSSBytes, baseline.rssBytes, released.rssBytes) {
 		t.Fatalf("waited high-water delta = %d, want > %d; peak=%d released=%d", nonnegativeDelta(usage.highWaterRSSBytes, baseline.rssBytes), resourceRSSLimitBytes, peak.rssBytes, released.rssBytes)
 	}
 	if usage.highWaterRSSBytes < peak.rssBytes {
@@ -671,26 +743,235 @@ func runTransientRSSHelper(t *testing.T) {
 	wait()
 }
 
+func TestResourceGateRejectsRealRetainedGoHeap(t *testing.T) {
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+
+	allocation := make([]byte, 2*1024*1024)
+	for offset := 0; offset < len(allocation); offset += 4096 {
+		allocation[offset] = 1
+	}
+	allocation[len(allocation)-1] = 1
+	runtime.GC()
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	if after.HeapAlloc <= before.HeapAlloc || after.HeapAlloc-before.HeapAlloc <= uint64(256*1024) {
+		t.Fatalf("real retained HeapAlloc delta = %d, want > literal 256 KiB", nonnegativeUint64Delta(after.HeapAlloc, before.HeapAlloc))
+	}
+
+	report := passingResourceGateReport()
+	report.Baseline.Memory = memoryReportFromRuntime(before)
+	report.Batches[0].Memory = memoryReportFromRuntime(after)
+	report.Batches[1].Memory = memoryReportFromRuntime(before)
+	report.Batches[2].Memory = memoryReportFromRuntime(before)
+	report = deriveResourceReport(report)
+	if report.HeapAllocGrowthWithinBound || !report.RSSAfter30SecondsGrowthWithinBound || !report.HighWaterWithinBound || resourceReportPasses(report, 10) {
+		t.Fatalf("real retained Go heap did not isolate the heap gate: %#v", report)
+	}
+	runtime.KeepAlive(allocation)
+}
+
+func TestResourceGateRejectsRealRetainedMmapRSS(t *testing.T) {
+	if runRetainedMmapHelperIfRequested(t) {
+		return
+	}
+	if runtime.GOOS != "darwin" {
+		t.Skip("process RSS and ru_maxrss byte semantics are verified on the supported macOS release host")
+	}
+	baseline, retained, usage := observeRetainedMmap(t, "TestResourceGateRejectsRealRetainedMmapRSS", "rss")
+	delta := nonnegativeDelta(retained.rssBytes, baseline.rssBytes)
+	if delta <= int64(8*1024*1024) || delta >= int64(64*1024*1024) {
+		t.Fatalf("real retained mmap RSS delta = %d, want > 8 MiB and < 64 MiB", delta)
+	}
+	report := passingResourceGateReport()
+	setResourceReportRSS(&report, baseline.rssBytes)
+	report.Batches[1].RSSAfter30SecondsBytes = retained.rssBytes
+	report.HighWaterRSSBytes = usage.highWaterRSSBytes
+	report = deriveResourceReport(report)
+	if !report.HeapAllocGrowthWithinBound || report.RSSAfter30SecondsGrowthWithinBound || !report.HighWaterWithinBound || resourceReportPasses(report, 10) {
+		t.Fatalf("real retained mmap did not isolate the RSS gate: %#v", report)
+	}
+}
+
+func TestWaitedHighWaterRejectsRealRetainedRSSBreach(t *testing.T) {
+	if runRetainedMmapHelperIfRequested(t) {
+		return
+	}
+	if runtime.GOOS != "darwin" {
+		t.Skip("process RSS and ru_maxrss byte semantics are verified on the supported macOS release host")
+	}
+	baseline, retained, usage := observeRetainedMmap(t, "TestWaitedHighWaterRejectsRealRetainedRSSBreach", "hwm")
+	if nonnegativeDelta(retained.rssBytes, baseline.rssBytes) <= int64(64*1024*1024) {
+		t.Fatalf("real retained RSS delta = %d, want > 64 MiB", nonnegativeDelta(retained.rssBytes, baseline.rssBytes))
+	}
+	if highWaterWithinBound(usage.highWaterRSSBytes, baseline.rssBytes, retained.rssBytes) {
+		t.Fatalf("retained high-water delta = %d was accepted", nonnegativeDelta(usage.highWaterRSSBytes, baseline.rssBytes))
+	}
+	if usage.highWaterRSSBytes < retained.rssBytes {
+		t.Fatalf("waited high water = %d, below retained RSS = %d", usage.highWaterRSSBytes, retained.rssBytes)
+	}
+}
+
+func runRetainedMmapHelperIfRequested(t *testing.T) bool {
+	mode := os.Getenv("PERSONAL_MCP_GATEWAY_RETAINED_MMAP_HELPER")
+	if mode == "" {
+		return false
+	}
+	size := 24 * 1024 * 1024
+	if mode == "hwm" {
+		size = 96 * 1024 * 1024
+	} else if mode != "rss" {
+		t.Fatal("invalid retained mmap helper mode")
+	}
+	runRetainedMmapHelper(t, size)
+	return true
+}
+
+func runRetainedMmapHelper(t *testing.T, size int) {
+	announce := func(value string) {
+		t.Helper()
+		if _, err := io.WriteString(os.Stdout, value+"\n"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wait := func() {
+		t.Helper()
+		var signal [1]byte
+		if _, err := io.ReadFull(os.Stdin, signal[:]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	announce("ready")
+	wait()
+	allocation, err := unix.Mmap(-1, 0, size, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_ANON|unix.MAP_PRIVATE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for offset := 0; offset < len(allocation); offset += 4096 {
+		allocation[offset] = 1
+	}
+	allocation[len(allocation)-1] = 1
+	announce("allocated")
+	wait()
+	runtime.KeepAlive(allocation)
+	if err := unix.Munmap(allocation); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func observeRetainedMmap(t *testing.T, testName, mode string) (processResourceSample, processResourceSample, waitedProcessUsage) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+testName+"$")
+	cmd.Env = append(os.Environ(), "PERSONAL_MCP_GATEWAY_RETAINED_MMAP_HELPER="+mode)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(stdout)
+	waitFor := func(want string) {
+		t.Helper()
+		line, err := reader.ReadString('\n')
+		if err != nil || line != want+"\n" {
+			t.Fatalf("helper acknowledgement = %q, %v; stderr=%q", line, err, stderr.String())
+		}
+	}
+	advance := func() {
+		t.Helper()
+		if _, err := io.WriteString(stdin, "x"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor("ready")
+	sampler := systemResourceSampler{}
+	baseline, err := sampler.Sample(ctx, cmd.Process.Pid, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	advance()
+	waitFor("allocated")
+	retained, err := sampler.Sample(ctx, cmd.Process.Pid, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	advance()
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("helper failed: %v; stderr=%q", err, stderr.String())
+	}
+	usage, err := waitedUsageFromProcessState(cmd.ProcessState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return baseline, retained, usage
+}
+
+func memoryReportFromRuntime(memory runtime.MemStats) resourceMemoryReport {
+	return resourceMemoryReport{
+		HeapAllocBytes:    memory.HeapAlloc,
+		HeapInuseBytes:    memory.HeapInuse,
+		HeapObjects:       memory.HeapObjects,
+		HeapReleasedBytes: memory.HeapReleased,
+		HeapSysBytes:      memory.HeapSys,
+	}
+}
+
+func setResourceReportRSS(report *resourceReport, rss int64) {
+	report.Baseline.RSSImmediateBytes = rss
+	report.Baseline.RSSAfter5SecondsBytes = rss
+	report.Baseline.RSSAfter30SecondsBytes = rss
+	for index := range report.Batches {
+		report.Batches[index].RSSImmediateBytes = rss
+		report.Batches[index].RSSAfter5SecondsBytes = rss
+		report.Batches[index].RSSAfter30SecondsBytes = rss
+	}
+	report.Idle.RSSBeforeBytes = rss
+	report.Idle.RSSAfterBytes = rss
+}
+
+func nonnegativeUint64Delta(after, before uint64) uint64 {
+	if after <= before {
+		return 0
+	}
+	return after - before
+}
+
 func TestHighWaterWithinBoundIncludesExactLimit(t *testing.T) {
 	baseline := int64(10 * 1024 * 1024)
 	if resourceRSSLimitBytes != int64(64*1024*1024) {
 		t.Fatalf("RSS limit = %d, want literal 64 MiB", resourceRSSLimitBytes)
 	}
-	if !highWaterWithinBound(baseline+resourceRSSLimitBytes, baseline) {
+	if !highWaterWithinBound(baseline+resourceRSSLimitBytes, baseline, baseline, baseline+resourceRSSLimitBytes) {
 		t.Fatal("exact 64 MiB delta was rejected")
 	}
-	if highWaterWithinBound(baseline+resourceRSSLimitBytes+1, baseline) {
+	if highWaterWithinBound(baseline+resourceRSSLimitBytes+1, baseline, baseline) {
 		t.Fatal("delta above 64 MiB was accepted")
 	}
-	if highWaterWithinBound(baseline-1, baseline) {
+	if highWaterWithinBound(baseline-1, baseline, baseline) {
 		t.Fatal("lifetime high water below the current baseline was accepted")
+	}
+	if highWaterWithinBound(baseline+1, baseline, baseline+2) {
+		t.Fatal("lifetime high water below a current RSS sample was accepted")
 	}
 }
 
 func TestHighWaterGateConservativelyIncludesPreBaselineLifetimeSpike(t *testing.T) {
 	baseline := int64(32 * 1024 * 1024)
 	preBaselineLifetimeHighWater := baseline + resourceRSSLimitBytes + 1
-	if highWaterWithinBound(preBaselineLifetimeHighWater, baseline) {
+	if highWaterWithinBound(preBaselineLifetimeHighWater, baseline, baseline) {
 		t.Fatal("pre-baseline lifetime spike false-passed the conservative gate")
 	}
 }
@@ -728,14 +1009,31 @@ func TestResourceReportPassesRejectsEachGateFailure(t *testing.T) {
 		name   string
 		mutate func(*resourceReport)
 	}{
+		{name: "schema", mutate: func(r *resourceReport) { r.SchemaVersion-- }},
 		{name: "cold count", mutate: func(r *resourceReport) { r.Cold.FreshProcessCount = 9 }},
 		{name: "descriptor count", mutate: func(r *resourceReport) { r.DescriptorCount = 3 }},
-		{name: "high water", mutate: func(r *resourceReport) { r.HighWaterWithinBound = false }},
-		{name: "batch fd aggregate", mutate: func(r *resourceReport) { r.AllBatchFDsRecovered = false }},
-		{name: "monotonic growth", mutate: func(r *resourceReport) { r.BatchEndsDoNotGrow = false }},
+		{name: "baseline call count", mutate: func(r *resourceReport) { r.Baseline.MeasuredCallCount = 1 }},
+		{name: "baseline gc", mutate: func(r *resourceReport) { r.Baseline.GCAcknowledged = false }},
+		{name: "baseline fd raw", mutate: func(r *resourceReport) { r.Baseline.FDAfter5SecondsCount++ }},
+		{name: "high water cached", mutate: func(r *resourceReport) { r.HighWaterWithinBound = false }},
+		{name: "high water raw", mutate: func(r *resourceReport) {
+			r.HighWaterRSSBytes = r.Baseline.RSSAfter30SecondsBytes + resourceRSSLimitBytes + 1
+		}},
+		{name: "heap cached", mutate: func(r *resourceReport) { r.HeapAllocGrowthWithinBound = false }},
+		{name: "heap raw b2", mutate: func(r *resourceReport) {
+			r.Batches[1].Memory.HeapAllocBytes = r.Baseline.Memory.HeapAllocBytes + resourceHeapAllocGrowthLimitBytes + 1
+		}},
+		{name: "rss cached", mutate: func(r *resourceReport) { r.RSSAfter30SecondsGrowthWithinBound = false }},
+		{name: "rss raw b2", mutate: func(r *resourceReport) {
+			r.Batches[1].RSSAfter30SecondsBytes = r.Baseline.RSSAfter30SecondsBytes + resourceRSSGrowthLimitBytes + 1
+		}},
+		{name: "negative current rss", mutate: func(r *resourceReport) { r.Batches[1].RSSImmediateBytes = -1 }},
+		{name: "fd aggregate", mutate: func(r *resourceReport) { r.AllFDsRecovered = false }},
+		{name: "gc aggregate", mutate: func(r *resourceReport) { r.GCAcknowledgementCount-- }},
 		{name: "batch call count", mutate: func(r *resourceReport) { r.Batches[1].CallCount = 99 }},
 		{name: "gc acknowledgement", mutate: func(r *resourceReport) { r.Batches[1].GCAcknowledged = false }},
-		{name: "batch fd sample", mutate: func(r *resourceReport) { r.Batches[1].FDRecoveredAtEverySample = false }},
+		{name: "batch fd cached", mutate: func(r *resourceReport) { r.Batches[1].FDRecoveredAtEverySample = false }},
+		{name: "batch fd raw", mutate: func(r *resourceReport) { r.Batches[1].FDAfter30SecondsCount++ }},
 		{name: "idle cpu", mutate: func(r *resourceReport) { r.Idle.CPUWithinBound = false }},
 		{name: "idle fds", mutate: func(r *resourceReport) { r.Idle.FDsRecovered = false }},
 		{name: "idle telemetry", mutate: func(r *resourceReport) { r.Idle.NoExtraToolCalls = false }},
@@ -753,25 +1051,102 @@ func TestResourceReportPassesRejectsEachGateFailure(t *testing.T) {
 	}
 }
 
+func TestAlignedB0LiteralLimitsAreIndependentAndInclusive(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*resourceReport, int64)
+		want   bool
+	}{
+		{name: "exact heap", mutate: func(r *resourceReport, _ int64) {
+			r.Batches[1].Memory.HeapAllocBytes = r.Baseline.Memory.HeapAllocBytes + uint64(256*1024)
+		}, want: true},
+		{name: "heap plus one", mutate: func(r *resourceReport, _ int64) {
+			r.Batches[1].Memory.HeapAllocBytes = r.Baseline.Memory.HeapAllocBytes + uint64(256*1024) + 1
+		}},
+		{name: "exact rss", mutate: func(r *resourceReport, baseline int64) {
+			r.Batches[1].RSSAfter30SecondsBytes = baseline + int64(8*1024*1024)
+			r.HighWaterRSSBytes = r.Batches[1].RSSAfter30SecondsBytes
+		}, want: true},
+		{name: "rss plus one", mutate: func(r *resourceReport, baseline int64) {
+			r.Batches[1].RSSAfter30SecondsBytes = baseline + int64(8*1024*1024) + 1
+			r.HighWaterRSSBytes = r.Batches[1].RSSAfter30SecondsBytes
+		}},
+		{name: "exact high water", mutate: func(r *resourceReport, baseline int64) { r.HighWaterRSSBytes = baseline + int64(64*1024*1024) }, want: true},
+		{name: "high water plus one", mutate: func(r *resourceReport, baseline int64) { r.HighWaterRSSBytes = baseline + int64(64*1024*1024) + 1 }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			report := passingResourceGateReport()
+			report.Batches = append([]resourceBatchReport(nil), report.Batches...)
+			test.mutate(&report, report.Baseline.RSSAfter30SecondsBytes)
+			report = deriveResourceReport(report)
+			if got := resourceReportPasses(report, 10); got != test.want {
+				t.Fatalf("resourceReportPasses = %v, want %v; report=%#v", got, test.want, report)
+			}
+		})
+	}
+}
+
 func passingResourceGateReport() resourceReport {
-	return resourceReport{
-		DescriptorCount:      2,
-		Cold:                 coldResourceReport{FreshProcessCount: 10},
-		HighWaterWithinBound: true,
-		AllBatchFDsRecovered: true,
-		BatchEndsDoNotGrow:   true,
+	const baselineRSS = int64(16 * 1024 * 1024)
+	const baselineHeap = uint64(1024 * 1024)
+	report := resourceReport{
+		SchemaVersion:     resourceReportVersion,
+		DescriptorCount:   2,
+		Cold:              coldResourceReport{FreshProcessCount: 10},
+		HighWaterRSSBytes: baselineRSS + 4*1024*1024,
+		Baseline: resourceBaselineReport{
+			MeasuredCallCount: 0,
+			Memory: resourceMemoryReport{
+				HeapAllocBytes: baselineHeap,
+				HeapInuseBytes: 2 * 1024 * 1024,
+				HeapObjects:    100,
+				HeapSysBytes:   4 * 1024 * 1024,
+			},
+			RSSImmediateBytes:        baselineRSS,
+			RSSAfter5SecondsBytes:    baselineRSS,
+			RSSAfter30SecondsBytes:   baselineRSS,
+			FDImmediateCount:         7,
+			FDAfter5SecondsCount:     7,
+			FDAfter30SecondsCount:    7,
+			FDRecoveredAtEverySample: true,
+			GCAcknowledged:           true,
+		},
 		Batches: []resourceBatchReport{
-			{CallCount: 100, FDRecoveredAtEverySample: true, GCAcknowledged: true},
-			{CallCount: 100, FDRecoveredAtEverySample: true, GCAcknowledged: true},
-			{CallCount: 100, FDRecoveredAtEverySample: true, GCAcknowledged: true},
+			passingResourceBatch(baselineHeap, baselineRSS),
+			passingResourceBatch(baselineHeap, baselineRSS),
+			passingResourceBatch(baselineHeap, baselineRSS),
 		},
 		Idle: idleResourceReport{
+			RSSBeforeBytes:       baselineRSS,
+			RSSAfterBytes:        baselineRSS,
 			CPUWithinBound:       true,
 			FDsRecovered:         true,
 			NoExtraToolCalls:     true,
 			NoVaultActivity:      true,
 			DescriptorsUnchanged: true,
 		},
+	}
+	return deriveResourceReport(report)
+}
+
+func passingResourceBatch(heap uint64, rss int64) resourceBatchReport {
+	return resourceBatchReport{
+		CallCount: resourceBatchCalls,
+		Memory: resourceMemoryReport{
+			HeapAllocBytes: heap,
+			HeapInuseBytes: 2 * 1024 * 1024,
+			HeapObjects:    100,
+			HeapSysBytes:   4 * 1024 * 1024,
+		},
+		RSSImmediateBytes:        rss,
+		RSSAfter5SecondsBytes:    rss,
+		RSSAfter30SecondsBytes:   rss,
+		FDImmediateCount:         7,
+		FDAfter5SecondsCount:     7,
+		FDAfter30SecondsCount:    7,
+		FDRecoveredAtEverySample: true,
+		GCAcknowledged:           true,
 	}
 }
 

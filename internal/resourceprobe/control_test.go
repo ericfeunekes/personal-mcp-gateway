@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -62,13 +65,115 @@ func TestControllerAcknowledgesCausalGCAndAggregateSnapshots(t *testing.T) {
 	if got := request("snapshot"); got != "snapshot 1 0\n" {
 		t.Fatalf("post-activity snapshot = %q", got)
 	}
-	if got := request("gc"); got != "gc ok\n" {
-		t.Fatalf("GC acknowledgement = %q", got)
+	gcAck := request("gc")
+	fields := strings.Fields(strings.TrimSuffix(gcAck, "\n"))
+	if len(fields) != 6 || fields[0] != "gc" {
+		t.Fatalf("GC acknowledgement = %q", gcAck)
+	}
+	canonical := "gc"
+	for _, field := range fields[1:] {
+		value, err := strconv.ParseUint(field, 10, 64)
+		if err != nil {
+			t.Fatalf("GC acknowledgement = %q", gcAck)
+		}
+		canonical += " " + strconv.FormatUint(value, 10)
+	}
+	if gcAck != canonical+"\n" {
+		t.Fatalf("GC acknowledgement = %q", gcAck)
 	}
 
 	cancel()
 	if err := <-runResult; err == nil {
 		t.Fatal("controller returned nil after cancellation")
+	}
+}
+
+func TestControllerGCAcknowledgementIsCausalForGCThenMemStats(t *testing.T) {
+	commandRead, commandWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ackRead, ackWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer commandWrite.Close()
+	defer ackRead.Close()
+
+	gcStarted := make(chan struct{})
+	allowGC := make(chan struct{})
+	readStarted := make(chan struct{})
+	allowRead := make(chan struct{})
+	controller := newController(
+		commandRead,
+		ackWrite,
+		&fsx.ActivityCounter{},
+		func() {
+			close(gcStarted)
+			<-allowGC
+		},
+		func(memory *runtime.MemStats) {
+			close(readStarted)
+			<-allowRead
+			memory.HeapAlloc = 11
+			memory.HeapInuse = 22
+			memory.HeapObjects = 33
+			memory.HeapReleased = 44
+			memory.HeapSys = 55
+		},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runResult := make(chan error, 1)
+	go func() { runResult <- controller.Run(ctx) }()
+	if _, err := commandWrite.WriteString("gc\n"); err != nil {
+		t.Fatal(err)
+	}
+	ackResult := make(chan string, 1)
+	go func() {
+		line, _ := bufio.NewReader(ackRead).ReadString('\n')
+		ackResult <- line
+	}()
+
+	requireNoAck := func(stage string) {
+		t.Helper()
+		select {
+		case line := <-ackResult:
+			t.Fatalf("acknowledgement before %s completed: %q", stage, line)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	waitForStage := func(stage string, ready <-chan struct{}) {
+		t.Helper()
+		select {
+		case <-ready:
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for %s", stage)
+		}
+	}
+	waitForStage("GC", gcStarted)
+	requireNoAck("GC")
+	close(allowGC)
+	waitForStage("MemStats read", readStarted)
+	requireNoAck("MemStats read")
+	close(allowRead)
+	select {
+	case got := <-ackResult:
+		if got != "gc 11 22 33 44 55\n" {
+			t.Fatalf("GC acknowledgement = %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for GC acknowledgement")
+	}
+
+	cancel()
+	select {
+	case err := <-runResult:
+		if err == nil {
+			t.Fatal("controller returned nil after cancellation")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for controller shutdown")
 	}
 }
 

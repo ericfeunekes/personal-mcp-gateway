@@ -23,31 +23,37 @@ import (
 )
 
 const (
-	resourceColdProcesses = 10
-	resourceBatchCount    = 3
-	resourceBatchCalls    = 100
-	resourceRSSLimitBytes = int64(64 * 1024 * 1024)
-	resourceStabilize5    = 5 * time.Second
-	resourceStabilize30   = 30 * time.Second
-	resourceIdleDuration  = 60 * time.Second
-	resourceControlTime   = 5 * time.Second
-	resourceAckMaxBytes   = 64
+	resourceReportVersion             = 2
+	resourceColdProcesses             = 10
+	resourceBatchCount                = 3
+	resourceBatchCalls                = 100
+	resourceHeapAllocGrowthLimitBytes = uint64(256 * 1024)
+	resourceRSSGrowthLimitBytes       = int64(8 * 1024 * 1024)
+	resourceRSSLimitBytes             = int64(64 * 1024 * 1024)
+	resourceStabilize5                = 5 * time.Second
+	resourceStabilize30               = 30 * time.Second
+	resourceIdleDuration              = 60 * time.Second
+	resourceControlTime               = 5 * time.Second
+	resourceAckMaxBytes               = 128
 )
 
 type resourceReport struct {
-	SchemaVersion          int                   `json:"schema_version"`
-	Passed                 bool                  `json:"passed"`
-	DescriptorCount        int                   `json:"descriptor_count"`
-	Cold                   coldResourceReport    `json:"cold"`
-	BaselineRSSBytes       int64                 `json:"baseline_rss_bytes"`
-	BaselineFDCount        int                   `json:"baseline_fd_count"`
-	HighWaterRSSBytes      int64                 `json:"high_water_rss_bytes"`
-	HighWaterRSSDeltaBytes int64                 `json:"high_water_rss_delta_bytes"`
-	HighWaterWithinBound   bool                  `json:"high_water_within_bound"`
-	BatchEndsDoNotGrow     bool                  `json:"batch_ends_do_not_grow_monotonically"`
-	AllBatchFDsRecovered   bool                  `json:"all_batch_fds_recovered"`
-	Batches                []resourceBatchReport `json:"batches"`
-	Idle                   idleResourceReport    `json:"idle"`
+	SchemaVersion                      int                    `json:"schema_version"`
+	Passed                             bool                   `json:"passed"`
+	DescriptorCount                    int                    `json:"descriptor_count"`
+	Cold                               coldResourceReport     `json:"cold"`
+	Baseline                           resourceBaselineReport `json:"baseline"`
+	HighWaterRSSBytes                  int64                  `json:"high_water_rss_bytes"`
+	HighWaterRSSDeltaBytes             int64                  `json:"high_water_rss_delta_bytes"`
+	HighWaterWithinBound               bool                   `json:"high_water_within_bound"`
+	MaxHeapAllocGrowthBytes            uint64                 `json:"max_heap_alloc_growth_bytes"`
+	HeapAllocGrowthWithinBound         bool                   `json:"heap_alloc_growth_within_bound"`
+	MaxRSSAfter30SecondsGrowthBytes    int64                  `json:"max_rss_after_30_seconds_growth_bytes"`
+	RSSAfter30SecondsGrowthWithinBound bool                   `json:"rss_after_30_seconds_growth_within_bound"`
+	GCAcknowledgementCount             int                    `json:"gc_acknowledgement_count"`
+	AllFDsRecovered                    bool                   `json:"all_fds_recovered"`
+	Batches                            []resourceBatchReport  `json:"batches"`
+	Idle                               idleResourceReport     `json:"idle"`
 }
 
 type coldResourceReport struct {
@@ -68,17 +74,46 @@ type coldResourceReport struct {
 	MaxFDCount                int    `json:"max_fd_count"`
 }
 
+type resourceMemoryReport struct {
+	HeapAllocBytes    uint64 `json:"heap_alloc_bytes"`
+	HeapInuseBytes    uint64 `json:"heap_inuse_bytes"`
+	HeapObjects       uint64 `json:"heap_objects"`
+	HeapReleasedBytes uint64 `json:"heap_released_bytes"`
+	HeapSysBytes      uint64 `json:"heap_sys_bytes"`
+}
+
+type resourceBaselineReport struct {
+	MeasuredCallCount        int                  `json:"measured_call_count"`
+	Memory                   resourceMemoryReport `json:"memory"`
+	RSSImmediateBytes        int64                `json:"rss_immediate_bytes"`
+	RSSAfter5SecondsBytes    int64                `json:"rss_after_5_seconds_bytes"`
+	RSSAfter30SecondsBytes   int64                `json:"rss_after_30_seconds_bytes"`
+	FDImmediateCount         int                  `json:"fd_immediate_count"`
+	FDAfter5SecondsCount     int                  `json:"fd_after_5_seconds_count"`
+	FDAfter30SecondsCount    int                  `json:"fd_after_30_seconds_count"`
+	FDRecoveredAtEverySample bool                 `json:"fd_recovered_at_every_sample"`
+	GCAcknowledged           bool                 `json:"gc_acknowledged"`
+}
+
 type resourceBatchReport struct {
-	CallCount                int   `json:"call_count"`
-	CPUTimeDeltaMicroseconds int64 `json:"cpu_time_delta_microseconds"`
-	RSSImmediateBytes        int64 `json:"rss_immediate_bytes"`
-	RSSAfter5SecondsBytes    int64 `json:"rss_after_5_seconds_bytes"`
-	RSSAfter30SecondsBytes   int64 `json:"rss_after_30_seconds_bytes"`
-	FDImmediateCount         int   `json:"fd_immediate_count"`
-	FDAfter5SecondsCount     int   `json:"fd_after_5_seconds_count"`
-	FDAfter30SecondsCount    int   `json:"fd_after_30_seconds_count"`
-	FDRecoveredAtEverySample bool  `json:"fd_recovered_at_every_sample"`
-	GCAcknowledged           bool  `json:"gc_acknowledged"`
+	CallCount                int                  `json:"call_count"`
+	CPUTimeDeltaMicroseconds int64                `json:"cpu_time_delta_microseconds"`
+	Memory                   resourceMemoryReport `json:"memory"`
+	RSSImmediateBytes        int64                `json:"rss_immediate_bytes"`
+	RSSAfter5SecondsBytes    int64                `json:"rss_after_5_seconds_bytes"`
+	RSSAfter30SecondsBytes   int64                `json:"rss_after_30_seconds_bytes"`
+	FDImmediateCount         int                  `json:"fd_immediate_count"`
+	FDAfter5SecondsCount     int                  `json:"fd_after_5_seconds_count"`
+	FDAfter30SecondsCount    int                  `json:"fd_after_30_seconds_count"`
+	FDRecoveredAtEverySample bool                 `json:"fd_recovered_at_every_sample"`
+	GCAcknowledged           bool                 `json:"gc_acknowledged"`
+}
+
+type postGCResourceObservation struct {
+	memory    resourceMemoryReport
+	immediate processResourceSample
+	after5    processResourceSample
+	after30   processResourceSample
 }
 
 type idleResourceReport struct {
@@ -130,6 +165,14 @@ type processResourceSample struct {
 type resourceActivitySnapshot struct {
 	total  uint64
 	active uint64
+}
+
+type resourceMemorySnapshot struct {
+	heapAlloc    uint64
+	heapInuse    uint64
+	heapObjects  uint64
+	heapReleased uint64
+	heapSys      uint64
 }
 
 type waitedProcessUsage struct {
@@ -272,12 +315,35 @@ func (c *resourceControl) request(ctx context.Context, command, expected string,
 	return line, nil
 }
 
-func (c *resourceControl) gc(ctx context.Context, timeout time.Duration) error {
+func (c *resourceControl) gc(ctx context.Context, timeout time.Duration) (resourceMemorySnapshot, error) {
 	line, err := c.request(ctx, "gc", "gc ", timeout)
-	if err != nil || line != "gc ok\n" {
-		return errors.New("candidate GC acknowledgement failed")
+	if err != nil {
+		return resourceMemorySnapshot{}, errors.New("candidate GC acknowledgement failed")
 	}
-	return nil
+	fields := strings.Fields(strings.TrimSuffix(line, "\n"))
+	if len(fields) != 6 || fields[0] != "gc" {
+		return resourceMemorySnapshot{}, errors.New("candidate GC acknowledgement failed")
+	}
+	values := make([]uint64, 5)
+	canonical := "gc"
+	for index := range values {
+		value, parseErr := strconv.ParseUint(fields[index+1], 10, 64)
+		if parseErr != nil {
+			return resourceMemorySnapshot{}, errors.New("candidate GC acknowledgement failed")
+		}
+		values[index] = value
+		canonical += " " + strconv.FormatUint(value, 10)
+	}
+	if line != canonical+"\n" {
+		return resourceMemorySnapshot{}, errors.New("candidate GC acknowledgement failed")
+	}
+	return resourceMemorySnapshot{
+		heapAlloc:    values[0],
+		heapInuse:    values[1],
+		heapObjects:  values[2],
+		heapReleased: values[3],
+		heapSys:      values[4],
+	}, nil
 }
 
 func (c *resourceControl) snapshot(ctx context.Context, timeout time.Duration) (resourceActivitySnapshot, error) {
@@ -447,30 +513,25 @@ func probeCandidateResources(ctx context.Context, gatewayBin, root string, optio
 		return resourceReport{}, err
 	}
 	pid := longLived.process.command.Process.Pid
-	baseline, err := sampler.Sample(ctx, pid, true)
+	baseline, err := observeResourceBaseline(ctx, pid, options, sampler, longLived.control)
 	if err != nil {
 		return resourceReport{}, err
 	}
 	report := resourceReport{
-		SchemaVersion:    smokeReportVersion,
-		DescriptorCount:  descriptorCount,
-		Cold:             cold,
-		BaselineRSSBytes: baseline.rssBytes,
-		BaselineFDCount:  baseline.fdCount,
-		Batches:          make([]resourceBatchReport, 0, resourceBatchCount),
+		SchemaVersion:   resourceReportVersion,
+		DescriptorCount: descriptorCount,
+		Cold:            cold,
+		Baseline:        baseline,
+		Batches:         make([]resourceBatchReport, 0, resourceBatchCount),
 	}
-	allFDRecovered := true
 	for batchIndex := 0; batchIndex < resourceBatchCount; batchIndex++ {
 		batch, batchErr := observeResourceBatch(ctx, pid, baseline, operations, options, sampler, longLived.control)
 		if batchErr != nil {
 			return resourceReport{}, batchErr
 		}
-		allFDRecovered = allFDRecovered && batch.FDRecoveredAtEverySample
 		report.Batches = append(report.Batches, batch)
 	}
-	report.AllBatchFDsRecovered = allFDRecovered
-	report.BatchEndsDoNotGrow = batchEndsDoNotGrow(report.Batches)
-	report.Idle, err = observeResourceIdle(ctx, longLived.process.session, pid, descriptorCount, baseline.fdCount, longLived.dbPath, options, sampler, longLived.control)
+	report.Idle, err = observeResourceIdle(ctx, longLived.process.session, pid, descriptorCount, baseline.FDImmediateCount, longLived.dbPath, options, sampler, longLived.control)
 	if err != nil {
 		return resourceReport{}, err
 	}
@@ -479,8 +540,7 @@ func probeCandidateResources(ctx context.Context, gatewayBin, root string, optio
 		return resourceReport{}, err
 	}
 	report.HighWaterRSSBytes = usage.highWaterRSSBytes
-	report.HighWaterRSSDeltaBytes = nonnegativeDelta(usage.highWaterRSSBytes, baseline.rssBytes)
-	report.HighWaterWithinBound = highWaterWithinBound(usage.highWaterRSSBytes, baseline.rssBytes)
+	report = deriveResourceReport(report)
 	report.Passed = resourceReportPasses(report, options.ColdProcesses)
 	if !report.Passed {
 		return report, errors.New("candidate resource gate failed")
@@ -488,11 +548,19 @@ func probeCandidateResources(ctx context.Context, gatewayBin, root string, optio
 	return report, nil
 }
 
-func highWaterWithinBound(highWater, baseline int64) bool {
+func highWaterWithinBound(highWater, baseline int64, current ...int64) bool {
 	// ru_maxrss is lifetime-wide while baseline is sampled later. Comparing the
 	// final lifetime high-water to that current baseline is intentionally
 	// conservative: a pre-baseline spike can fail but can never false-pass.
-	return baseline >= 0 && highWater >= baseline && highWater-baseline <= resourceRSSLimitBytes
+	if baseline < 0 || highWater < baseline || highWater-baseline > resourceRSSLimitBytes {
+		return false
+	}
+	for _, rss := range current {
+		if rss < 0 || highWater < rss {
+			return false
+		}
+	}
+	return true
 }
 
 func idleCPUWithinBound(cpuMicros int64, duration time.Duration) bool {
@@ -504,19 +572,103 @@ func noVaultActivity(before, after resourceActivitySnapshot) bool {
 }
 
 func resourceReportPasses(report resourceReport, expectedColdProcesses int) bool {
+	derived := deriveResourceReport(report)
+	if report.SchemaVersion != resourceReportVersion ||
+		report.HighWaterRSSDeltaBytes != derived.HighWaterRSSDeltaBytes ||
+		report.HighWaterWithinBound != derived.HighWaterWithinBound ||
+		report.MaxHeapAllocGrowthBytes != derived.MaxHeapAllocGrowthBytes ||
+		report.HeapAllocGrowthWithinBound != derived.HeapAllocGrowthWithinBound ||
+		report.MaxRSSAfter30SecondsGrowthBytes != derived.MaxRSSAfter30SecondsGrowthBytes ||
+		report.RSSAfter30SecondsGrowthWithinBound != derived.RSSAfter30SecondsGrowthWithinBound ||
+		report.GCAcknowledgementCount != derived.GCAcknowledgementCount ||
+		report.AllFDsRecovered != derived.AllFDsRecovered {
+		return false
+	}
 	if expectedColdProcesses <= 0 || report.Cold.FreshProcessCount != expectedColdProcesses ||
 		report.DescriptorCount != 2 || len(report.Batches) != resourceBatchCount ||
-		!report.HighWaterWithinBound || !report.AllBatchFDsRecovered || !report.BatchEndsDoNotGrow ||
+		report.Baseline.MeasuredCallCount != 0 || !report.Baseline.GCAcknowledged ||
+		!report.Baseline.FDRecoveredAtEverySample || report.GCAcknowledgementCount != resourceBatchCount+1 ||
+		!report.HighWaterWithinBound || !report.HeapAllocGrowthWithinBound ||
+		!report.RSSAfter30SecondsGrowthWithinBound || !report.AllFDsRecovered ||
 		!report.Idle.CPUWithinBound || !report.Idle.FDsRecovered || !report.Idle.NoExtraToolCalls ||
 		!report.Idle.NoVaultActivity || !report.Idle.DescriptorsUnchanged {
 		return false
 	}
 	for _, batch := range report.Batches {
-		if batch.CallCount != resourceBatchCalls || !batch.GCAcknowledged || !batch.FDRecoveredAtEverySample {
+		if batch.CallCount != resourceBatchCalls || !batch.GCAcknowledged ||
+			batch.FDRecoveredAtEverySample != batchFDsMatchBaseline(batch, report.Baseline.FDImmediateCount) ||
+			!batch.FDRecoveredAtEverySample {
 			return false
 		}
 	}
 	return true
+}
+
+func deriveResourceReport(report resourceReport) resourceReport {
+	report.HighWaterRSSDeltaBytes = nonnegativeDelta(report.HighWaterRSSBytes, report.Baseline.RSSAfter30SecondsBytes)
+	report.MaxHeapAllocGrowthBytes = maxHeapAllocGrowth(report.Baseline, report.Batches)
+	report.HeapAllocGrowthWithinBound = report.MaxHeapAllocGrowthBytes <= resourceHeapAllocGrowthLimitBytes
+	report.MaxRSSAfter30SecondsGrowthBytes = maxRSSAfter30SecondsGrowth(report.Baseline, report.Batches)
+	report.RSSAfter30SecondsGrowthWithinBound = report.MaxRSSAfter30SecondsGrowthBytes <= resourceRSSGrowthLimitBytes
+	report.GCAcknowledgementCount = 0
+	if report.Baseline.GCAcknowledged {
+		report.GCAcknowledgementCount++
+	}
+	baselineFDsRecovered := baselineFDsMatch(report.Baseline)
+	report.AllFDsRecovered = baselineFDsRecovered
+	for _, batch := range report.Batches {
+		if batch.GCAcknowledged {
+			report.GCAcknowledgementCount++
+		}
+		report.AllFDsRecovered = report.AllFDsRecovered && batchFDsMatchBaseline(batch, report.Baseline.FDImmediateCount)
+	}
+	report.HighWaterWithinBound = highWaterWithinBound(
+		report.HighWaterRSSBytes,
+		report.Baseline.RSSAfter30SecondsBytes,
+		resourceCurrentRSS(report)...,
+	)
+	return report
+}
+
+func maxHeapAllocGrowth(baseline resourceBaselineReport, batches []resourceBatchReport) uint64 {
+	var maximum uint64
+	for _, batch := range batches {
+		if batch.Memory.HeapAllocBytes > baseline.Memory.HeapAllocBytes {
+			maximum = maxUint64(maximum, batch.Memory.HeapAllocBytes-baseline.Memory.HeapAllocBytes)
+		}
+	}
+	return maximum
+}
+
+func maxRSSAfter30SecondsGrowth(baseline resourceBaselineReport, batches []resourceBatchReport) int64 {
+	var maximum int64
+	for _, batch := range batches {
+		maximum = maxInt64(maximum, nonnegativeDelta(batch.RSSAfter30SecondsBytes, baseline.RSSAfter30SecondsBytes))
+	}
+	return maximum
+}
+
+func baselineFDsMatch(baseline resourceBaselineReport) bool {
+	return baseline.FDImmediateCount > 0 && baseline.FDImmediateCount == baseline.FDAfter5SecondsCount &&
+		baseline.FDImmediateCount == baseline.FDAfter30SecondsCount
+}
+
+func batchFDsMatchBaseline(batch resourceBatchReport, baselineFD int) bool {
+	return baselineFD > 0 && batch.FDImmediateCount == baselineFD && batch.FDAfter5SecondsCount == baselineFD &&
+		batch.FDAfter30SecondsCount == baselineFD
+}
+
+func resourceCurrentRSS(report resourceReport) []int64 {
+	values := []int64{
+		report.Baseline.RSSImmediateBytes,
+		report.Baseline.RSSAfter5SecondsBytes,
+		report.Baseline.RSSAfter30SecondsBytes,
+	}
+	for _, batch := range report.Batches {
+		values = append(values, batch.RSSImmediateBytes, batch.RSSAfter5SecondsBytes, batch.RSSAfter30SecondsBytes)
+	}
+	values = append(values, report.Idle.RSSBeforeBytes, report.Idle.RSSAfterBytes)
+	return values
 }
 
 func discoverResourceRepresentative(ctx context.Context, gatewayBin, root string) (string, error) {
@@ -622,7 +774,26 @@ func resourceOperations(ctx context.Context, session *sdk.ClientSession, represe
 	return []performanceOperation{resolve, firstPage, continued, limit100}, nil
 }
 
-func observeResourceBatch(ctx context.Context, pid int, baseline processResourceSample, operations []performanceOperation, options resourceProbeOptions, sampler resourceSampler, control *resourceControl) (resourceBatchReport, error) {
+func observeResourceBaseline(ctx context.Context, pid int, options resourceProbeOptions, sampler resourceSampler, control *resourceControl) (resourceBaselineReport, error) {
+	observation, err := observePostGCResources(ctx, pid, options, sampler, control)
+	if err != nil {
+		return resourceBaselineReport{}, err
+	}
+	return resourceBaselineReport{
+		MeasuredCallCount:        0,
+		Memory:                   observation.memory,
+		RSSImmediateBytes:        observation.immediate.rssBytes,
+		RSSAfter5SecondsBytes:    observation.after5.rssBytes,
+		RSSAfter30SecondsBytes:   observation.after30.rssBytes,
+		FDImmediateCount:         observation.immediate.fdCount,
+		FDAfter5SecondsCount:     observation.after5.fdCount,
+		FDAfter30SecondsCount:    observation.after30.fdCount,
+		FDRecoveredAtEverySample: observation.immediate.fdCount > 0 && observation.immediate.fdCount == observation.after5.fdCount && observation.immediate.fdCount == observation.after30.fdCount,
+		GCAcknowledged:           true,
+	}, nil
+}
+
+func observeResourceBatch(ctx context.Context, pid int, baseline resourceBaselineReport, operations []performanceOperation, options resourceProbeOptions, sampler resourceSampler, control *resourceControl) (resourceBatchReport, error) {
 	started, err := sampler.Sample(ctx, pid, false)
 	if err != nil {
 		return resourceBatchReport{}, err
@@ -632,52 +803,61 @@ func observeResourceBatch(ctx context.Context, pid int, baseline processResource
 			return resourceBatchReport{}, err
 		}
 	}
-	if err := control.gc(ctx, options.ControlTime); err != nil {
-		return resourceBatchReport{}, err
-	}
-	immediate, err := sampler.Sample(ctx, pid, true)
+	observation, err := observePostGCResources(ctx, pid, options, sampler, control)
 	if err != nil {
 		return resourceBatchReport{}, err
 	}
-	if err := waitResource(ctx, options.Stabilize5); err != nil {
-		return resourceBatchReport{}, err
-	}
-	after5, err := sampler.Sample(ctx, pid, true)
-	if err != nil {
-		return resourceBatchReport{}, err
-	}
-	if err := waitResource(ctx, options.Stabilize30-options.Stabilize5); err != nil {
-		return resourceBatchReport{}, err
-	}
-	after30, err := sampler.Sample(ctx, pid, true)
-	if err != nil {
-		return resourceBatchReport{}, err
-	}
-	fdRecovered := immediate.fdCount == baseline.fdCount && after5.fdCount == baseline.fdCount && after30.fdCount == baseline.fdCount
+	fdRecovered := observation.immediate.fdCount == baseline.FDImmediateCount && observation.after5.fdCount == baseline.FDImmediateCount && observation.after30.fdCount == baseline.FDImmediateCount
 	return resourceBatchReport{
 		CallCount:                resourceBatchCalls,
-		CPUTimeDeltaMicroseconds: nonnegativeDelta(immediate.cpuMicros, started.cpuMicros),
-		RSSImmediateBytes:        immediate.rssBytes,
-		RSSAfter5SecondsBytes:    after5.rssBytes,
-		RSSAfter30SecondsBytes:   after30.rssBytes,
-		FDImmediateCount:         immediate.fdCount,
-		FDAfter5SecondsCount:     after5.fdCount,
-		FDAfter30SecondsCount:    after30.fdCount,
+		CPUTimeDeltaMicroseconds: nonnegativeDelta(observation.immediate.cpuMicros, started.cpuMicros),
+		Memory:                   observation.memory,
+		RSSImmediateBytes:        observation.immediate.rssBytes,
+		RSSAfter5SecondsBytes:    observation.after5.rssBytes,
+		RSSAfter30SecondsBytes:   observation.after30.rssBytes,
+		FDImmediateCount:         observation.immediate.fdCount,
+		FDAfter5SecondsCount:     observation.after5.fdCount,
+		FDAfter30SecondsCount:    observation.after30.fdCount,
 		FDRecoveredAtEverySample: fdRecovered,
 		GCAcknowledged:           true,
 	}, nil
 }
 
-func batchEndsDoNotGrow(batches []resourceBatchReport) bool {
-	if len(batches) != resourceBatchCount {
-		return false
+func observePostGCResources(ctx context.Context, pid int, options resourceProbeOptions, sampler resourceSampler, control *resourceControl) (postGCResourceObservation, error) {
+	memory, err := control.gc(ctx, options.ControlTime)
+	if err != nil {
+		return postGCResourceObservation{}, err
 	}
-	first := batches[0].RSSAfter30SecondsBytes
-	second := batches[1].RSSAfter30SecondsBytes
-	third := batches[2].RSSAfter30SecondsBytes
-	nonDecreasing := first <= second && second <= third
-	containsGrowth := first < second || second < third
-	return !(nonDecreasing && containsGrowth)
+	immediate, err := sampler.Sample(ctx, pid, true)
+	if err != nil {
+		return postGCResourceObservation{}, err
+	}
+	if err := waitResource(ctx, options.Stabilize5); err != nil {
+		return postGCResourceObservation{}, err
+	}
+	after5, err := sampler.Sample(ctx, pid, true)
+	if err != nil {
+		return postGCResourceObservation{}, err
+	}
+	if err := waitResource(ctx, options.Stabilize30-options.Stabilize5); err != nil {
+		return postGCResourceObservation{}, err
+	}
+	after30, err := sampler.Sample(ctx, pid, true)
+	if err != nil {
+		return postGCResourceObservation{}, err
+	}
+	return postGCResourceObservation{
+		memory: resourceMemoryReport{
+			HeapAllocBytes:    memory.heapAlloc,
+			HeapInuseBytes:    memory.heapInuse,
+			HeapObjects:       memory.heapObjects,
+			HeapReleasedBytes: memory.heapReleased,
+			HeapSysBytes:      memory.heapSys,
+		},
+		immediate: immediate,
+		after5:    after5,
+		after30:   after30,
+	}, nil
 }
 
 func observeResourceIdle(ctx context.Context, session *sdk.ClientSession, pid, descriptorCount, baselineFD int, dbPath string, options resourceProbeOptions, sampler resourceSampler, control *resourceControl) (idleResourceReport, error) {
@@ -775,6 +955,13 @@ func maxInt(a, b int) int {
 }
 
 func maxInt64(a, b int64) int64 {
+	if b > a {
+		return b
+	}
+	return a
+}
+
+func maxUint64(a, b uint64) uint64 {
 	if b > a {
 		return b
 	}
