@@ -18,7 +18,7 @@ const (
 	ToolLS      = "ls"
 
 	ResolveDescription = "Return the canonical stored vault path and metadata for one vault-relative path. Use the returned path in follow-on calls; missing paths return `exists:false`. This does not read file content."
-	LSDescription      = "List one directory level in deterministic canonical order. For a partial result, repeat the identical `path`, `base`, and `limit` with `coverage.next_cursor` until `coverage.continuation` is `complete`; if it is `restart`, begin again without a cursor. This lists metadata, not file content or recursive search."
+	LSDescription      = "Continue a partial listing only by passing `coverage.next_cursor` as `cursor` with the identical `path`, `base`, and `limit`. Never omit `cursor` or change `limit` to continue: omitting `cursor` restarts at the first entry and repeats results, while changing `limit` with the prior cursor returns `cursor_mismatch`. List one directory level in deterministic canonical order; follow cursors until `coverage.continuation` is `complete`, and restart without a cursor only when it is `restart`. This lists metadata, not file content or recursive search."
 )
 
 type Tools struct {
@@ -100,8 +100,8 @@ type ResolveOutput struct {
 type LSInput struct {
 	Path   string `json:"path" jsonschema:"vault-relative directory path to list"`
 	Base   string `json:"base,omitempty" jsonschema:"optional vault-relative base path"`
-	Limit  int    `json:"limit,omitempty" jsonschema:"maximum entries to return; defaults to 100 when omitted; valid values are 1 through 500"`
-	Cursor string `json:"cursor,omitempty" jsonschema:"opaque value returned by the previous ls; do not edit it and repeat the identical path, base, and limit"`
+	Limit  int    `json:"limit,omitempty" jsonschema:"page size; choose it on the first call and keep it identical for every cursor continuation; increasing it without a cursor restarts at the first entry; defaults to 100 when omitted; valid values are 1 through 500"`
+	Cursor string `json:"cursor,omitempty" jsonschema:"required to continue whenever the previous ls returned coverage.continuation cursor; pass coverage.next_cursor unchanged and repeat the identical path, base, and limit; omitting it restarts at the first entry"`
 }
 
 type LSOutput struct {

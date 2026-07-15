@@ -46,21 +46,44 @@ func TestPhase1DescriptorsTeachCanonicalContinuation(t *testing.T) {
 	if ls == nil || ls.Description != obsidian.LSDescription {
 		t.Fatalf("ls description = %#v", ls)
 	}
+	if !strings.HasPrefix(ls.Description, "Continue a partial listing only by passing `coverage.next_cursor` as `cursor`") ||
+		!strings.Contains(ls.Description, "Never omit `cursor` or change `limit` to continue") ||
+		!strings.Contains(ls.Description, "restarts at the first entry and repeats results") ||
+		!strings.Contains(ls.Description, "changing `limit` with the prior cursor returns `cursor_mismatch`") {
+		t.Fatalf("ls description does not front-load continuation recovery = %q", ls.Description)
+	}
 	input := schemaObject(t, ls.InputSchema)
 	limit := schemaProperty(t, input, "limit")
 	if limit["default"] != float64(100) {
 		t.Fatalf("limit schema = %#v", limit)
 	}
-	if description, _ := limit["description"].(string); !strings.Contains(description, "defaults to 100") || !strings.Contains(description, "1 through 500") {
+	if description, _ := limit["description"].(string); !strings.Contains(description, "keep it identical") ||
+		!strings.Contains(description, "restarts at the first entry") || !strings.Contains(description, "defaults to 100") ||
+		!strings.Contains(description, "1 through 500") {
 		t.Fatalf("limit schema description = %q", description)
 	}
 	cursor := schemaProperty(t, input, "cursor")
-	if description, _ := cursor["description"].(string); !strings.Contains(description, "opaque") || !strings.Contains(description, "identical") {
+	if description, _ := cursor["description"].(string); !strings.Contains(description, "required to continue") ||
+		!strings.Contains(description, "coverage.next_cursor unchanged") || !strings.Contains(description, "identical") ||
+		!strings.Contains(description, "restarts at the first entry") {
 		t.Fatalf("cursor schema description = %q", description)
 	}
 	output := schemaObject(t, ls.OutputSchema)
 	if _, ok := output["properties"].(map[string]any)["coverage"]; !ok {
 		t.Fatalf("ls output schema lacks coverage: %#v", output)
+	}
+	encodedOutput, err := json.Marshal(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, guidance := range []string{
+		"use next_cursor instead of widening limit",
+		"the next call must pass next_cursor as cursor with identical path, base, and limit",
+		"never widen limit to continue",
+	} {
+		if !strings.Contains(string(encodedOutput), guidance) {
+			t.Fatalf("ls output schema lacks %q guidance: %s", guidance, encodedOutput)
+		}
 	}
 }
 
