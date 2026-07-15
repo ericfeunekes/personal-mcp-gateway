@@ -30,6 +30,7 @@ type dependencies struct {
 	manager lifecycleManager
 	uid     int
 	home    string
+	gitWait time.Duration
 }
 
 type usageError struct{ message string }
@@ -163,7 +164,7 @@ func execute(ctx context.Context, args []string, deps dependencies) ([]string, e
 		updateCtx, cancel := context.WithTimeout(ctx, updateOverallTimeout)
 		defer cancel()
 		err = deps.manager.WithClear(updateCtx, func(ctx context.Context, _ releaseactivation.Runtime) error {
-			return updateAfterFetch(ctx, request)
+			return updateAfterFetch(ctx, request, deps.gitWait)
 		})
 		if err != nil {
 			return nil, err
@@ -336,26 +337,29 @@ func runAdmin(ctx context.Context, runtime releaseactivation.Runtime, request ad
 	}
 }
 
-func updateAfterFetch(ctx context.Context, request updateRequest) error {
-	branch, err := gitOutput(ctx, request.repo, "branch", "--show-current")
+func updateAfterFetch(ctx context.Context, request updateRequest, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = gitChildTimeout
+	}
+	branch, err := gitOutputWithTimeout(ctx, timeout, request.repo, "branch", "--show-current")
 	if err != nil || branch != "main" {
 		return errors.New("branch check failed")
 	}
-	status, err := gitOutput(ctx, request.repo, "status", "--porcelain", "--untracked-files=all")
+	status, err := gitOutputWithTimeout(ctx, timeout, request.repo, "status", "--porcelain", "--untracked-files=all")
 	if err != nil || status != "" {
 		return errors.New("tree check failed")
 	}
-	head, err := gitOutput(ctx, request.repo, "rev-parse", "HEAD")
+	head, err := gitOutputWithTimeout(ctx, timeout, request.repo, "rev-parse", "HEAD")
 	if err != nil || head != request.expectedHead {
 		return errors.New("head changed after fetch")
 	}
-	if _, err := gitOutput(ctx, request.repo, "cat-file", "-e", request.expectedRemoteOID+"^{commit}"); err != nil {
+	if _, err := gitOutputWithTimeout(ctx, timeout, request.repo, "cat-file", "-e", request.expectedRemoteOID+"^{commit}"); err != nil {
 		return errors.New("remote object check failed")
 	}
-	if _, err := gitOutput(ctx, request.repo, "merge", "--ff-only", request.expectedRemoteOID); err != nil {
+	if _, err := gitOutputWithTimeout(ctx, timeout, request.repo, "merge", "--ff-only", request.expectedRemoteOID); err != nil {
 		return errors.New("fast-forward failed")
 	}
-	finalHead, err := gitOutput(ctx, request.repo, "rev-parse", "HEAD")
+	finalHead, err := gitOutputWithTimeout(ctx, timeout, request.repo, "rev-parse", "HEAD")
 	if err != nil || finalHead != request.expectedRemoteOID {
 		return errors.New("updated head mismatch")
 	}
@@ -363,7 +367,11 @@ func updateAfterFetch(ctx context.Context, request updateRequest) error {
 }
 
 func gitOutput(ctx context.Context, repo string, args ...string) (string, error) {
-	childCtx, cancel := context.WithTimeout(ctx, gitChildTimeout)
+	return gitOutputWithTimeout(ctx, gitChildTimeout, repo, args...)
+}
+
+func gitOutputWithTimeout(ctx context.Context, timeout time.Duration, repo string, args ...string) (string, error) {
+	childCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	commandArgs := append([]string{"-C", repo}, args...)
 	command := exec.CommandContext(childCtx, "git", commandArgs...)

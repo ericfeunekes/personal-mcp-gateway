@@ -180,7 +180,15 @@ func runUpdateRaceHelper(args []string) error {
 		manager := &releaseactivation.Manager{Store: store, Runtime: updateRaceRuntime{}, ControllerPath: "test-update-controller"}
 		_, err = execute(context.Background(), []string{
 			"update-after-fetch", "--repo", args[3], "--expected-head", args[4], "--expected-remote-oid", args[5],
-		}, dependencies{manager: manager, uid: uid, home: filepath.Join(filepath.Dir(args[3]), "unused-home")})
+		}, dependencies{
+			manager: manager,
+			uid:     uid,
+			home:    filepath.Join(filepath.Dir(args[3]), "unused-home"),
+			// This helper proves process-lock ordering, not the production Git
+			// latency budget. All-package test contention can otherwise consume
+			// the five-second production child deadline before the FIFO barrier.
+			gitWait: 15 * time.Second,
+		})
 		if err != nil {
 			appendRaceLog(args[6], "update_error="+string(releaseactivation.SanitizedError(err).Code))
 			return err
