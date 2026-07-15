@@ -150,10 +150,11 @@ The release proof contract is split into three current-state cells:
    ```
 3. In the authenticated OpenAI surface, refresh metadata for server `obsidian`,
    observe exactly the current read-only `ls` and `resolve` tools, and have the
-   model select and complete one bounded shallow root `ls` call. Only then run
-   exact-ID acceptance and prove the candidate hash remains installed, ready,
-   and the transaction returns to `clear`. Later tool phases replace this
-   prerequisite journey with their own newly activated representative calls.
+   model select two one-item shallow root `ls` pages by passing the first
+   result's cursor on the second call with the same query. Only then run exact-ID
+   acceptance and prove the candidate hash remains installed, ready, and the
+   transaction returns to `clear`. Later tool phases replace this prerequisite
+   journey with their own newly activated representative calls.
 
 Record sanitized release identity and hash prefixes, the authenticated surface,
 metadata observation, selected tool/journey, and terminal outcome. Do not record
@@ -176,13 +177,30 @@ one-entry truncated response. Exact-ID acceptance returned to `clear`; the
 installed hash still matched `8f06b65b2bf7` and the service was live and ready.
 No note names or content were retained in this proof record.
 
-### Current `resolve` / `ls` Phase 1 local proof
+On 2026-07-15, commit `fa9e02983936` completed the Phase 1 activation on
+candidate hash prefix `232441cc6a34` and release prefix `35b0cfbd51a8`.
+Authenticated Refresh issued a post-install `tools/list`; a fresh management
+readback showed exactly `ls` and `resolve`, including the current `ls.cursor`
+schema and continuation guidance. A model-selected journey then made exactly
+two `ls(limit=1)` calls in one run. The first omitted `cursor`; the second
+supplied a 248-byte cursor with the same root path correlation, absent `base`,
+and unchanged limit. Both calls succeeded with one entry and cursor
+continuation, using 700- and 704-byte responses; the visible answer reported
+two inspected items and that more remained. No other tool call or error was
+recorded. Exact-ID acceptance returned the transaction to `clear`; the same
+hash remained installed, and the LaunchAgent and tunnel were live and ready.
+No prompt, note identity, cursor value/hash, vault path, or content is retained
+in this record.
 
-On 2026-07-15, the current worktree on base commit `9612507308a6` produced
-exact-candidate hash prefix `a63896c045df`. `make test` passed, as did focused
-normal and race suites for `internal/fsx`, `internal/tools/obsidian`,
-`internal/mcp`, `internal/audit`, `internal/app`, `cmd/gateway-smoke`, and the
-`TestLocalRelease*` process matrix.
+### Current accepted `resolve` / `ls` Phase 1 proof
+
+On 2026-07-15, accepted commit `fa9e02983936` and installed candidate hash
+prefix `232441cc6a34` passed `make test`, the exact-candidate release gates, the
+full documented normal/race release-lifecycle suites, and focused affected
+normal/race suites for `internal/fsx`, `internal/tools/obsidian`, `internal/mcp`,
+`internal/audit`, `internal/app`, and `cmd/gateway-smoke`. The same commit passed
+the opt-in randomized first-install LaunchAgent rollback drill after the
+advertised schema changed.
 
 The exact-candidate smoke observed exactly two tools, canonical stored-path
 resolution, three one-entry synthetic pages with second-page progress and no
@@ -192,20 +210,20 @@ used a `2_10` cardinality bucket and recorded:
 
 | Operation | p50 | p95 | max | max SDK bytes | max structured bytes | max entries scanned |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| cached `resolve` | 336 us | 635 us | 3,703 us | 213 | 101 | 0 |
-| first-page `ls(limit=1)` | 515 us | 808 us | 1,024 us | 896 | 784 | 2 |
-| continued `ls(limit=1)` | 527 us | 759 us | 3,686 us | 515 | 403 | 2 |
-| first-page `ls(limit=100)` | 535 us | 823 us | 48,405 us | 689 | 577 | 2 |
+| cached `resolve` | 603 us | 2,471 us | 4,867 us | 213 | 101 | 0 |
+| first-page `ls(limit=1)` | 762 us | 1,991 us | 3,899 us | 896 | 784 | 2 |
+| continued `ls(limit=1)` | 552 us | 1,998 us | 4,241 us | 515 | 403 | 2 |
+| first-page `ls(limit=100)` | 621 us | 2,103 us | 3,786 us | 689 | 577 | 2 |
 
 The same exact candidate passed a synthetic stratified gate with 20 measured
 samples per available operation after warm-up:
 
 | Entries | `limit=1` first / continued p95 | `limit=100` first / continued p95 | `limit=500` first / continued p95 | max entries scanned |
 | ---: | ---: | ---: | ---: | ---: |
-| 1 | 962 us / n/a | 797 us / n/a | 875 us / n/a | 1 |
-| 100 | 912 us / 1,162 us | 3,237 us / n/a | 2,990 us / n/a | 100 |
-| 1,000 | 2,345 us / 2,337 us | 4,653 us / 4,782 us | 13,545 us / 13,146 us | 1,000 |
-| 10,000 | 15,046 us / 14,694 us | 16,796 us / 17,431 us | 26,546 us / 26,527 us | 10,000 |
+| 1 | 1,692 us / n/a | 1,308 us / n/a | 1,559 us / n/a | 1 |
+| 100 | 1,309 us / 2,474 us | 5,338 us / n/a | 4,784 us / n/a | 100 |
+| 1,000 | 3,479 us / 3,575 us | 6,485 us / 11,154 us | 26,277 us / 29,810 us | 1,000 |
+| 10,000 | 35,435 us / 30,646 us | 26,588 us / 26,012 us | 45,684 us / 41,730 us | 10,000 |
 
 All measured current-vault and stratified calls used the candidate's default
 SQLite telemetry sink, so the latency samples include synchronous sink cost.
@@ -214,27 +232,44 @@ rows and parsed all 450 persisted event bodies. The stratified run retained all
 418 measured plus twelve setup `tool.call` rows and parsed all 436 persisted
 event bodies. After the harness removed the temporary sink table, a real
 post-start telemetry write failure emitted the bounded degradation warning and
-still returned a valid 211-byte SDK result in 730 us.
+still returned a valid 211-byte SDK result in 674 us.
 
 All `ls` samples reported zero file-content bytes scanned. The aggregate
 reports retained no vault path, directory identity, entry name, cursor, or
 content. A two-millisecond cancellation deadline returned to the client in
-2,302 us; the candidate then emitted its server-side completion record in
-3,566 us after scanning 1,281 of 10,000 entries, and the same MCP session
+2,740 us; the candidate then emitted its server-side completion record in
+4,953 us after scanning 965 of 10,000 entries, and the same MCP session
 completed a follow-up call. This proves handler return and deferred directory
 cleanup within the 100-millisecond bound, but it does not claim process
-CPU/RSS/FD teardown. Run the same sanitized gates against a built candidate
-with:
+CPU/RSS/FD teardown.
+
+The accepted installed binary also passed resource-report schema v2. Ten fresh
+processes had 23,963 us startup p50, 36,572 us startup p95/max, 2,184 us first
+call p50, and 4,679 us first-call p95/max. One long-lived process completed
+three exact 100-call batches with four blocking-GC acknowledgements. Maximum
+post-GC heap allocation growth from the aligned baseline was 73,488 bytes;
+maximum stabilized 30-second RSS growth was 3,969,024 bytes; waited lifetime
+high-water growth was 4,464,640 bytes; and every sample recovered to exactly 14
+file descriptors. During the 60-second idle window, CPU delta was zero, RSS did
+not grow, tool-call rows stayed at 301, vault activity stayed at 527 with zero
+in-flight work, and the two-tool descriptor surface did not change.
+
+One performance capture started immediately after the multi-minute resource
+gate failed with only the aggregate `stratified performance gate failed`
+diagnostic. Because the result-shape, count, scan, and byte predicates are
+deterministic, while p95 is the only environment-sensitive predicate in that
+failure branch, the back-to-back load is the inferred cause, not a directly
+observed per-case metric. The quiescent exact-binary run recorded above passed,
+as had the same suppressed gate inside `make release`; the failed run remains
+superseded evidence rather than being discarded or called green.
+
+Run the same sanitized gates against a built candidate with:
 
 ```bash
 go run ./cmd/gateway-smoke --gateway-bin <candidate> --obsidian-root <vault> --report-json
 go run ./cmd/gateway-smoke --gateway-bin <candidate> --obsidian-root <vault> --performance-json
+go run ./cmd/gateway-smoke --gateway-bin <candidate> --obsidian-root <vault> --resource-json
 ```
-
-This local record does not prove ten fresh-process cold calls, RSS/FD/CPU and
-60-second idle behavior, tunnel latency, authenticated metadata refresh,
-model-selected cursor reuse, or release acceptance. Those remain live/closeout
-gates under `GAP-OBS-011`; no release transaction was started for this proof.
 
 ## Codex Temp-Profile Proof
 

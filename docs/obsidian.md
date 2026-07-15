@@ -35,7 +35,7 @@ Implemented first-slice tools:
 - `resolve`: return canonical stored-spelling/NFC identity and metadata for explicit vault-relative `path` plus optional `base`, including successful `exists:false` results for missing paths.
 - `ls`: list one directory level in canonical order with hidden-entry filtering, symlink non-traversal, a maximum limit of 500 entries, stateless source/query-bound cursors, truthful coverage, and a 64 KiB SDK-result cap.
 
-The local implementation derives registration, schemas, backend-ready names, and safe telemetry from one descriptor authority. Filesystem access is fd-anchored per operation, pagination re-scans the complete shallow directory while retaining only `O(limit)` candidates, and JSONL/SQLite summaries cannot retain raw paths, entry names, cursor values, or content. Candidate smoke and cached current-vault performance are proven; `GAP-OBS-011` retains cold/process-resource/idle observation plus refreshed authenticated model and release-acceptance proof.
+The local implementation derives registration, schemas, backend-ready names, and safe telemetry from one descriptor authority. Filesystem access is fd-anchored per operation, pagination re-scans the complete shallow directory while retaining only `O(limit)` candidates, and JSONL/SQLite summaries cannot retain raw paths, entry names, cursor values, or content. Phase 1 proof now covers candidate smoke, current-vault and stratified performance, ten cold processes, repeated-call CPU/memory/descriptor bounds, a 60-second idle window, refreshed authenticated metadata, model-selected two-page cursor continuation, and exact-candidate release acceptance.
 
 Not implemented yet: `read`, `read_many`, `grep`, `links`, `traverse`, `backlinks`, and `path_between`.
 
@@ -81,12 +81,11 @@ The detailed schemas, limits, resolution rules, acceptance criteria, and perform
 
 - `GAP-OBS-001`: `read`, `read_many`, and `grep` are not implemented.
 - `GAP-OBS-002`: ChatGPT and Codex proof covers the current `ls`/`resolve` surface only; the expanded agent workflow is not proven live.
-- `GAP-OBS-003`: Root confinement, denial, read-only, cursor, and sanitized-error proof covers the current `resolve`/`ls` surface; it is not extended to content, batch, reference, and graph operations.
+- `GAP-OBS-003`: Root confinement, denial, read-only, cursor, and sanitized-error proof is complete for the Phase 1 `resolve`/`ls` surface; equivalent proof is not yet extended to content, batch, reference, and graph operations.
 - `GAP-OBS-004`: Full-vault grep, backlink, and path-discovery latency, scan work, response size, and freshness trade-offs are not measured. The bounded exercise/health/marathon spike is complete.
 - `GAP-OBS-005`: Existing tunnel/runtime proof remains valid, but live metadata refresh and representative model-selected calls must be repeated after the tool list expands.
 - `GAP-OBS-006`: `links`, the scoped request-local path catalog, and outbound `traverse` are not implemented.
 - `GAP-OBS-007`: The full-vault activation gate for live request-local `backlinks` and `path_between` has not been run or passed; the tools are neither implemented nor advertised.
-- `GAP-OBS-008`: Descriptor-owned safe telemetry summaries are implemented for `resolve` and `ls`; summaries for read, grep, batch, links, traversal, backlinks, and path discovery are not implemented.
-- `GAP-OBS-009`: `resolve`/`ls` summaries have local JSONL and SQLite proof; summaries for newly activated retrieval and graph tools have not been proven.
+- `GAP-OBS-008`: Descriptor-owned safe telemetry summaries are complete for the Phase 1 `resolve`/`ls` surface; summaries for read, grep, batch, links, traversal, backlinks, and path discovery are not implemented.
+- `GAP-OBS-009`: Phase 1 `resolve`/`ls` summaries have local JSONL and SQLite proof, including accepted model-driven `ls` telemetry; summaries for newly activated retrieval and graph tools have not been proven.
 - `GAP-OBS-010`: Live request-local `backlinks` and `path_between` are not implemented for pre-activation benchmark and proof.
-- `GAP-OBS-011`: Stored-spelling/NFC identity, stateless `ls` cursors, coverage/response budgets, descriptor authority, candidate smoke, domain-owned telemetry, and cached current-vault performance are locally proven; ten cold calls, RSS/FD/CPU and 60-second idle observation, refreshed authenticated metadata/model-selected continuation, and exact-candidate release acceptance remain.

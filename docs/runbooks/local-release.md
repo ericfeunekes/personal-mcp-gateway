@@ -31,10 +31,11 @@ and `pending`; it does not mean the candidate is accepted. The successful fast
 path is:
 
 1. Run `make release` and retain the printed full release ID.
-2. For this release-lifecycle prerequisite, refresh authenticated connector
-   metadata for server `obsidian`, observe exactly the current read-only `ls`
-   and `resolve` tools, and have the model select one bounded shallow root `ls`.
-   Later tool phases use their own newly activated representative journey.
+2. Complete the current tool phase's authenticated journey. For the accepted
+   `resolve`/`ls` phase, refresh metadata for server `obsidian`, observe exactly
+   those two read-only tools, and have the model select two one-item shallow
+   root `ls` pages by continuing with the first result's cursor. Later tool
+   phases replace this with their own newly activated representative journey.
 3. Run `make release-accept RELEASE_ID=<full-id>` after success, or
    `make release-rollback RELEASE_ID=<full-id>` after failure.
 
@@ -49,20 +50,27 @@ missing, shortened, stale, or mismatched ID never authorizes a terminal effect.
 then performs these gates in order:
 
 1. Run the canonical uncached `make test` suite.
-2. Build `.build/personal-mcp-gateway` with CGO enabled, VCS stamping disabled,
-   and path trimming enabled.
+2. Build `.build/personal-mcp-gateway` and the release controller with CGO
+   enabled, VCS stamping disabled, and path trimming enabled.
 3. Start that exact candidate over MCP stdio with telemetry disabled and require
    `resolve(.)` to report an existing directory under the configured synthetic
    or real vault root.
-4. Confirm the candidate did not change during the smoke, then recheck that
+4. Run the sanitized current-vault and stratified performance gate against the
+   same candidate, including default SQLite telemetry cost, response/scan
+   bounds, cancellation, and fail-open sink degradation.
+5. Run the sanitized process-resource gate against the same candidate: ten
+   cold processes, three exact 100-call batches with blocking-GC heap and
+   stabilized RSS/FD checks, lifetime high-water validation, and a 60-second
+   idle window with no tool or vault activity.
+6. Confirm the candidate did not change during the smoke, then recheck that
    `HEAD` is unchanged and the working tree is still clean.
-5. Build the release controller, copy and hash it, the candidate, and the
+7. Copy and hash the already-built release controller, the candidate, and the
    previous installed executable when present into the fixed per-user transaction
    slot, and durably publish `prepared` before changing `GATEWAY_BIN`.
-6. Through that pinned controller, stage the candidate beside `GATEWAY_BIN`,
+8. Through that pinned controller, stage the candidate beside `GATEWAY_BIN`,
    atomically replace it, restart the LaunchAgent, and require the installed
    SHA-256, tunnel `/healthz`, and tunnel `/readyz` checks to pass.
-7. Record `pending` and print the full release ID plus exact accept and rollback
+9. Record `pending` and print the full release ID plus exact accept and rollback
    commands. Retain the immutable candidate, pinned controller, and previous
    runtime until one exact terminal command proves its outcome.
 
@@ -188,9 +196,11 @@ fails closed because the supervised runtime can no longer be proven.
 ## Proof Boundary
 
 A locally successful `make release` proves only that the checked-out commit
-passed the repo suite, the exact candidate served MCP stdio and resolved the
-configured root, the installed bytes match the candidate, and the restarted
-tunnel became live and ready. It deliberately ends `pending`.
+passed the repo suite; the exact candidate served MCP stdio and resolved the
+configured root; the current-vault, stratified-performance, cold-process,
+repeated-call resource, and 60-second idle gates passed; the installed bytes
+match the candidate; and the restarted tunnel became live and ready. It
+deliberately ends `pending`.
 
 Acceptance requires separate authenticated connector metadata refresh and
 model-selected proof, followed by the exact-ID accept command. Before treating

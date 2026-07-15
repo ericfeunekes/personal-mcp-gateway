@@ -102,14 +102,15 @@ The release fast path is:
 
 ```bash
 make release
-# For the release-lifecycle prerequisite, refresh server `obsidian` metadata,
-# observe exactly current tools `ls` and `resolve`, and have the model select and
-# complete one bounded shallow root `ls` in the authenticated OpenAI surface.
+# Refresh server `obsidian` metadata, observe exactly current tools `ls` and
+# `resolve`, and have the model select two one-item shallow root `ls` pages by
+# continuing the first result's cursor with the same query.
 make release-accept RELEASE_ID=<full-id>
 ```
 
 If metadata refresh or the model-selected journey fails, run the exact rollback
-command printed by release instead:
+command printed by release, refresh authenticated metadata back to the prior
+schema, and make one successful prior-contract call:
 
 ```bash
 make release-rollback RELEASE_ID=<full-id>
@@ -124,10 +125,11 @@ observation, selected tool/journey, sanitized release/hash identity, and outcome
 do not record prompts, note names/content, vault paths, credentials, or raw
 environment data.
 
-The pending lifecycle and its live activation remain a proof contract until the
-current implementation has passed the merge suite, installed rollback drill,
-and a fresh authenticated pending-to-accept journey. The historical evidence
-below proves the prior tunnel and tool surface only.
+The current `resolve`/`ls` implementation has passed the merge suite, installed
+rollback drills, and a fresh authenticated two-page pending-to-accept journey.
+The sanitized accepted record is maintained in `docs/TESTING.md`. Repeat the
+same boundaries after changing the advertised tools or release lifecycle; the
+historical evidence below proves only the original tunnel setup.
 
 ## Current Boundary
 
