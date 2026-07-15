@@ -177,30 +177,46 @@ one-entry truncated response. Exact-ID acceptance returned to `clear`; the
 installed hash still matched `8f06b65b2bf7` and the service was live and ready.
 No note names or content were retained in this proof record.
 
-On 2026-07-15, commit `fa9e02983936` completed the Phase 1 activation on
-candidate hash prefix `232441cc6a34` and release prefix `35b0cfbd51a8`.
-Authenticated Refresh issued a post-install `tools/list`; a fresh management
+On 2026-07-15, implementation commit `fa9e02983936` first passed the forward
+Phase 1 activation on candidate hash prefix `232441cc6a34`. Three earlier failed
+model journeys had been exact rolled back with previous-hash and readiness
+proof, but had missed the required authenticated prior-schema refresh and old
+call. A controlled replacement drill therefore accepted prior-contract commit
+`9612507308a6` / hash prefix `8f06b65b2bf7`, published current release prefix
+`9fa5316d0384`, refreshed and observed the candidate-only cursor schema, then
+exact rolled it back. Rollback restored `8f06b65b2bf7`, `clear`, live, and
+ready; authenticated Refresh removed `cursor`, restored the prior descriptions,
+and a brand-new model chat completed one successful old-contract `ls` call.
+
+The final current release used docs descendant `241df06d5ede`, release prefix
+`557d434272a3`, and the same implementation hash prefix `232441cc6a34`.
+Authenticated Refresh issued a post-install `tools/list`; fresh management
 readback showed exactly `ls` and `resolve`, including the current `ls.cursor`
-schema and continuation guidance. A model-selected journey then made exactly
-two `ls(limit=1)` calls in one run. The first omitted `cursor`; the second
-supplied a 248-byte cursor with the same root path correlation, absent `base`,
-and unchanged limit. Both calls succeeded with one entry and cursor
-continuation, using 700- and 704-byte responses; the visible answer reported
-two inspected items and that more remained. No other tool call or error was
-recorded. Exact-ID acceptance returned the transaction to `clear`; the same
-hash remained installed, and the LaunchAgent and tunnel were live and ready.
-No prompt, note identity, cursor value/hash, vault path, or content is retained
-in this record.
+schema and continuation guidance. A model-selected journey made exactly two
+`ls(limit=1)` calls in one run. The first omitted `cursor`; the second supplied
+a 248-byte cursor with the same root path correlation, absent `base`, and
+unchanged limit. Both calls completed below the one-millisecond telemetry
+resolution, returned one entry with cursor continuation, and measured 700/588
+and 704/592 bytes for total SDK/structured results. Joined telemetry plus an
+immediate same-binary parity probe retained
+`cursor_reused_from_prior_result:true`,
+`normalized_query_unchanged:true`, and page advancement without retaining the
+cursor or entry identities. The visible answer reported two inspected items
+and that more remained; no other tool call or error was recorded. Exact-ID
+acceptance returned to `clear`; `232441cc6a34` remained installed, and the
+LaunchAgent and tunnel were live and ready. No prompt, note identity, cursor
+value/hash, vault path, or content is retained in this record.
 
 ### Current accepted `resolve` / `ls` Phase 1 proof
 
-On 2026-07-15, accepted commit `fa9e02983936` and installed candidate hash
-prefix `232441cc6a34` passed `make test`, the exact-candidate release gates, the
-full documented normal/race release-lifecycle suites, and focused affected
-normal/race suites for `internal/fsx`, `internal/tools/obsidian`, `internal/mcp`,
-`internal/audit`, `internal/app`, and `cmd/gateway-smoke`. The same commit passed
-the opt-in randomized first-install LaunchAgent rollback drill after the
-advertised schema changed.
+On 2026-07-15, implementation commit `fa9e02983936`, final release descendant
+`241df06d5ede`, and installed candidate hash prefix `232441cc6a34` passed
+`make test`, the exact-candidate release gates, the full documented normal/race
+release-lifecycle suites, and focused affected normal/race suites for
+`internal/fsx`, `internal/tools/obsidian`, `internal/mcp`, `internal/audit`,
+`internal/app`, and `cmd/gateway-smoke`. The same implementation passed the
+opt-in randomized first-install LaunchAgent rollback drill after the advertised
+schema changed.
 
 The exact-candidate smoke observed exactly two tools, canonical stored-path
 resolution, three one-entry synthetic pages with second-page progress and no
