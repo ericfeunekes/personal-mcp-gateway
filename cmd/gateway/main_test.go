@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +27,23 @@ import (
 
 const gatewaySubprocessRootEnv = "PERSONAL_MCP_GATEWAY_TEST_ROOT"
 const gatewaySubprocessTelemetryDBEnv = "PERSONAL_MCP_GATEWAY_TEST_TELEMETRY_DB"
+
+type synchronizedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(data)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
+}
 
 func TestGatewayStdioSubprocess(t *testing.T) {
 	root := os.Getenv(gatewaySubprocessRootEnv)
@@ -47,7 +65,7 @@ func TestStdioSubprocessServesMCP(t *testing.T) {
 		gatewaySubprocessRootEnv+"="+root,
 		gatewaySubprocessTelemetryDBEnv+"="+dbPath,
 	)
-	var stderr bytes.Buffer
+	var stderr synchronizedBuffer
 	cmd.Stderr = &stderr
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
