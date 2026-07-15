@@ -3,8 +3,10 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -120,6 +122,11 @@ func TestSDKValidationRejectsMissingRequiredPath(t *testing.T) {
 }
 
 func TestTelemetryRecordsToolUsageAndFailures(t *testing.T) {
+	const (
+		runID        = "test-run"
+		hostileKey   = "/synthetic/private-vault/private.md"
+		hostileValue = "hostile-value-never-persist"
+	)
 	root := testutil.FixtureVault(t)
 	cfg, err := config.Validate(config.Config{
 		Mode:         config.ModeStdio,
@@ -131,7 +138,7 @@ func TestTelemetryRecordsToolUsageAndFailures(t *testing.T) {
 	}
 
 	var events bytes.Buffer
-	log := audit.NewJSONL(&events, "test-run")
+	log := audit.NewJSONL(&events, runID)
 	application, err := New(cfg, log)
 	if err != nil {
 		t.Fatal(err)
@@ -160,8 +167,11 @@ func TestTelemetryRecordsToolUsageAndFailures(t *testing.T) {
 	}
 
 	result, err = session.CallTool(ctx, &sdk.CallToolParams{
-		Name:      obsidian.ToolResolve,
-		Arguments: map[string]any{},
+		Name: obsidian.ToolResolve,
+		Arguments: map[string]any{
+			"path":     "README.md",
+			hostileKey: hostileValue,
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -187,14 +197,14 @@ func TestTelemetryRecordsToolUsageAndFailures(t *testing.T) {
 	_, _ = session.CallTool(ctx, &sdk.CallToolParams{
 		Name: "/synthetic/private-vault/private-tool",
 		Arguments: map[string]any{
-			"path": "README.md",
+			"path":                                "README.md",
 			"/synthetic/private-vault/private.md": "secret",
 		},
 	})
 
 	text := events.String()
 	if strings.Contains(text, root) || strings.Contains(text, "home/projects") || strings.Contains(text, ".obsidian") ||
-		strings.Contains(text, "private-tool") || strings.Contains(text, "private.md") {
+		strings.Contains(text, "private-tool") || strings.Contains(text, "private.md") || strings.Contains(text, hostileValue) {
 		t.Fatalf("telemetry leaked raw path: %s", text)
 	}
 	records := auditRecords(t, text)
@@ -203,7 +213,7 @@ func TestTelemetryRecordsToolUsageAndFailures(t *testing.T) {
 	if lsOK == nil {
 		t.Fatalf("missing successful ls telemetry: %s", text)
 	}
-	if got := intFromRecord(lsOK, "entry_count"); got != 2 {
+	if got := intFromRecord(summarySection(t, lsOK, "result"), "entry_count"); got != 2 {
 		t.Fatalf("entry_count = %d, want 2 in %#v", got, lsOK)
 	}
 
@@ -216,6 +226,7 @@ func TestTelemetryRecordsToolUsageAndFailures(t *testing.T) {
 	if validation == nil {
 		t.Fatalf("missing schema_validation telemetry: %s", text)
 	}
+	assertHostileKeySummary(t, validation, runID, hostileKey)
 
 	limitExceeded := findToolRecord(records, obsidian.ToolLS, "tool_error", "limit_exceeded")
 	if limitExceeded == nil {
@@ -229,9 +240,14 @@ func TestTelemetryRecordsToolUsageAndFailures(t *testing.T) {
 }
 
 func TestSQLiteTelemetryFromRealToolCallsIsSanitized(t *testing.T) {
+	const (
+		runID        = "test-run"
+		hostileKey   = "/synthetic/private-vault/private.md"
+		hostileValue = "hostile-value-never-persist"
+	)
 	root := testutil.FixtureVault(t)
 	dbPath := filepath.Join(t.TempDir(), "telemetry.sqlite")
-	log, err := audit.NewSQLite(dbPath, "test-run")
+	log, err := audit.NewSQLite(dbPath, runID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,8 +293,8 @@ func TestSQLiteTelemetryFromRealToolCallsIsSanitized(t *testing.T) {
 	result, err = session.CallTool(ctx, &sdk.CallToolParams{
 		Name: obsidian.ToolResolve,
 		Arguments: map[string]any{
-			"path": "README.md",
-			"/synthetic/private-vault/private.md": "secret",
+			"path":     "README.md",
+			hostileKey: hostileValue,
 		},
 	})
 	if err != nil {
@@ -319,6 +335,7 @@ func TestSQLiteTelemetryFromRealToolCallsIsSanitized(t *testing.T) {
 		"/synthetic/private-vault",
 		"private-tool",
 		"private.md",
+		hostileValue,
 	} {
 		if strings.Contains(text, leaked) {
 			t.Fatalf("SQLite telemetry leaked %q: %s", leaked, text)
@@ -341,14 +358,82 @@ func TestSQLiteTelemetryFromRealToolCallsIsSanitized(t *testing.T) {
 	if findRow(rows, "tool.call", obsidian.ToolLS, "tool_error", "path_denied") == nil {
 		t.Fatalf("missing path_denied row: %s", text)
 	}
-	if findRow(rows, "tool.call", obsidian.ToolResolve, "tool_error", "schema_validation") == nil {
+	validation := findRow(rows, "tool.call", obsidian.ToolResolve, "tool_error", "schema_validation")
+	if validation == nil {
 		t.Fatalf("missing schema_validation row: %s", text)
 	}
+	assertHostileKeySummary(t, validation, runID, hostileKey)
 	if findRow(rows, "tool.call", obsidian.ToolLS, "tool_error", "limit_exceeded") == nil {
 		t.Fatalf("missing limit_exceeded row: %s", text)
 	}
 	if findRow(rows, "tool.call", "unknown", "protocol_error", "unknown_tool") == nil {
 		t.Fatalf("missing sanitized unknown_tool row: %s", text)
+	}
+}
+
+func TestJSONLAndSQLiteSafeSummariesMatchForRealCursorCalls(t *testing.T) {
+	const runID = "summary-parity-run"
+
+	var jsonl bytes.Buffer
+	jsonLog := audit.NewJSONL(&jsonl, runID)
+	jsonCursors := driveSafeSummaryScenario(t, testutil.FixtureVault(t), jsonLog)
+	jsonRecords := toolCallRecords(auditRecords(t, jsonl.String()))
+
+	dbPath := filepath.Join(t.TempDir(), "summary-parity.sqlite")
+	sqliteLog, err := audit.NewSQLite(dbPath, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqliteCursors := driveSafeSummaryScenario(t, testutil.FixtureVault(t), sqliteLog)
+	if err := sqliteLog.Close(); err != nil {
+		t.Fatal(err)
+	}
+	sqliteRecords := toolCallRecords(sqliteAuditRows(t, dbPath))
+
+	if len(jsonRecords) != 3 || len(sqliteRecords) != 3 {
+		t.Fatalf("tool-call record counts jsonl=%d sqlite=%d", len(jsonRecords), len(sqliteRecords))
+	}
+	for i := range jsonRecords {
+		jsonSummary := jsonRecords[i]["summary"]
+		sqliteSummary := sqliteRecords[i]["summary"]
+		if !reflect.DeepEqual(jsonSummary, sqliteSummary) {
+			t.Fatalf("summary[%d] differs:\njsonl=%#v\nsqlite=%#v", i, jsonSummary, sqliteSummary)
+		}
+	}
+
+	resolveResult := summarySection(t, jsonRecords[0], "result")
+	if resolveResult["ok"] != true || resolveResult["exists"] != true || resolveResult["result_type"] != "file" || resolveResult["is_error"] != false {
+		t.Fatalf("resolve result summary = %#v", resolveResult)
+	}
+	firstResult := summarySection(t, jsonRecords[1], "result")
+	if intFromRecord(firstResult, "entry_count") != 1 || intFromRecord(firstResult, "files_scanned") != 2 ||
+		firstResult["truncated"] != true || firstResult["scope_complete"] != true || firstResult["continuation"] != "cursor" || firstResult["consistency"] != "stable" {
+		t.Fatalf("first ls result summary = %#v", firstResult)
+	}
+	continuedArgs := summarySection(t, jsonRecords[2], "arguments")
+	cursorShape, _ := continuedArgs["cursor"].(map[string]any)
+	if cursorShape["present"] != true || intFromRecord(cursorShape, "bytes") != len(jsonCursors[0]) {
+		t.Fatalf("continued cursor summary = %#v", cursorShape)
+	}
+	continuedResult := summarySection(t, jsonRecords[2], "result")
+	if continuedResult["continuation"] != "complete" || continuedResult["result_complete"] != true || continuedResult["scope_complete"] != true {
+		t.Fatalf("continued ls result summary = %#v", continuedResult)
+	}
+
+	jsonText := jsonl.String()
+	sqliteText := mustJSON(t, sqliteRecords)
+	for _, cursor := range append(jsonCursors, sqliteCursors...) {
+		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(cursor)))
+		for _, encoded := range []string{jsonText, sqliteText} {
+			if strings.Contains(encoded, cursor) || strings.Contains(encoded, digest) {
+				t.Fatalf("telemetry retained cursor or cursor digest")
+			}
+		}
+	}
+	for _, leaked := range []string{"alpha.md", "beta.md", "synthetic alpha note", "synthetic beta note"} {
+		if strings.Contains(jsonText, leaked) || strings.Contains(sqliteText, leaked) {
+			t.Fatalf("telemetry retained cursor-carried or content sentinel %q", leaked)
+		}
 	}
 }
 
@@ -618,9 +703,40 @@ func TestHTTPTelemetryRecordsRoutesAndBodyLimit(t *testing.T) {
 	if tooLargeArgs == nil {
 		t.Fatalf("missing HTTP oversized-argument tool.call row: %s", text)
 	}
-	args, ok := tooLargeArgs["args"].(map[string]any)
-	if !ok || args["too_large"] != true {
-		t.Fatalf("oversized-argument args summary = %#v, want too_large", tooLargeArgs["args"])
+	args := summarySection(t, tooLargeArgs, "arguments")
+	if args["too_large"] != true {
+		t.Fatalf("oversized-argument args summary = %#v, want too_large", args)
+	}
+}
+
+func summarySection(t *testing.T, record map[string]any, section string) map[string]any {
+	t.Helper()
+	summary, ok := record["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("record summary = %#v", record["summary"])
+	}
+	value, ok := summary[section].(map[string]any)
+	if !ok {
+		t.Fatalf("summary section %q = %#v", section, summary[section])
+	}
+	return value
+}
+
+func assertHostileKeySummary(t *testing.T, record map[string]any, runID, hostileKey string) {
+	t.Helper()
+	arguments := summarySection(t, record, "arguments")
+	if got := intFromRecord(arguments, "unknown_key_count"); got != 1 {
+		t.Fatalf("unknown_key_count = %d, want 1 in %#v", got, arguments)
+	}
+	hashes, ok := arguments["unknown_key_hashes"].([]any)
+	if !ok || len(hashes) != 1 || hashes[0] != audit.HashString(runID, hostileKey) {
+		t.Fatalf("unknown_key_hashes = %#v, want the run hash of the hostile key", arguments["unknown_key_hashes"])
+	}
+	if _, found := arguments["unknown_key_truncated"]; found {
+		t.Fatalf("single hostile key was unexpectedly truncated: %#v", arguments)
+	}
+	if _, found := arguments["unknown_key_too_large_count"]; found {
+		t.Fatalf("short hostile key was unexpectedly classified too large: %#v", arguments)
 	}
 }
 
@@ -897,6 +1013,52 @@ func entryNames(entries []obsidian.LSEntry) []string {
 	out := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		out = append(out, entry.Name)
+	}
+	return out
+}
+
+func driveSafeSummaryScenario(t *testing.T, root string, log *audit.Logger) []string {
+	t.Helper()
+	cfg, err := config.Validate(config.Config{
+		Mode:         config.ModeStdio,
+		ObsidianRoot: root,
+		Telemetry:    config.TelemetryStderr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	application, err := New(cfg, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, stop := connectPipeTransport(t, ctx, application)
+	defer stop()
+
+	resolved := callTool[obsidian.ResolveOutput](t, ctx, session, obsidian.ToolResolve, map[string]any{"path": "README.md"})
+	if !resolved.OK || !resolved.Exists {
+		t.Fatalf("summary scenario resolve = %#v", resolved)
+	}
+	first := callTool[obsidian.LSOutput](t, ctx, session, obsidian.ToolLS, map[string]any{"path": "home/projects", "limit": 1})
+	if !first.OK || first.Coverage.NextCursor == "" {
+		t.Fatalf("summary scenario first ls = %#v", first)
+	}
+	continued := callTool[obsidian.LSOutput](t, ctx, session, obsidian.ToolLS, map[string]any{
+		"path": "home/projects", "limit": 1, "cursor": first.Coverage.NextCursor,
+	})
+	if !continued.OK || continued.Coverage.Continuation != "complete" {
+		t.Fatalf("summary scenario continued ls = %#v", continued)
+	}
+	return []string{first.Coverage.NextCursor}
+}
+
+func toolCallRecords(records []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(records))
+	for _, record := range records {
+		if record["event"] == "tool.call" {
+			out = append(out, record)
+		}
 	}
 	return out
 }

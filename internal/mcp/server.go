@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -36,7 +37,11 @@ func serverIcons() []sdk.Icon {
 	}}
 }
 
-func NewServer(log *audit.Logger, transport string, knownTools []string) *sdk.Server {
+func NewServer(log *audit.Logger, transport string, descriptors []ToolDescriptor) (*sdk.Server, []string, error) {
+	ordered, names, err := validateDescriptors(descriptors)
+	if err != nil {
+		return nil, nil, err
+	}
 	server := sdk.NewServer(&sdk.Implementation{
 		Name:    ServerName,
 		Version: ServerVersion,
@@ -45,9 +50,24 @@ func NewServer(log *audit.Logger, transport string, knownTools []string) *sdk.Se
 		Capabilities: &sdk.ServerCapabilities{},
 	})
 	if log != nil && log.Enabled() {
-		server.AddReceivingMiddleware(telemetryMiddleware(log, transport, knownTools))
+		server.AddReceivingMiddleware(telemetryMiddleware(log, transport, ordered))
 	}
-	return server
+	for _, descriptor := range ordered {
+		if err := registerDescriptor(server, descriptor); err != nil {
+			return nil, nil, err
+		}
+	}
+	return server, names, nil
+}
+
+func registerDescriptor(server *sdk.Server, descriptor ToolDescriptor) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("register tool %q: %v", descriptor.Name(), recovered)
+		}
+	}()
+	descriptor.register(server)
+	return nil
 }
 
 func RunStdio(ctx context.Context, server *sdk.Server) error {

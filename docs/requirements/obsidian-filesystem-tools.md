@@ -60,7 +60,7 @@ This is the target vocabulary, not a requirement to advertise unfinished or disa
 
 Once activated, a tool is available by default; this requirement does not add a runtime feature flag or alternate contract.
 
-The currently advertised `resolve` and `ls` implementations predate the common identity, continuation, response-budget, coverage, and telemetry contracts below. They remain the live surface, but they are not target-complete; `GAP-OBS-011` owns that foundation repair before new tools activate.
+The currently advertised `resolve` and `ls` implementations now satisfy the Phase 1 common identity, continuation, response-budget, coverage, descriptor, and telemetry contracts below in local proof. `GAP-OBS-011` retains only the cold/process-resource/idle and refreshed authenticated model/release proof that must complete before this exact surface is accepted live.
 
 ## Common Request And Result Contract
 
@@ -280,12 +280,12 @@ The scratch traversal prototype is non-authoritative and must not override this 
 
 - `GAP-OBS-001`: `read`, `read_many`, and `grep` are not implemented.
 - `GAP-OBS-002`: ChatGPT and Codex proof covers the current `ls`/`resolve` surface only; the expanded agent workflow is not proven live.
-- `GAP-OBS-003`: Root confinement, denial, read-only, and sanitized-error proof is not extended to content, batch, cursor, reference, and graph operations.
+- `GAP-OBS-003`: Root confinement, denial, read-only, cursor, and sanitized-error proof covers the current `resolve`/`ls` surface; it is not extended to content, batch, reference, and graph operations.
 - `GAP-OBS-004`: Full-vault grep, backlink, and path-discovery latency, scan work, response size, and freshness trade-offs are not measured. The bounded exercise/health/marathon spike is complete.
 - `GAP-OBS-005`: Existing tunnel/runtime proof remains valid, but live metadata refresh and representative model-selected calls must be repeated after the tool list expands.
 - `GAP-OBS-006`: `links`, the scoped request-local path catalog, and outbound `traverse` are not implemented.
 - `GAP-OBS-007`: The full-vault activation gate for live request-local `backlinks` and `path_between` has not been run or passed; the tools are neither implemented nor advertised.
-- `GAP-OBS-008`: Per-tool safe telemetry summaries for read, grep, batch, links, traversal, backlinks, and path discovery are not implemented.
-- `GAP-OBS-009`: Safe telemetry summaries for newly activated retrieval and graph tools have not been proven in JSONL and SQLite.
+- `GAP-OBS-008`: Descriptor-owned safe telemetry summaries are implemented for `resolve` and `ls`; summaries for read, grep, batch, links, traversal, backlinks, and path discovery are not implemented.
+- `GAP-OBS-009`: `resolve`/`ls` summaries have local JSONL and SQLite proof; summaries for newly activated retrieval and graph tools have not been proven.
 - `GAP-OBS-010`: Live request-local `backlinks` and `path_between` are not implemented for pre-activation benchmark and proof.
-- `GAP-OBS-011`: The currently advertised `resolve` and `ls` tools do not yet implement stored-spelling/NFC canonical identity, stateless `ls` cursors, common coverage/response budgets, or domain-owned safe telemetry summaries.
+- `GAP-OBS-011`: Stored-spelling/NFC identity, stateless `ls` cursors, coverage/response budgets, descriptor authority, candidate smoke, domain-owned telemetry, and cached current-vault performance are locally proven; ten cold calls, RSS/FD/CPU and 60-second idle observation, refreshed authenticated metadata/model-selected continuation, and exact-candidate release acceptance remain.

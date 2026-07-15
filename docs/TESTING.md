@@ -176,6 +176,66 @@ one-entry truncated response. Exact-ID acceptance returned to `clear`; the
 installed hash still matched `8f06b65b2bf7` and the service was live and ready.
 No note names or content were retained in this proof record.
 
+### Current `resolve` / `ls` Phase 1 local proof
+
+On 2026-07-15, the current worktree on base commit `9612507308a6` produced
+exact-candidate hash prefix `a63896c045df`. `make test` passed, as did focused
+normal and race suites for `internal/fsx`, `internal/tools/obsidian`,
+`internal/mcp`, `internal/audit`, `internal/app`, `cmd/gateway-smoke`, and the
+`TestLocalRelease*` process matrix.
+
+The exact-candidate smoke observed exactly two tools, canonical stored-path
+resolution, three one-entry synthetic pages with second-page progress and no
+duplicates, complete reference equivalence, and a maximum observed SDK result
+of 718 bytes. The sanitized 100-sample current-vault cached performance gate
+used a `2_10` cardinality bucket and recorded:
+
+| Operation | p50 | p95 | max | max SDK bytes | max structured bytes | max entries scanned |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| cached `resolve` | 336 us | 635 us | 3,703 us | 213 | 101 | 0 |
+| first-page `ls(limit=1)` | 515 us | 808 us | 1,024 us | 896 | 784 | 2 |
+| continued `ls(limit=1)` | 527 us | 759 us | 3,686 us | 515 | 403 | 2 |
+| first-page `ls(limit=100)` | 535 us | 823 us | 48,405 us | 689 | 577 | 2 |
+
+The same exact candidate passed a synthetic stratified gate with 20 measured
+samples per available operation after warm-up:
+
+| Entries | `limit=1` first / continued p95 | `limit=100` first / continued p95 | `limit=500` first / continued p95 | max entries scanned |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 962 us / n/a | 797 us / n/a | 875 us / n/a | 1 |
+| 100 | 912 us / 1,162 us | 3,237 us / n/a | 2,990 us / n/a | 100 |
+| 1,000 | 2,345 us / 2,337 us | 4,653 us / 4,782 us | 13,545 us / 13,146 us | 1,000 |
+| 10,000 | 15,046 us / 14,694 us | 16,796 us / 17,431 us | 26,546 us / 26,527 us | 10,000 |
+
+All measured current-vault and stratified calls used the candidate's default
+SQLite telemetry sink, so the latency samples include synchronous sink cost.
+The current-vault run retained all 440 measured plus four setup `tool.call`
+rows and parsed all 450 persisted event bodies. The stratified run retained all
+418 measured plus twelve setup `tool.call` rows and parsed all 436 persisted
+event bodies. After the harness removed the temporary sink table, a real
+post-start telemetry write failure emitted the bounded degradation warning and
+still returned a valid 211-byte SDK result in 730 us.
+
+All `ls` samples reported zero file-content bytes scanned. The aggregate
+reports retained no vault path, directory identity, entry name, cursor, or
+content. A two-millisecond cancellation deadline returned to the client in
+2,302 us; the candidate then emitted its server-side completion record in
+3,566 us after scanning 1,281 of 10,000 entries, and the same MCP session
+completed a follow-up call. This proves handler return and deferred directory
+cleanup within the 100-millisecond bound, but it does not claim process
+CPU/RSS/FD teardown. Run the same sanitized gates against a built candidate
+with:
+
+```bash
+go run ./cmd/gateway-smoke --gateway-bin <candidate> --obsidian-root <vault> --report-json
+go run ./cmd/gateway-smoke --gateway-bin <candidate> --obsidian-root <vault> --performance-json
+```
+
+This local record does not prove ten fresh-process cold calls, RSS/FD/CPU and
+60-second idle behavior, tunnel latency, authenticated metadata refresh,
+model-selected cursor reuse, or release acceptance. Those remain live/closeout
+gates under `GAP-OBS-011`; no release transaction was started for this proof.
+
 ## Codex Temp-Profile Proof
 
 For local Codex smoke tests, use a temp `CODEX_HOME` and `codex mcp add` so no

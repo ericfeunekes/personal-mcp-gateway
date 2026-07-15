@@ -29,9 +29,14 @@ func New(cfg config.Config, log *audit.Logger) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	toolNames := obsidian.ToolNames()
-	server := localmcp.NewServer(log, string(cfg.Mode), toolNames)
-	obsidian.Register(server, vault)
+	descriptors, err := obsidian.Descriptors(vault)
+	if err != nil {
+		return nil, err
+	}
+	server, toolNames, err := localmcp.NewServer(log, string(cfg.Mode), descriptors)
+	if err != nil {
+		return nil, err
+	}
 
 	if log != nil && log.Enabled() {
 		log.Event("gateway.backend_ready", map[string]any{
