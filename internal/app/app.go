@@ -25,7 +25,13 @@ type App struct {
 }
 
 func New(cfg config.Config, log *audit.Logger) (*App, error) {
-	vault, err := fsx.NewVault(cfg.ObsidianRoot)
+	return NewWithVaultActivity(cfg, log, nil)
+}
+
+// NewWithVaultActivity is the private construction seam used by exact-candidate
+// resource proof. Public tool behavior is identical to New.
+func NewWithVaultActivity(cfg config.Config, log *audit.Logger, activity *fsx.ActivityCounter) (*App, error) {
+	vault, err := fsx.NewVaultWithActivity(cfg.ObsidianRoot, activity)
 	if err != nil {
 		return nil, err
 	}

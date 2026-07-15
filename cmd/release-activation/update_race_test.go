@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 	"personal-mcp-gateway/internal/releaseactivation"
@@ -51,7 +53,7 @@ func TestUpdateAndPrepareSerializeAcrossProcesses(t *testing.T) {
 		}, "PATH="+shimDir+":"+os.Getenv("PATH"), "MERGE_READY_FIFO="+barrier.ready,
 			"MERGE_RELEASE_FIFO="+barrier.release, "RACE_LOG="+fixture.log)
 
-		barrier.waitReady(t)
+		barrier.waitReady(t, update)
 		assertLogOrder(t, fixture.log, "update_before", "merge_before")
 		assertStoreBusyAndState(t, fixture.storeRoot, nil)
 		assertGitState(t, realGit, fixture.repo, fixture.initialHead, "initial\n")
@@ -92,7 +94,7 @@ func TestUpdateAndPrepareSerializeAcrossProcesses(t *testing.T) {
 			"prepare-hold", fixture.storeRoot, strconv.Itoa(os.Geteuid()), fixture.candidate,
 			fixture.authority, fixture.log, barrier.ready, barrier.release,
 		})
-		barrier.waitReady(t)
+		barrier.waitReady(t, prepare)
 		assertLogOrder(t, fixture.log, "prepare_before", "prepare_published")
 		assertStoreBusyAndState(t, fixture.storeRoot, ptrState(releaseactivation.StatePrepared))
 		assertGitState(t, realGit, fixture.repo, fixture.initialHead, "initial\n")
@@ -328,16 +330,38 @@ func newFIFOBarrier(t *testing.T, root string) fifoBarrier {
 	return barrier
 }
 
-func (b fifoBarrier) waitReady(t *testing.T) {
+func (b fifoBarrier) waitReady(t *testing.T, process *updateRaceProcess) {
 	t.Helper()
-	file, err := os.OpenFile(b.ready, os.O_RDWR, 0)
+	file, err := os.OpenFile(b.ready, os.O_RDONLY|unix.O_NONBLOCK, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer file.Close()
-	one := []byte{0}
-	if _, err := file.Read(one); err != nil || one[0] != '1' {
-		t.Fatalf("barrier ready: %v %q", err, one)
+	deadline := time.NewTimer(30 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
+	for {
+		one := []byte{0}
+		read, readErr := file.Read(one)
+		if read == 1 {
+			if one[0] != '1' {
+				t.Fatalf("barrier ready byte = %q", one)
+			}
+			return
+		}
+		if readErr != nil && !errors.Is(readErr, unix.EAGAIN) && !errors.Is(readErr, io.EOF) {
+			t.Fatalf("barrier ready: %v", readErr)
+		}
+		select {
+		case <-process.done:
+			t.Fatalf("helper exited before barrier: %v\n%s", process.waitErr, process.stderr.String())
+		case <-deadline.C:
+			_ = process.cmd.Process.Kill()
+			<-process.done
+			t.Fatalf("helper did not reach barrier\n%s", process.stderr.String())
+		case <-poll.C:
+		}
 	}
 }
 
@@ -401,26 +425,37 @@ exec "` + realGit + `" "$@"
 }
 
 type updateRaceProcess struct {
-	cmd    *exec.Cmd
-	stderr strings.Builder
+	cmd     *exec.Cmd
+	stderr  strings.Builder
+	done    chan struct{}
+	waitErr error
 }
 
-func (p *updateRaceProcess) Wait() error { return p.cmd.Wait() }
+func (p *updateRaceProcess) Wait() error {
+	<-p.done
+	return p.waitErr
+}
 
 func startUpdateRaceHelper(t *testing.T, args []string, extraEnv ...string) *updateRaceProcess {
 	t.Helper()
 	commandArgs := []string{"-test.run=^TestUpdateRaceHelperProcess$", "--"}
 	commandArgs = append(commandArgs, args...)
-	process := &updateRaceProcess{cmd: exec.Command(os.Args[0], commandArgs...)}
+	process := &updateRaceProcess{cmd: exec.Command(os.Args[0], commandArgs...), done: make(chan struct{})}
 	process.cmd.Env = append(os.Environ(), append([]string{updateRaceHelperEnv + "=1"}, extraEnv...)...)
 	process.cmd.Stderr = &process.stderr
 	if err := process.cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	go func() {
+		process.waitErr = process.cmd.Wait()
+		close(process.done)
+	}()
 	t.Cleanup(func() {
-		if process.cmd.ProcessState == nil {
+		select {
+		case <-process.done:
+		default:
 			_ = process.cmd.Process.Kill()
-			_ = process.cmd.Wait()
+			<-process.done
 		}
 	})
 	return process

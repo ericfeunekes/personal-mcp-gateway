@@ -69,6 +69,11 @@ type selectedEntry struct {
 }
 
 func (d *Directory) ListPage(ctx context.Context, opts ListOptions) (ListPage, error) {
+	if d != nil {
+		if end := d.activity.Begin(); end != nil {
+			defer end()
+		}
+	}
 	page := ListPage{Dir: d.Resolved(), BoundaryFound: opts.After == nil}
 	if err := ctx.Err(); err != nil {
 		return page, contextError(err)

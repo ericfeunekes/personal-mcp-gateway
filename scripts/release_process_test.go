@@ -329,8 +329,8 @@ func TestLocalReleaseInstallsExactCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Count(string(logData), "go:run ./cmd/gateway-smoke"); got != 2 ||
-		!strings.Contains(string(logData), "--performance-json") {
+	if got := strings.Count(string(logData), "go:run ./cmd/gateway-smoke"); got != 3 ||
+		!strings.Contains(string(logData), "--performance-json") || !strings.Contains(string(logData), "--resource-json") {
 		t.Fatalf("candidate smoke calls = %q", logData)
 	}
 	assertFileContains(t, logFile, "launchctl:kickstart -k")
@@ -389,6 +389,26 @@ func TestLocalReleaseStopsBeforeActivationWhenPerformanceSmokeFails(t *testing.T
 	}
 	if got := strings.Count(string(logData), "go:run ./cmd/gateway-smoke"); got != 2 ||
 		!strings.Contains(string(logData), "--performance-json") {
+		t.Fatalf("candidate smoke calls = %q", logData)
+	}
+}
+
+func TestLocalReleaseStopsBeforeActivationWhenResourceSmokeFails(t *testing.T) {
+	harness := newLocalReleaseHarness(t, releaseOptions{previous: true, failResourceSmoke: true})
+	stdout, stderr, exit := harness.runChannels()
+	if exit != 1 || stdout != "" || stderr != "error=release_smoke_failed message=release candidate resource smoke failed\n" {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+	assertFileContains(t, harness.target, "previous-binary")
+	if _, err := os.Stat(releaseActiveDir(harness.repo)); !os.IsNotExist(err) {
+		t.Fatalf("failed resource smoke created release state: %v", err)
+	}
+	logData, err := os.ReadFile(harness.logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(logData), "go:run ./cmd/gateway-smoke"); got != 3 ||
+		!strings.Contains(string(logData), "--performance-json") || !strings.Contains(string(logData), "--resource-json") {
 		t.Fatalf("candidate smoke calls = %q", logData)
 	}
 }
@@ -976,6 +996,7 @@ type releaseOptions struct {
 	previous                   bool
 	failTests                  bool
 	failPerformanceSmoke       bool
+	failResourceSmoke          bool
 	failFirstVerification      bool
 	failAllVerification        bool
 	failRestore                bool
@@ -1078,10 +1099,18 @@ if [ -n "${CONTROL_PLANE_API_KEY:-}" ]; then printf '%s\n' "$CONTROL_PLANE_API_K
 printf 'go:%s\n' "$*" >>"$CALL_LOG"
 expected="run ./cmd/gateway-smoke --gateway-bin $EXPECTED_CANDIDATE --obsidian-root $EXPECTED_VAULT"
 performance="$expected --performance-json"
+resource="$expected --resource-json"
 case "$*" in
   "$expected") ;;
   "$performance")
     if [ "${FAIL_PERFORMANCE_SMOKE:-0}" = 1 ]; then
+      printf 'hostile private-sentinel %s\n' "$TEST_REPO"
+      printf 'hostile runtime-secret\n' >&2
+      exit 8
+    fi
+    ;;
+  "$resource")
+    if [ "${FAIL_RESOURCE_SMOKE:-0}" = 1 ]; then
       printf 'hostile private-sentinel %s\n' "$TEST_REPO"
       printf 'hostile runtime-secret\n' >&2
       exit 8
@@ -1153,6 +1182,7 @@ exec "$REAL_INSTALL" "$@"
 		"FAIL_FIRST_VERIFY="+failValue,
 		"FAIL_TESTS="+boolString(options.failTests),
 		"FAIL_PERFORMANCE_SMOKE="+boolString(options.failPerformanceSmoke),
+		"FAIL_RESOURCE_SMOKE="+boolString(options.failResourceSmoke),
 		"FAIL_ALL_VERIFY="+failAllValue,
 		"FAIL_RESTORE="+boolString(options.failRestore),
 		"CORRUPT_STAGE="+boolString(options.corruptStage),

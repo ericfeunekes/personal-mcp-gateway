@@ -119,6 +119,12 @@ if ! env GOCACHE="${GOCACHE:-$repo_root/.gocache}" "$go_command" run ./cmd/gatew
   --performance-json >/dev/null 2>&1; then
   fail release_smoke_failed 'release candidate performance smoke failed'
 fi
+if ! env GOCACHE="${GOCACHE:-$repo_root/.gocache}" "$go_command" run ./cmd/gateway-smoke \
+  --gateway-bin "$candidate" \
+  --obsidian-root "$OBSIDIAN_ROOT" \
+  --resource-json >/dev/null 2>&1; then
+  fail release_smoke_failed 'release candidate resource smoke failed'
+fi
 
 smoked_hash="$(shasum -a 256 "$candidate" 2>/dev/null | awk '{print $1}')" || fail release_smoke_failed 'release candidate smoke failed'
 if [[ "$candidate_hash" != "$smoked_hash" ]]; then

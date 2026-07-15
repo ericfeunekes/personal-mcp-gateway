@@ -61,6 +61,7 @@ const (
 type Vault struct {
 	root      string
 	testHooks *vaultTestHooks
+	activity  *ActivityCounter
 }
 
 // vaultTestHooks are instance-local deterministic race seams. They are
@@ -90,6 +91,13 @@ type Entry struct {
 }
 
 func NewVault(root string) (*Vault, error) {
+	return NewVaultWithActivity(root, nil)
+}
+
+// NewVaultWithActivity attaches an optional instance-local aggregate observer.
+// It is reserved for the private resource proof path; normal callers use
+// NewVault and incur no observation work beyond a nil branch.
+func NewVaultWithActivity(root string, activity *ActivityCounter) (*Vault, error) {
 	clean := filepath.Clean(root)
 	if evaluated, err := filepath.EvalSymlinks(clean); err == nil {
 		clean = filepath.Clean(evaluated)
@@ -98,7 +106,7 @@ func NewVault(root string) (*Vault, error) {
 	if err != nil || !info.IsDir() {
 		return nil, &Error{Code: CodeNotDirectory}
 	}
-	return &Vault{root: clean}, nil
+	return &Vault{root: clean, activity: activity}, nil
 }
 
 func (v *Vault) Root() string {

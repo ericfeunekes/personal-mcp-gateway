@@ -19,6 +19,7 @@ type Directory struct {
 	file      *os.File
 	resolved  Resolved
 	testHooks *vaultTestHooks
+	activity  *ActivityCounter
 	listed    bool
 }
 
@@ -59,6 +60,9 @@ func (d *Directory) fd() (int, error) {
 }
 
 func (v *Vault) Resolve(ctx context.Context, base, input string) (Resolved, error) {
+	if end := v.activity.Begin(); end != nil {
+		defer end()
+	}
 	resolved, dir, err := v.resolve(ctx, base, input, false)
 	if dir != nil {
 		_ = dir.Close()
@@ -67,6 +71,9 @@ func (v *Vault) Resolve(ctx context.Context, base, input string) (Resolved, erro
 }
 
 func (v *Vault) OpenDir(ctx context.Context, base, input string) (*Directory, error) {
+	if end := v.activity.Begin(); end != nil {
+		defer end()
+	}
 	resolved, dir, err := v.resolve(ctx, base, input, true)
 	if err != nil {
 		if dir != nil {
@@ -183,7 +190,7 @@ func (v *Vault) resolve(ctx context.Context, base, input string, openFinalDir bo
 		}
 		openedResolved := resolvedFromStat(strings.Join(canonical, "/"), &openedStat)
 		_ = current.Close()
-		current = &Directory{file: childFile, resolved: openedResolved, testHooks: v.testHooks}
+		current = &Directory{file: childFile, resolved: openedResolved, testHooks: v.testHooks, activity: v.activity}
 		if last {
 			return openedResolved, current, nil
 		}
@@ -215,6 +222,7 @@ func (v *Vault) openRoot(ctx context.Context) (*Directory, error) {
 		file:      file,
 		resolved:  resolvedFromStat(".", &stat),
 		testHooks: v.testHooks,
+		activity:  v.activity,
 	}, nil
 }
 

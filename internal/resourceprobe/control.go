@@ -1,0 +1,183 @@
+package resourceprobe
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync"
+
+	"golang.org/x/sys/unix"
+
+	"personal-mcp-gateway/internal/fsx"
+)
+
+// Environment is the sole opt-in marker for the private exact-candidate
+// resource probe. Its value is "<command-read-fd>,<ack-write-fd>".
+const Environment = "PERSONAL_MCP_GATEWAY_RESOURCE_PROBE_FDS"
+
+const maxCommandBytes = 32
+
+// Controller owns the child side of a private inherited-pipe protocol. It is
+// never constructed during normal runtime and exposes no MCP, CLI, or network
+// surface.
+type Controller struct {
+	command  *os.File
+	ack      *os.File
+	activity *fsx.ActivityCounter
+	close    sync.Once
+}
+
+// FromEnvironment returns nil when the private marker is absent and fails
+// closed when it is malformed or does not name valid inherited pipe ends.
+func FromEnvironment() (*Controller, error) {
+	raw, present := os.LookupEnv(Environment)
+	if !present {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) != 2 {
+		return nil, errors.New("invalid resource probe descriptors")
+	}
+	commandFD, err := parseFD(parts[0])
+	if err != nil {
+		return nil, err
+	}
+	ackFD, err := parseFD(parts[1])
+	if err != nil || commandFD == ackFD {
+		return nil, errors.New("invalid resource probe descriptors")
+	}
+	if err := requireAccessMode(commandFD, unix.O_RDONLY); err != nil {
+		return nil, err
+	}
+	if err := requireAccessMode(ackFD, unix.O_WRONLY); err != nil {
+		return nil, err
+	}
+	if err := requirePipe(commandFD); err != nil {
+		return nil, err
+	}
+	if err := requirePipe(ackFD); err != nil {
+		return nil, err
+	}
+	command := os.NewFile(uintptr(commandFD), "<resource-probe-command>")
+	ack := os.NewFile(uintptr(ackFD), "<resource-probe-ack>")
+	if command == nil || ack == nil {
+		if command != nil {
+			_ = command.Close()
+		}
+		if ack != nil {
+			_ = ack.Close()
+		}
+		return nil, errors.New("invalid resource probe descriptors")
+	}
+	return New(command, ack, &fsx.ActivityCounter{}), nil
+}
+
+func parseFD(value string) (int, error) {
+	if value == "" || strings.TrimSpace(value) != value {
+		return 0, errors.New("invalid resource probe descriptors")
+	}
+	fd, err := strconv.Atoi(value)
+	if err != nil || fd < 3 {
+		return 0, errors.New("invalid resource probe descriptors")
+	}
+	return fd, nil
+}
+
+func requireAccessMode(fd, want int) error {
+	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
+	if err != nil || flags&unix.O_ACCMODE != want {
+		return errors.New("invalid resource probe descriptors")
+	}
+	return nil
+}
+
+func requirePipe(fd int) error {
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFIFO {
+		return errors.New("invalid resource probe descriptors")
+	}
+	return nil
+}
+
+// New is the deterministic package-test constructor. Production uses
+// FromEnvironment so the controller cannot exist without inherited pipes.
+func New(command, ack *os.File, activity *fsx.ActivityCounter) *Controller {
+	return &Controller{command: command, ack: ack, activity: activity}
+}
+
+func (c *Controller) Activity() *fsx.ActivityCounter {
+	if c == nil {
+		return nil
+	}
+	return c.activity
+}
+
+// Run serves exact gc and snapshot commands. runtime.GC is blocking; its ack is
+// therefore causal evidence that the requested collection completed.
+func (c *Controller) Run(ctx context.Context) error {
+	if c == nil || c.command == nil || c.ack == nil || c.activity == nil {
+		return errors.New("resource probe is not configured")
+	}
+	closed := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = c.command.Close()
+		case <-closed:
+		}
+	}()
+	defer close(closed)
+
+	reader := bufio.NewReaderSize(c.command, maxCommandBytes)
+	for {
+		lineBytes, err := reader.ReadSlice('\n')
+		if err != nil {
+			if errors.Is(err, io.EOF) && ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if errors.Is(err, io.EOF) {
+				return errors.New("resource probe command channel closed")
+			}
+			return errors.New("resource probe command was invalid")
+		}
+		line := string(lineBytes)
+		switch line {
+		case "gc\n":
+			runtime.GC()
+			if _, err := io.WriteString(c.ack, "gc ok\n"); err != nil {
+				return errors.New("resource probe acknowledgement failed")
+			}
+		case "snapshot\n":
+			snapshot := c.activity.Snapshot()
+			if _, err := fmt.Fprintf(c.ack, "snapshot %d %d\n", snapshot.Total, snapshot.Active); err != nil {
+				return errors.New("resource probe acknowledgement failed")
+			}
+		default:
+			return errors.New("resource probe command was invalid")
+		}
+	}
+}
+
+func (c *Controller) Close() error {
+	if c == nil {
+		return nil
+	}
+	var first error
+	c.close.Do(func() {
+		if c.command != nil {
+			first = c.command.Close()
+		}
+		if c.ack != nil {
+			if err := c.ack.Close(); first == nil {
+				first = err
+			}
+		}
+	})
+	return first
+}

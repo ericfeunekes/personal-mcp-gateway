@@ -26,6 +26,7 @@ import (
 const (
 	smokeTimeout          = 10 * time.Second
 	performanceTimeout    = 90 * time.Second
+	resourceTimeout       = 4 * time.Minute
 	performanceWarmups    = 10
 	performanceSamples    = 100
 	stratifiedWarmups     = 2
@@ -199,22 +200,46 @@ func run(args []string, stdout, stderr io.Writer) error {
 	obsidianRoot := flags.String("obsidian-root", "", "vault root used for the probe")
 	reportJSON := flags.Bool("report-json", false, "emit one sanitized aggregate JSON report")
 	performanceJSON := flags.Bool("performance-json", false, "emit one sanitized current-vault and stratified candidate performance report")
+	resourceJSON := flags.Bool("resource-json", false, "emit one sanitized fresh-process, repeated-batch, and idle resource report")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if *gatewayBin == "" || *obsidianRoot == "" {
 		return errors.New("--gateway-bin and --obsidian-root are required")
 	}
-	if *reportJSON && *performanceJSON {
-		return errors.New("--report-json and --performance-json are mutually exclusive")
+	selectedJSONModes := 0
+	for _, selected := range []bool{*reportJSON, *performanceJSON, *resourceJSON} {
+		if selected {
+			selectedJSONModes++
+		}
+	}
+	if selectedJSONModes > 1 {
+		return errors.New("--report-json, --performance-json, and --resource-json are mutually exclusive")
 	}
 
 	timeout := smokeTimeout
 	if *performanceJSON {
 		timeout = performanceTimeout
+	} else if *resourceJSON {
+		timeout = resourceTimeout
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	if *resourceJSON {
+		report, err := probeCandidateResources(ctx, *gatewayBin, *obsidianRoot, defaultResourceProbeOptions(), systemResourceSampler{})
+		if report.SchemaVersion != 0 {
+			if encodeErr := json.NewEncoder(stdout).Encode(report); encodeErr != nil {
+				return errors.New("encode resource report failed")
+			}
+		}
+		if err != nil {
+			return err
+		}
+		if report.SchemaVersion == 0 {
+			return errors.New("encode resource report failed")
+		}
+		return nil
+	}
 	if *performanceJSON {
 		report, err := probeCurrentVaultPerformance(ctx, *gatewayBin, *obsidianRoot)
 		if err != nil {
@@ -823,6 +848,19 @@ func connectCandidateCommand(ctx context.Context, gatewayBin, root, telemetry st
 }
 
 func connectCandidateProcess(ctx context.Context, cmd *exec.Cmd, stderr io.Writer) (*sdk.ClientSession, error) {
+	process, err := connectCandidateProcessHandle(ctx, cmd, stderr)
+	if err != nil {
+		return nil, err
+	}
+	return process.session, nil
+}
+
+type candidateProcess struct {
+	session *sdk.ClientSession
+	command *exec.Cmd
+}
+
+func connectCandidateProcessHandle(ctx context.Context, cmd *exec.Cmd, stderr io.Writer) (*candidateProcess, error) {
 	cmd.Stderr = stderr
 	client := sdk.NewClient(&sdk.Implementation{Name: "local-release-smoke", Version: "v1"}, nil)
 	session, err := client.Connect(ctx, &sdk.CommandTransport{
@@ -832,7 +870,11 @@ func connectCandidateProcess(ctx context.Context, cmd *exec.Cmd, stderr io.Write
 	if err != nil {
 		return nil, errors.New("candidate MCP connection failed")
 	}
-	return session, nil
+	if cmd.Process == nil || cmd.Process.Pid <= 0 {
+		_ = session.Close()
+		return nil, errors.New("candidate process identity was unavailable")
+	}
+	return &candidateProcess{session: session, command: cmd}, nil
 }
 
 func newPrivateSQLiteStore() (string, func(), error) {
