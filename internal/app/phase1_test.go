@@ -46,7 +46,10 @@ func TestPhase1DescriptorsTeachCanonicalContinuation(t *testing.T) {
 	if ls == nil || ls.Description != obsidian.LSDescription {
 		t.Fatalf("ls description = %#v", ls)
 	}
-	if !strings.HasPrefix(ls.Description, "Continue a partial listing only by passing `coverage.next_cursor` as `cursor`") ||
+	if !strings.HasPrefix(ls.Description, "Set `limit` to the exact requested batch size: one item per tool result means `limit:1`") ||
+		!strings.Contains(ls.Description, "already exclude hidden and denied items") ||
+		!strings.Contains(ls.Description, "do not overfetch or call `resolve` merely to inspect") ||
+		!strings.Contains(ls.Description, "Continue a partial listing only by passing `coverage.next_cursor` as `cursor`") ||
 		!strings.Contains(ls.Description, "Never omit `cursor` or change `limit` to continue") ||
 		!strings.Contains(ls.Description, "restarts at the first entry and repeats results") ||
 		!strings.Contains(ls.Description, "changing `limit` with the prior cursor returns `cursor_mismatch`") {
@@ -58,6 +61,8 @@ func TestPhase1DescriptorsTeachCanonicalContinuation(t *testing.T) {
 		t.Fatalf("limit schema = %#v", limit)
 	}
 	if description, _ := limit["description"].(string); !strings.Contains(description, "keep it identical") ||
+		!strings.Contains(description, "exact requested batch size") || !strings.Contains(description, "one item per result means 1") ||
+		!strings.Contains(description, "after hidden and denied entries are filtered") || !strings.Contains(description, "do not overfetch") ||
 		!strings.Contains(description, "restarts at the first entry") || !strings.Contains(description, "defaults to 100") ||
 		!strings.Contains(description, "1 through 500") {
 		t.Fatalf("limit schema description = %q", description)
@@ -77,6 +82,8 @@ func TestPhase1DescriptorsTeachCanonicalContinuation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, guidance := range []string{
+		"allowed non-hidden entries already inspected as metadata",
+		"do not call resolve merely to inspect an entry returned here",
 		"use next_cursor instead of widening limit",
 		"the next call must pass next_cursor as cursor with identical path, base, and limit",
 		"never widen limit to continue",
