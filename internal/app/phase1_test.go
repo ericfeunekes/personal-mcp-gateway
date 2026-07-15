@@ -47,15 +47,26 @@ func TestPhase1DescriptorsTeachCanonicalContinuation(t *testing.T) {
 		t.Fatalf("ls description = %#v", ls)
 	}
 	if !strings.HasPrefix(ls.Description, "Set `limit` to the exact requested batch size: one item per tool result means `limit:1`") ||
+		!strings.Contains(ls.Description, "put `coverage.next_cursor` only in `cursor`, never in `path` or `base`") ||
 		!strings.Contains(ls.Description, "already exclude hidden and denied items") ||
 		!strings.Contains(ls.Description, "do not overfetch or call `resolve` merely to inspect") ||
-		!strings.Contains(ls.Description, "Continue a partial listing only by passing `coverage.next_cursor` as `cursor`") ||
+		!strings.Contains(ls.Description, "Continue a partial listing only with the identical `path`, `base`, and `limit`") ||
 		!strings.Contains(ls.Description, "Never omit `cursor` or change `limit` to continue") ||
 		!strings.Contains(ls.Description, "restarts at the first entry and repeats results") ||
 		!strings.Contains(ls.Description, "changing `limit` with the prior cursor returns `cursor_mismatch`") {
 		t.Fatalf("ls description does not front-load continuation recovery = %q", ls.Description)
 	}
 	input := schemaObject(t, ls.InputSchema)
+	path := schemaProperty(t, input, "path")
+	if description, _ := path["description"].(string); !strings.Contains(description, "use . for the vault root") ||
+		!strings.Contains(description, "never place a continuation token here") {
+		t.Fatalf("path schema description = %q", description)
+	}
+	base := schemaProperty(t, input, "base")
+	if description, _ := base["description"].(string); !strings.Contains(description, "used only to resolve path") ||
+		!strings.Contains(description, "when no separate base is needed") || !strings.Contains(description, "never place coverage.next_cursor here") {
+		t.Fatalf("base schema description = %q", description)
+	}
 	limit := schemaProperty(t, input, "limit")
 	if limit["default"] != float64(100) {
 		t.Fatalf("limit schema = %#v", limit)
@@ -69,6 +80,8 @@ func TestPhase1DescriptorsTeachCanonicalContinuation(t *testing.T) {
 	}
 	cursor := schemaProperty(t, input, "cursor")
 	if description, _ := cursor["description"].(string); !strings.Contains(description, "required to continue") ||
+		!strings.Contains(description, "the only field for coverage.next_cursor") ||
+		!strings.Contains(description, "never in path or base") ||
 		!strings.Contains(description, "coverage.next_cursor unchanged") || !strings.Contains(description, "identical") ||
 		!strings.Contains(description, "restarts at the first entry") {
 		t.Fatalf("cursor schema description = %q", description)
@@ -86,6 +99,7 @@ func TestPhase1DescriptorsTeachCanonicalContinuation(t *testing.T) {
 		"do not call resolve merely to inspect an entry returned here",
 		"use next_cursor instead of widening limit",
 		"the next call must pass next_cursor as cursor with identical path, base, and limit",
+		"pass it unchanged only in the cursor input field, never path or base",
 		"never widen limit to continue",
 	} {
 		if !strings.Contains(string(encodedOutput), guidance) {

@@ -15,5 +15,5 @@ type Coverage struct {
 	BytesScanned   uint64 `json:"bytes_scanned" jsonschema:"file-content bytes read; always zero for metadata-only ls"`
 	StoppedBy      string `json:"stopped_by" jsonschema:"scope, result_limit, response_limit, timeout, canceled, source_change, or error"`
 	Continuation   string `json:"continuation" jsonschema:"complete means done; cursor means the next call must pass next_cursor as cursor with identical path, base, and limit, because omitting it restarts at the first entry; restart means begin again without a cursor"`
-	NextCursor     string `json:"next_cursor,omitempty" jsonschema:"opaque continuation required for the next page when continuation is cursor; pass it unchanged as cursor with identical path, base, and limit; never widen limit to continue"`
+	NextCursor     string `json:"next_cursor,omitempty" jsonschema:"opaque continuation required for the next page when continuation is cursor; pass it unchanged only in the cursor input field, never path or base, with identical path, base, and limit; never widen limit to continue"`
 }
