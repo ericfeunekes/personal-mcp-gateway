@@ -391,6 +391,20 @@ func TestLocalReleaseBoundsReportsWithoutLimitingPrivateGoArtifacts(t *testing.T
 	}
 }
 
+func TestLocalReleaseStopsOversizedReportProducerAtCaptureBound(t *testing.T) {
+	harness := newLocalReleaseHarness(t, releaseOptions{previous: true, oversizedFunctionalReport: true})
+	stdout, stderr, exit := harness.runChannels()
+	if exit != 1 || stdout != "" || stderr != "error=release_smoke_failed message=release candidate smoke failed\n" {
+		t.Fatalf("release exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(harness.repo, "oversized-report-producer-completed")); !os.IsNotExist(err) {
+		t.Fatalf("oversized report producer was not stopped at capture bound: %v", err)
+	}
+	if _, err := os.Stat(releaseActiveDir(harness.repo)); !os.IsNotExist(err) {
+		t.Fatalf("oversized report created release state: %v", err)
+	}
+}
+
 func TestLocalReleasePinsDefaultHealthMarkerOutsideCallerTMPDIR(t *testing.T) {
 	harness := newLocalReleaseHarness(t, releaseOptions{previous: true})
 	callerTMP := filepath.Join(harness.repo, "caller-tmp")
@@ -1160,6 +1174,7 @@ type releaseOptions struct {
 	malformedReport             bool
 	crossReportDrift            bool
 	largePrivateSmokeArtifact   bool
+	oversizedFunctionalReport   bool
 }
 
 type localReleaseHarness struct {
@@ -1345,6 +1360,11 @@ schema_version=3
 if has_argument --report-json "$@"; then
   kind=functional
   if [[ "${MALFORMED_REPORT:-0}" == 1 ]]; then printf '{'; exit 0; fi
+  if [[ "${OVERSIZED_FUNCTIONAL_REPORT:-0}" == 1 ]]; then
+    /usr/bin/head -c $((4 * 1024 * 1024)) /dev/zero
+    : >"$OVERSIZED_REPORT_PRODUCER_COMPLETED"
+    exit 0
+  fi
 elif has_argument --performance-json "$@"; then
   kind=performance
   if [ "${FAIL_PERFORMANCE_SMOKE:-0}" = 1 ]; then
@@ -1468,6 +1488,8 @@ exec "$REAL_INSTALL" "$@"
 		"CROSS_REPORT_DRIFT="+boolString(options.crossReportDrift),
 		"LARGE_PRIVATE_SMOKE_ARTIFACT="+boolString(options.largePrivateSmokeArtifact),
 		"PRIVATE_SMOKE_ARTIFACT="+filepath.Join(repo, "private-smoke-artifact"),
+		"OVERSIZED_FUNCTIONAL_REPORT="+boolString(options.oversizedFunctionalReport),
+		"OVERSIZED_REPORT_PRODUCER_COMPLETED="+filepath.Join(repo, "oversized-report-producer-completed"),
 		"CHANGE_COMMIT_ON_RECHECK="+boolString(options.changeCommitOnRecheck),
 		"FAIL_SECOND_PREFLIGHT="+boolString(options.failSecondPreflight),
 		"REVPARSE_COUNT="+filepath.Join(repo, "revparse-count"),
