@@ -101,11 +101,12 @@ choose transitions, or maintain fallback rollback state.
 
 The dispatcher performs optimistic selection only. It invokes the selected
 controller through separate private `0600` stdout/stderr files with a 64 KiB
-cap, suppresses child-start diagnostics, and retries at most once for an exact
-pre-effect authority mismatch or start race. It never retries another error or
-an effect. The private controller's release-or-guide operation makes that retry
-safe: clear prepares then resumes, prepared resumes, and later active states
-return bounded legal recovery guidance without mutation.
+cap, suppresses child-start diagnostics, and retries at most once only when the
+controller returns the byte-exact pre-effect authority-mismatch record. A child
+start failure, any other error record, and any result after an effect are final.
+The private controller's release-or-guide operation makes the one retry safe:
+clear prepares then resumes, prepared resumes, and later active states return
+bounded legal recovery guidance without mutation.
 
 Source fetch may occur outside the lifecycle lock because it does not mutate the
 checkout. Final clear-state, branch, tree, HEAD, and fetched-ref validation plus

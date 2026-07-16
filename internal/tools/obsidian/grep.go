@@ -175,7 +175,8 @@ func (t *Tools) Grep(ctx context.Context, _ *sdk.CallToolRequest, input GrepInpu
 
 	_, walkErr := t.vault.WalkFiles(toolCtx, "", canonical, run.visit)
 	if walkErr != nil {
-		if run.resume != nil && !terminatingRetrievalError(walkErr) && !fsx.IsCode(walkErr, fsx.CodeSourceChanged) && !errors.Is(walkErr, ErrCursorStale) {
+		if run.resume != nil && !terminatingRetrievalError(walkErr) && !fsx.IsCode(walkErr, fsx.CodeSourceChanged) &&
+			!errors.Is(walkErr, ErrCursorStale) && !errors.Is(walkErr, ErrResponseTooLarge) {
 			walkErr = ErrCursorStale
 		}
 		return grepErrorOutput(canonical, run.matches, run.work, walkErr)
@@ -432,7 +433,8 @@ func (g *grepRun) scanFile(ctx context.Context, entry fsx.WalkFile, partial *gre
 		advanced = true
 
 		if line.large != nil && len(pending) > 0 {
-			return fsx.WalkStop, ErrResponseTooLarge
+			_, err := g.stopForUnfitGrepCandidate()
+			return g.stopAction(err)
 		}
 		for i := range pending {
 			pending[i].match.After = append(pending[i].match.After, GrepContextLine{Line: line.number, Text: line.text})
@@ -456,7 +458,8 @@ func (g *grepRun) scanFile(ctx context.Context, entry fsx.WalkFile, partial *gre
 		}
 		if len(firstIndex) > 0 {
 			if line.large != nil || grepRingHasLargeLine(before) {
-				return fsx.WalkStop, ErrResponseTooLarge
+				_, err := g.stopForUnfitGrepCandidate()
+				return g.stopAction(err)
 			}
 			beforeContext := make([]GrepContextLine, len(before))
 			for i := range before {

@@ -659,6 +659,49 @@ func TestGrepResponseLimitReturnsLargestEmittedPrefixAndContinues(t *testing.T) 
 	}
 }
 
+func TestGrepResponseLimitPreservesPrefixBeforeOversizedEvidenceWithoutReplay(t *testing.T) {
+	tests := []struct {
+		name         string
+		content      string
+		contextLines int
+	}{
+		{
+			name:         "current matching line",
+			content:      "hit first\n" + "hit " + strings.Repeat("z", grepHeapLineBytes) + "\n",
+			contextLines: 0,
+		},
+		{
+			name:         "after context",
+			content:      "hit first\nhit second\n" + strings.Repeat("z", grepHeapLineBytes) + "\n",
+			contextLines: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeGrepFile(t, root, "note.md", tt.content)
+			tools := grepTools(t, root)
+			contextLines := tt.contextLines
+			input := GrepInput{Pattern: "hit", Path: "note.md", ContextLines: &contextLines}
+
+			result, first, err := tools.Grep(context.Background(), nil, input)
+			if err != nil || result == nil || result.IsError || !first.OK || len(first.Matches) != 1 || first.Matches[0].Line != 1 ||
+				first.Coverage.StoppedBy != string(CursorStopResponseLimit) || first.Coverage.Continuation != CoverageContinuationCursor ||
+				first.Coverage.NextCursor == "" {
+				t.Fatalf("first result=%#v out=%#v err=%v", result, first, err)
+			}
+
+			input.Cursor = first.Coverage.NextCursor
+			result, resumed, err := tools.Grep(context.Background(), nil, input)
+			if err != nil || result == nil || !result.IsError || resumed.OK || resumed.Error == nil || resumed.Error.Code != ResponseTooLargeCode ||
+				len(resumed.Matches) != 0 || resumed.Coverage.Continuation != CoverageContinuationRestart || resumed.Coverage.NextCursor != "" {
+				t.Fatalf("resumed result=%#v out=%#v err=%v", result, resumed, err)
+			}
+		})
+	}
+}
+
 func TestGrepCancellationIsStructuredAndReadOnly(t *testing.T) {
 	root := t.TempDir()
 	writeGrepFile(t, root, "note.md", "hit\n")

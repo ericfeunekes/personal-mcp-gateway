@@ -288,19 +288,14 @@ while (( attempt < 2 )); do
     fail_literal
   fi
 
-  start_failure=0
-  if (( child_status == 126 || child_status == 127 )); then
-    start_failure=1
-  fi
-  first_error=""
-  IFS= read -r first_error <"$stderr_file" || true
   authority_retry=0
-  if (( child_status == 1 )) && [[ ! -s "$stdout_file" ]] &&
-    [[ "$first_error" == 'error=authority_mismatch message=release controller identity does not match' ]]; then
+  if (( child_status == 1 && stdout_size == 0 )) &&
+    printf '%s\n' 'error=authority_mismatch message=release controller identity does not match' |
+      /usr/bin/cmp -s - "$stderr_file"; then
     authority_retry=1
   fi
 
-  if (( start_failure == 1 || authority_retry == 1 )); then
+  if (( authority_retry == 1 )); then
     if (( attempt == 0 )); then
       attempt=1
       continue

@@ -208,6 +208,54 @@ func TestReleaseActivationDispatcherRelaysChannelsByteExactly(t *testing.T) {
 	}
 }
 
+func TestReleaseActivationDispatcherDoesNotRetryAuthorityMismatchWithTrailingStderrAfterEffect(t *testing.T) {
+	repo, binDir, _ := newDispatcherRepo(t)
+	controller := filepath.Join(repo, "controller")
+	effectLog := filepath.Join(repo, "effects")
+	writeExecutable(t, controller, `#!/bin/sh
+printf 'effect\n' >>"$EFFECT_LOG"
+printf '%s\n' 'error=authority_mismatch message=release controller identity does not match' >&2
+printf '%s\n' 'detail=unexpected' >&2
+exit 1
+`)
+	stdout, stderr, exit := runDispatcherEnv(t, repo, binDir, []string{
+		"RELEASE_ACTIVATION_CANDIDATE=" + controller,
+		"EFFECT_LOG=" + effectLog,
+	}, "status-private")
+	wantStderr := "error=authority_mismatch message=release controller identity does not match\ndetail=unexpected\n"
+	if exit != 1 || stdout != "" || stderr != wantStderr {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+	data, err := os.ReadFile(effectLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "effect\n" {
+		t.Fatalf("effect log = %q, want one execution", data)
+	}
+}
+
+func TestReleaseActivationDispatcherDoesNotRetryExit126AfterEffect(t *testing.T) {
+	repo, binDir, _ := newDispatcherRepo(t)
+	controller := filepath.Join(repo, "controller")
+	effectLog := filepath.Join(repo, "effects")
+	writeExecutable(t, controller, "#!/bin/sh\nprintf 'effect\\n' >>\"$EFFECT_LOG\"\nexit 126\n")
+	stdout, stderr, exit := runDispatcherEnv(t, repo, binDir, []string{
+		"RELEASE_ACTIVATION_CANDIDATE=" + controller,
+		"EFFECT_LOG=" + effectLog,
+	}, "status-private")
+	if exit != 1 || stdout != "" || stderr != "error=authority_missing message=the release controller is unavailable\n" {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+	data, err := os.ReadFile(effectLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "effect\n" {
+		t.Fatalf("effect log = %q, want one execution", data)
+	}
+}
+
 func TestReleaseActivationDispatcherRetriesClearToActiveOnce(t *testing.T) {
 	repo, binDir, home := newDispatcherRepo(t)
 	controller := filepath.Join(repo, "controller")

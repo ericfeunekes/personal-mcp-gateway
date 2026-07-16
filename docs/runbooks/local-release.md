@@ -95,10 +95,10 @@ diagnostics.
 The stable dispatcher is the sole public formatter boundary. It captures the
 controller's stdout and stderr in private `0600` channels, caps each at 64 KiB,
 and relays the completed byte streams unchanged. It retries selection once only
-when a controller cannot start or returns the exact pre-effect
-`authority_mismatch` record; every other result is final. Release gates suppress
-test, build, smoke, fetch, preflight, and child diagnostics. A successful
-release therefore prints only the three pending records. If `make release`
+when the controller returns the byte-exact pre-effect `authority_mismatch`
+record; a child start failure and every other result are final. Release gates
+suppress test, build, smoke, fetch, preflight, and child diagnostics. A
+successful release therefore prints only the three pending records. If `make release`
 encounters `pending`, `accepting`, or `rolling_back`, stdout is empty and stderr
 contains the fixed `state_conflict` record, active identity, and only the legal
 next command records for that state. Direct Make failures may append Make's own
