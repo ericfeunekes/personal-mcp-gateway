@@ -571,7 +571,7 @@ func TestDefaultResourceProbeContractIsFrozen(t *testing.T) {
 		IdleDuration:  60 * time.Second,
 		ControlTime:   5 * time.Second,
 	}
-	if !reflect.DeepEqual(got, want) || resourceReportVersion != 4 || resourceBatchCount != 3 || resourceBatchCalls != 100 ||
+	if !reflect.DeepEqual(got, want) || resourceReportVersion != 5 || resourceBatchCount != 3 || resourceBatchCalls != 100 ||
 		resourceHeapAllocGrowthLimitBytes != uint64(256*1024) || resourceRSSGrowthLimitBytes != int64(8*1024*1024) ||
 		resourceRSSLimitBytes != int64(64*1024*1024) {
 		t.Fatalf("resource probe defaults = %#v, version=%d batches=%d calls=%d heap=%d rss=%d hwm=%d", got, resourceReportVersion, resourceBatchCount, resourceBatchCalls, resourceHeapAllocGrowthLimitBytes, resourceRSSGrowthLimitBytes, resourceRSSLimitBytes)
@@ -1135,13 +1135,13 @@ func passingResourceGateReport() resourceReport {
 		Workload: resourceWorkloadReport{
 			BatchCount: resourceBatchCount, CallsPerBatch: resourceBatchCalls, CallsPerToolPerBatch: resourceCallsPerToolPerBatch,
 			MixedCallCount: resourceBatchCount * resourceBatchCalls, BoundaryCallCount: resourceBoundaryCalls, MeasuredCallCount: resourceMeasuredCalls,
-			ToolCalls:                    resourceToolCallCounts{Resolve: 60, LS: 60, Read: 64, ReadMany: 60, Grep: 67},
+			ToolCalls:                    resourceToolCallCounts{Resolve: 60, LS: 60, Read: 65, ReadMany: 60, Grep: 67},
 			MaxClientLatencyMicroseconds: 1, MaxSDKResultBytes: 1, MaxStructuredBytes: 1, MaxBytesScanned: 1,
 			EveryCallWithinTwoSeconds: true, EverySDKResultWithin64KiB: true,
 		},
 		Boundaries: resourceBoundaryReport{
 			CallCount: resourceBoundaryCalls, BatchNumber: 1, RanAfterBaseline: true, RanBeforeBlockingGC: true,
-			Near8MiBStructuralAccepted: true, Dense50000StructuralAccepted: true,
+			Near8MiBStructuralAccepted: true, Dense50000DecoyRejected: true, Dense50000BlockAccepted: true,
 			Over8MiBErrorCode: "input_too_large", Over50000LinesErrorCode: "input_too_large",
 			GrepExactMatchingErrorCode: obsidian.ResponseTooLargeCode, GrepExactNonmatchingAccepted: true,
 			GrepExactContextErrorCode: obsidian.ResponseTooLargeCode, GrepExactUnicodeErrorCode: obsidian.ResponseTooLargeCode,

@@ -60,6 +60,8 @@ func Descriptors(vault *fsx.Vault) ([]localmcp.ToolDescriptor, error) {
 		return nil, errors.New("ls input schema lacks limit")
 	}
 	limitSchema.Default = json.RawMessage("100")
+	limitSchema.Minimum = jsonschema.Ptr(float64(1))
+	limitSchema.Maximum = jsonschema.Ptr(float64(fsx.MaxLimit))
 	ls, err := localmcp.NewToolDescriptor(sdk.Tool{
 		Name:        ToolLS,
 		Description: LSDescription,

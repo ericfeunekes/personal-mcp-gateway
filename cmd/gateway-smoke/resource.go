@@ -25,13 +25,13 @@ import (
 )
 
 const (
-	resourceReportSchema              = "personal-mcp-gateway.resource.v4"
-	resourceReportVersion             = 4
+	resourceReportSchema              = "personal-mcp-gateway.resource.v5"
+	resourceReportVersion             = 5
 	resourceColdProcesses             = 10
 	resourceBatchCount                = 3
 	resourceBatchCalls                = 100
 	resourceCallsPerToolPerBatch      = 20
-	resourceBoundaryCalls             = 11
+	resourceBoundaryCalls             = 12
 	resourceMeasuredCalls             = resourceBatchCount*resourceBatchCalls + resourceBoundaryCalls
 	resourceHeapAllocGrowthLimitBytes = uint64(256 * 1024)
 	resourceRSSGrowthLimitBytes       = int64(8 * 1024 * 1024)
@@ -120,7 +120,8 @@ type resourceBoundaryReport struct {
 	RanAfterBaseline              bool   `json:"ran_after_baseline"`
 	RanBeforeBlockingGC           bool   `json:"ran_before_blocking_gc"`
 	Near8MiBStructuralAccepted    bool   `json:"near_8mib_structural_accepted"`
-	Dense50000StructuralAccepted  bool   `json:"dense_50000_structural_accepted"`
+	Dense50000DecoyRejected       bool   `json:"dense_50000_decoy_rejected"`
+	Dense50000BlockAccepted       bool   `json:"dense_50000_block_accepted"`
 	Over8MiBErrorCode             string `json:"over_8mib_error_code"`
 	Over50000LinesErrorCode       string `json:"over_50000_lines_error_code"`
 	GrepExactMatchingErrorCode    string `json:"grep_exact_matching_error_code"`
@@ -702,7 +703,8 @@ func newResourceFixture() (resourceFixture, error) {
 	if err != nil {
 		return resourceFixture{}, err
 	}
-	dense := []byte("dense ^dense\n" + strings.Repeat("- x\n", obsidian.MaxMarkdownSourceLines-1))
+	dense := []byte("decoy ^decoy\n~ continuation\n\naccepted ^accepted\n- x\n" +
+		strings.Repeat("- x\n", obsidian.MaxMarkdownSourceLines-5))
 	fixture.boundary.dense50000, err = write("dense.md", dense)
 	if err != nil {
 		return resourceFixture{}, err
@@ -1034,7 +1036,7 @@ func validResourceWorkload(report resourceWorkloadReport) bool {
 	wantCalls := resourceToolCallCounts{
 		Resolve:  resourceBatchCount * resourceCallsPerToolPerBatch,
 		LS:       resourceBatchCount * resourceCallsPerToolPerBatch,
-		Read:     resourceBatchCount*resourceCallsPerToolPerBatch + 4,
+		Read:     resourceBatchCount*resourceCallsPerToolPerBatch + 5,
 		ReadMany: resourceBatchCount * resourceCallsPerToolPerBatch,
 		Grep:     resourceBatchCount*resourceCallsPerToolPerBatch + 7,
 	}
@@ -1049,7 +1051,7 @@ func validResourceWorkload(report resourceWorkloadReport) bool {
 
 func validResourceBoundaries(report resourceBoundaryReport) bool {
 	return report.CallCount == resourceBoundaryCalls && report.BatchNumber == 1 && report.RanAfterBaseline && report.RanBeforeBlockingGC &&
-		report.Near8MiBStructuralAccepted && report.Dense50000StructuralAccepted &&
+		report.Near8MiBStructuralAccepted && report.Dense50000DecoyRejected && report.Dense50000BlockAccepted &&
 		report.Over8MiBErrorCode == "input_too_large" && report.Over50000LinesErrorCode == "input_too_large" &&
 		report.GrepExactMatchingErrorCode == obsidian.ResponseTooLargeCode && report.GrepExactNonmatchingAccepted &&
 		report.GrepExactContextErrorCode == obsidian.ResponseTooLargeCode && report.GrepExactUnicodeErrorCode == obsidian.ResponseTooLargeCode &&
@@ -1312,14 +1314,24 @@ func probeResourceBoundaries(ctx context.Context, session *sdk.ClientSession, fi
 	}
 	report.Near8MiBStructuralAccepted = true
 
-	dense, sample, err := readSuccess(fixture.dense50000, map[string]any{"kind": obsidian.SelectorBlock, "block_id": "dense"})
-	if err != nil || dense.Coverage.Continuation != "complete" {
-		return resourceBoundaryReport{}, errors.New("candidate resource 50,000-line structural boundary failed")
+	report.Dense50000DecoyRejected, sample, err = func() (bool, resourceCallSample, error) {
+		code, measured, callErr := readError(fixture.dense50000, map[string]any{"kind": obsidian.SelectorBlock, "block_id": "decoy"}, "selector_not_found")
+		return code == "selector_not_found", measured, callErr
+	}()
+	if err != nil || !report.Dense50000DecoyRejected {
+		return resourceBoundaryReport{}, errors.New("candidate resource 50,000-line decoy boundary failed")
 	}
 	if err := add(obsidian.ToolRead, sample); err != nil {
 		return resourceBoundaryReport{}, err
 	}
-	report.Dense50000StructuralAccepted = true
+	dense, sample, err := readSuccess(fixture.dense50000, map[string]any{"kind": obsidian.SelectorBlock, "block_id": "accepted"})
+	if err != nil || dense.Content == nil || *dense.Content != "accepted ^accepted\n" || dense.Coverage.Continuation != "complete" {
+		return resourceBoundaryReport{}, errors.New("candidate resource 50,000-line accepted boundary failed")
+	}
+	if err := add(obsidian.ToolRead, sample); err != nil {
+		return resourceBoundaryReport{}, err
+	}
+	report.Dense50000BlockAccepted = true
 
 	report.Over8MiBErrorCode, sample, err = readError(fixture.over8MiB, map[string]any{"kind": obsidian.SelectorHeading, "heading": "Beyond"}, "input_too_large")
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"personal-mcp-gateway/internal/fsx"
+	"personal-mcp-gateway/internal/testutil"
 )
 
 func TestReadContentContinuationPreservesBytesWithoutReplay(t *testing.T) {
@@ -165,6 +166,48 @@ func TestReadHeadingAndOutlineUseNormalizedSelectors(t *testing.T) {
 	})
 	if err != nil || !outline.OK || outline.Content != nil || outline.Outline == nil || len(*outline.Outline) != 3 {
 		t.Fatalf("outline = %#v err=%v", outline, err)
+	}
+}
+
+func TestReadBlockSelectionUsesGoldmarkAcrossStructuralThreshold(t *testing.T) {
+	tests := []struct {
+		name     string
+		markdown string
+		want     string
+		wantCode string
+	}{
+		{name: "short tilde", markdown: "target ^same\n~ continuation\n\n", wantCode: SelectorNotFoundCode},
+		{name: "valid fence", markdown: "target ^same\n~~~\ncode\n~~~\n", want: "target ^same\n"},
+		{name: "setext beginning with hash", markdown: "#not-atx ^same\n---\n\n", wantCode: SelectorNotFoundCode},
+		{name: "duplicate", markdown: "first ^same\n\nsecond ^same\n\n", wantCode: SelectorAmbiguousCode},
+		{name: "fenced code", markdown: "```\nfake ^same\n```\n\n", wantCode: SelectorNotFoundCode},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			markdown := padMarkdownToPhysicalLines(t, test.markdown, structuralPrefixMinLines+1)
+			writeReadFixture(t, root, "note.md", markdown)
+			before := testutil.Snapshot(t, root)
+			tools := newReadTools(t, root)
+
+			result, out, err := tools.Read(context.Background(), nil, ReadInput{
+				Path: "note.md", Selector: &ReadSelector{Kind: SelectorBlock, BlockID: "same"},
+			})
+			if err != nil {
+				t.Fatalf("Read: %v", err)
+			}
+			if test.wantCode != "" {
+				if !result.IsError || out.OK || out.Error == nil || out.Error.Code != test.wantCode || out.Content != nil || out.Coverage.NextCursor != "" {
+					t.Fatalf("result=%#v out=%#v, want %s", result, out, test.wantCode)
+				}
+			} else if result.IsError || !out.OK || out.Content == nil || *out.Content != test.want || out.Error != nil {
+				t.Fatalf("result=%#v out=%#v, want content %q", result, out, test.want)
+			}
+			if after := testutil.Snapshot(t, root); !reflect.DeepEqual(before, after) {
+				t.Fatalf("block read mutated vault:\nbefore=%#v\nafter=%#v", before, after)
+			}
+		})
 	}
 }
 

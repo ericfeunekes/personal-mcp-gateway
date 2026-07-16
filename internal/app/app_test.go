@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -228,9 +229,9 @@ func TestTelemetryRecordsToolUsageAndFailures(t *testing.T) {
 	}
 	assertHostileKeySummary(t, validation, runID, hostileKey)
 
-	limitExceeded := findToolRecord(records, obsidian.ToolLS, "tool_error", "limit_exceeded")
-	if limitExceeded == nil {
-		t.Fatalf("missing limit_exceeded telemetry: %s", text)
+	overLimitValidation := findToolRecord(records, obsidian.ToolLS, "tool_error", "schema_validation")
+	if overLimitValidation == nil {
+		t.Fatalf("missing over-limit schema_validation telemetry: %s", text)
 	}
 
 	unknown := findToolRecord(records, "unknown", "protocol_error", "unknown_tool")
@@ -369,8 +370,8 @@ func TestSQLiteTelemetryFromRealToolCallsIsSanitized(t *testing.T) {
 		t.Fatalf("missing schema_validation row: %s", text)
 	}
 	assertHostileKeySummary(t, validation, runID, hostileKey)
-	if findRow(rows, "tool.call", obsidian.ToolLS, "tool_error", "limit_exceeded") == nil {
-		t.Fatalf("missing limit_exceeded row: %s", text)
+	if findRow(rows, "tool.call", obsidian.ToolLS, "tool_error", "schema_validation") == nil {
+		t.Fatalf("missing over-limit schema_validation row: %s", text)
 	}
 	if findRow(rows, "tool.call", "unknown", "protocol_error", "unknown_tool") == nil {
 		t.Fatalf("missing sanitized unknown_tool row: %s", text)
@@ -446,9 +447,13 @@ func TestJSONLAndSQLiteSafeSummariesMatchForRealCursorCalls(t *testing.T) {
 func TestPhase2JSONLAndSQLiteSafeSummariesMatchAcrossOutcomeClasses(t *testing.T) {
 	const runID = "phase2-summary-parity-run"
 
-	var jsonl bytes.Buffer
+	var jsonl synchronizedBuffer
 	jsonLog := audit.NewJSONL(&jsonl, runID)
 	jsonEvidence := drivePhase2SafeSummaryScenario(t, testutil.FixtureVault(t), jsonLog)
+	jsonTerminalEvidence := drivePhase2SDKCancellationScenarios(t, testutil.FixtureVault(t), jsonLog, func() []map[string]any {
+		return toolCallRecords(completeAuditRecords(t, jsonl.String()))
+	})
+	jsonEvidence.forbidden = append(jsonEvidence.forbidden, jsonTerminalEvidence.forbidden...)
 	jsonRecords := toolCallRecords(auditRecords(t, jsonl.String()))
 
 	dbPath := filepath.Join(t.TempDir(), "phase2-summary-parity.sqlite")
@@ -457,15 +462,23 @@ func TestPhase2JSONLAndSQLiteSafeSummariesMatchAcrossOutcomeClasses(t *testing.T
 		t.Fatal(err)
 	}
 	sqliteEvidence := drivePhase2SafeSummaryScenario(t, testutil.FixtureVault(t), sqliteLog)
+	sqliteTerminalEvidence := drivePhase2SDKCancellationScenarios(t, testutil.FixtureVault(t), sqliteLog, func() []map[string]any {
+		return toolCallRecords(sqliteAuditRows(t, dbPath))
+	})
+	sqliteEvidence.forbidden = append(sqliteEvidence.forbidden, sqliteTerminalEvidence.forbidden...)
 	if err := sqliteLog.Close(); err != nil {
 		t.Fatal(err)
 	}
 	sqliteRecords := toolCallRecords(sqliteAuditRows(t, dbPath))
 
-	if len(jsonRecords) != len(sqliteRecords) || len(jsonRecords) != 12 {
-		t.Fatalf("Phase 2 tool-call record counts jsonl=%d sqlite=%d, want 12", len(jsonRecords), len(sqliteRecords))
+	const deterministicRecords = 12
+	const recordsPerCanceledTool = 2
+	terminalTools := []string{obsidian.ToolRead, obsidian.ToolReadMany, obsidian.ToolGrep}
+	wantRecords := deterministicRecords + recordsPerCanceledTool*len(terminalTools)
+	if len(jsonRecords) != len(sqliteRecords) || len(jsonRecords) != wantRecords {
+		t.Fatalf("Phase 2 tool-call record counts jsonl=%d sqlite=%d, want %d", len(jsonRecords), len(sqliteRecords), wantRecords)
 	}
-	for i := range jsonRecords {
+	for i := 0; i < deterministicRecords; i++ {
 		for _, key := range []string{"tool", "outcome", "error_code"} {
 			jsonValue, _ := jsonRecords[i][key].(string)
 			sqliteValue, _ := sqliteRecords[i][key].(string)
@@ -524,6 +537,22 @@ func TestPhase2JSONLAndSQLiteSafeSummariesMatchAcrossOutcomeClasses(t *testing.T
 		if strings.Contains(jsonText, cursor) || strings.Contains(sqliteText, cursor) ||
 			strings.Contains(jsonText, digest) || strings.Contains(sqliteText, digest) {
 			t.Fatal("Phase 2 telemetry retained a cursor or cursor digest")
+		}
+	}
+	for index, tool := range terminalTools {
+		terminalIndex := deterministicRecords + index*recordsPerCanceledTool
+		assertPhase2TerminalRecordParity(t, tool, jsonRecords[terminalIndex], sqliteRecords[terminalIndex])
+		followupIndex := terminalIndex + 1
+		for _, key := range []string{"tool", "outcome", "error_code"} {
+			jsonValue, _ := jsonRecords[followupIndex][key].(string)
+			sqliteValue, _ := sqliteRecords[followupIndex][key].(string)
+			if jsonValue != sqliteValue {
+				t.Fatalf("follow-up record[%d] %s differs: jsonl=%#v sqlite=%#v", followupIndex, key, jsonRecords[followupIndex][key], sqliteRecords[followupIndex][key])
+			}
+		}
+		if jsonRecords[followupIndex]["tool"] != tool || jsonRecords[followupIndex]["outcome"] != "ok" ||
+			!reflect.DeepEqual(jsonRecords[followupIndex]["summary"], sqliteRecords[followupIndex]["summary"]) {
+			t.Fatalf("%s follow-up parity differs:\njsonl=%#v\nsqlite=%#v", tool, jsonRecords[followupIndex], sqliteRecords[followupIndex])
 		}
 	}
 }
@@ -1014,6 +1043,119 @@ func TestToolCallsDoNotMutateVault(t *testing.T) {
 	}
 }
 
+func TestPhase2SDKRestartOutcomesDoNotMutateVault(t *testing.T) {
+	t.Run("read", func(t *testing.T) {
+		root := t.TempDir()
+		path := "read-restart.md"
+		if err := os.WriteFile(filepath.Join(root, path), []byte("alpha\nbeta\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		ctx, session, stop := connectPhase2TestSession(t, root, audit.Disabled())
+		defer stop()
+
+		arguments := map[string]any{"path": path, "max_bytes": 1}
+		first := callTool[obsidian.ReadOutput](t, ctx, session, obsidian.ToolRead, arguments)
+		if !first.OK || first.Coverage.NextCursor == "" {
+			t.Fatalf("read restart seed = %#v", first)
+		}
+		if err := os.WriteFile(filepath.Join(root, path), []byte("changed alpha\nbeta\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		before := testutil.Snapshot(t, root)
+		arguments["cursor"] = first.Coverage.NextCursor
+		result, err := session.CallTool(ctx, &sdk.CallToolParams{Name: obsidian.ToolRead, Arguments: arguments})
+		if err != nil || result == nil || !result.IsError {
+			t.Fatalf("stale read result=%#v err=%v", result, err)
+		}
+		assertSDKResultBudget(t, result)
+		var out obsidian.ReadOutput
+		unmarshalStructured(t, result, &out)
+		if out.OK || out.Error == nil || out.Error.Code != obsidian.CursorStaleCode || out.Coverage.Continuation != "restart" ||
+			out.Coverage.StoppedBy != "source_change" || out.Coverage.ScopeComplete || out.Coverage.NextCursor != "" || out.Content != nil || out.Outline != nil {
+			t.Fatalf("stale read output = %#v", out)
+		}
+		assertVaultSnapshotUnchanged(t, root, before, "stale read")
+	})
+
+	t.Run("read_many", func(t *testing.T) {
+		root := t.TempDir()
+		priorPath := "prior.md"
+		currentPath := "current.md"
+		if err := os.WriteFile(filepath.Join(root, priorPath), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, currentPath), []byte("abcdefgh"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		ctx, session, stop := connectPhase2TestSession(t, root, audit.Disabled())
+		defer stop()
+
+		arguments := map[string]any{"requests": []any{
+			map[string]any{"path": priorPath},
+			map[string]any{"path": currentPath, "max_bytes": 1},
+		}}
+		first := callTool[obsidian.ReadManyOutput](t, ctx, session, obsidian.ToolReadMany, arguments)
+		if !first.OK || first.Coverage.NextCursor == "" || first.NextRequestIndex != 1 {
+			t.Fatalf("read_many restart seed = %#v", first)
+		}
+		if err := os.WriteFile(filepath.Join(root, priorPath), []byte("changed"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		before := testutil.Snapshot(t, root)
+		arguments["cursor"] = first.Coverage.NextCursor
+		result, err := session.CallTool(ctx, &sdk.CallToolParams{Name: obsidian.ToolReadMany, Arguments: arguments})
+		if err != nil || result == nil || !result.IsError {
+			t.Fatalf("stale read_many result=%#v err=%v", result, err)
+		}
+		assertSDKResultBudget(t, result)
+		var out obsidian.ReadManyOutput
+		unmarshalStructured(t, result, &out)
+		if out.OK || out.Error == nil || out.Error.Code != obsidian.CursorStaleCode || out.Coverage.Continuation != "restart" ||
+			out.Coverage.StoppedBy != "source_change" || out.Coverage.ScopeComplete || out.Coverage.NextCursor != "" || len(out.Items) != 0 {
+			t.Fatalf("stale read_many output = %#v", out)
+		}
+		assertVaultSnapshotUnchanged(t, root, before, "stale read_many")
+	})
+
+	t.Run("grep", func(t *testing.T) {
+		root := t.TempDir()
+		firstPath := "a.md"
+		if err := os.WriteFile(filepath.Join(root, firstPath), []byte("none\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "b.md"), []byte("none\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		ctx, session, stop := connectPhase2TestSession(t, root, audit.Disabled())
+		defer stop()
+
+		arguments := map[string]any{
+			"pattern": "absent", "path": ".", "regex": false, "context_lines": 0, "max_files": 1,
+		}
+		first := callTool[obsidian.GrepOutput](t, ctx, session, obsidian.ToolGrep, arguments)
+		if !first.OK || first.Coverage.NextCursor == "" {
+			t.Fatalf("grep restart seed = %#v", first)
+		}
+		if err := os.WriteFile(filepath.Join(root, firstPath), []byte("changed\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		before := testutil.Snapshot(t, root)
+		arguments["cursor"] = first.Coverage.NextCursor
+		result, err := session.CallTool(ctx, &sdk.CallToolParams{Name: obsidian.ToolGrep, Arguments: arguments})
+		if err != nil || result == nil || !result.IsError {
+			t.Fatalf("stale grep result=%#v err=%v", result, err)
+		}
+		assertSDKResultBudget(t, result)
+		var out obsidian.GrepOutput
+		unmarshalStructured(t, result, &out)
+		if out.OK || out.Error == nil || out.Error.Code != obsidian.CursorStaleCode || out.Coverage.Continuation != "restart" ||
+			out.Coverage.StoppedBy != "source_change" || out.Coverage.ScopeComplete || out.Coverage.NextCursor != "" || len(out.Matches) != 0 {
+			t.Fatalf("stale grep output = %#v", out)
+		}
+		assertVaultSnapshotUnchanged(t, root, before, "stale grep")
+	})
+}
+
 func TestStartupValidationDoesNotScanNestedDirectories(t *testing.T) {
 	root := t.TempDir()
 	sentinel := root + "/nested/sentinel"
@@ -1381,6 +1523,215 @@ func drivePhase2SafeSummaryScenario(t *testing.T, root string, log *audit.Logger
 	}
 }
 
+func drivePhase2SDKCancellationScenarios(
+	t *testing.T,
+	root string,
+	log *audit.Logger,
+	records func() []map[string]any,
+) phase2SafeSummaryEvidence {
+	t.Helper()
+	const (
+		terminalPath        = "terminal-private-source.md"
+		followupPath        = "terminal-followup.md"
+		terminalNeedle      = "terminal-private-content-never-persist"
+		terminalPattern     = "terminal-private-pattern-never-persist"
+		terminalWaitTimeout = 2 * time.Second
+	)
+	line := "# " + terminalNeedle + " " + strings.Repeat("x", 80) + "\n"
+	content := strings.Repeat(line, obsidian.MaxMarkdownSourceLines-1)
+	if len(content) >= obsidian.MaxMarkdownSourceBytes {
+		t.Fatalf("terminal-context fixture bytes = %d, max %d", len(content), obsidian.MaxMarkdownSourceBytes)
+	}
+	if err := os.WriteFile(filepath.Join(root, terminalPath), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, followupPath), []byte("terminal follow-up evidence\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stableSourceTime := time.Unix(1_700_000_000, 123_456_789)
+	for _, relative := range []string{terminalPath, followupPath} {
+		if err := os.Chtimes(filepath.Join(root, relative), stableSourceTime, stableSourceTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg, err := config.Validate(config.Config{Mode: config.ModeStdio, ObsidianRoot: root, Telemetry: config.TelemetryStderr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	activity := &fsx.ActivityCounter{}
+	application, err := NewWithVaultActivity(cfg, log, activity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancelSession := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelSession()
+	session, stop := connectPipeTransport(t, ctx, application)
+	defer stop()
+
+	tests := []struct {
+		tool         string
+		arguments    map[string]any
+		followupArgs map[string]any
+	}{
+		{
+			tool: obsidian.ToolRead,
+			arguments: map[string]any{
+				"path": terminalPath, "selector": map[string]any{"kind": obsidian.SelectorOutline},
+			},
+			followupArgs: map[string]any{"path": followupPath, "max_bytes": 8},
+		},
+		{
+			tool: obsidian.ToolReadMany,
+			arguments: map[string]any{"requests": []any{map[string]any{
+				"path": terminalPath, "selector": map[string]any{"kind": obsidian.SelectorOutline},
+			}}},
+			followupArgs: map[string]any{"requests": []any{map[string]any{"path": followupPath, "max_bytes": 8}}},
+		},
+		{
+			tool: obsidian.ToolGrep,
+			arguments: map[string]any{
+				"pattern": terminalPattern, "path": terminalPath, "regex": false, "context_lines": 0,
+			},
+			followupArgs: map[string]any{
+				"pattern": "follow-up", "path": followupPath, "regex": false, "context_lines": 0,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.tool, func(t *testing.T) {
+			before := testutil.Snapshot(t, root)
+			baselineRecords := len(records())
+			baselineActivity := activity.Snapshot().Total
+			callCtx, cancelCall := context.WithCancel(ctx)
+			type callOutcome struct {
+				result *sdk.CallToolResult
+				err    error
+			}
+			completed := make(chan callOutcome, 1)
+			go func() {
+				result, callErr := session.CallTool(callCtx, &sdk.CallToolParams{Name: test.tool, Arguments: test.arguments})
+				completed <- callOutcome{result: result, err: callErr}
+			}()
+
+			waitForPhase2VaultActivity(t, activity, baselineActivity, terminalWaitTimeout)
+			cancelCall()
+			var outcome callOutcome
+			select {
+			case outcome = <-completed:
+			case <-time.After(terminalWaitTimeout):
+				t.Fatalf("%s SDK call did not return after cancellation", test.tool)
+			}
+			if outcome.err == nil && (outcome.result == nil || !outcome.result.IsError) {
+				t.Fatalf("%s canceled SDK call returned success: %#v", test.tool, outcome.result)
+			}
+
+			record := waitForPhase2ToolRecord(t, records, baselineRecords, test.tool, "canceled", terminalWaitTimeout)
+			assertPhase2CanceledRecord(t, test.tool, record)
+
+			followup, followupErr := session.CallTool(ctx, &sdk.CallToolParams{Name: test.tool, Arguments: test.followupArgs})
+			if followupErr != nil || followup == nil || followup.IsError {
+				t.Fatalf("%s follow-up did not recover: result=%#v err=%v", test.tool, followup, followupErr)
+			}
+			assertSDKResultBudget(t, followup)
+			assertVaultSnapshotUnchanged(t, root, before, test.tool+" cancellation and follow-up")
+		})
+	}
+
+	return phase2SafeSummaryEvidence{forbidden: []string{terminalPath, followupPath, terminalNeedle, terminalPattern}}
+}
+
+func waitForPhase2VaultActivity(t *testing.T, activity *fsx.ActivityCounter, baseline uint64, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		snapshot := activity.Snapshot()
+		if snapshot.Total > baseline && snapshot.Active > 0 {
+			return
+		}
+		time.Sleep(100 * time.Microsecond)
+	}
+	t.Fatalf("Phase 2 SDK call did not enter vault work before cancellation")
+}
+
+func waitForPhase2ToolRecord(
+	t *testing.T,
+	records func() []map[string]any,
+	baseline int,
+	tool string,
+	errorCode string,
+	timeout time.Duration,
+) map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		current := records()
+		if baseline < len(current) {
+			for _, record := range current[baseline:] {
+				if record["tool"] == tool && record["outcome"] == "tool_error" && record["error_code"] == errorCode {
+					return record
+				}
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("missing terminal %s/%s telemetry after SDK cancellation", tool, errorCode)
+	return nil
+}
+
+func assertPhase2CanceledRecord(t *testing.T, tool string, record map[string]any) {
+	t.Helper()
+	if record["tool"] != tool || record["outcome"] != "tool_error" || record["error_code"] != "canceled" {
+		t.Fatalf("%s cancellation record = %#v", tool, record)
+	}
+	result := summarySection(t, record, "result")
+	if result["ok"] != false || result["is_error"] != true || result["error_code"] != "canceled" ||
+		result["stopped_by"] != "canceled" || result["continuation"] != "restart" ||
+		result["scope_complete"] != false || result["result_complete"] != false {
+		t.Fatalf("%s cancellation summary = %#v", tool, result)
+	}
+}
+
+func assertPhase2TerminalRecordParity(t *testing.T, tool string, jsonRecord, sqliteRecord map[string]any) {
+	t.Helper()
+	assertPhase2CanceledRecord(t, tool, jsonRecord)
+	assertPhase2CanceledRecord(t, tool, sqliteRecord)
+	jsonSummary := normalizedPhase2TerminalSummary(t, jsonRecord)
+	sqliteSummary := normalizedPhase2TerminalSummary(t, sqliteRecord)
+	if !reflect.DeepEqual(jsonSummary, sqliteSummary) {
+		t.Fatalf("%s terminal summary parity differs after normalizing work counters:\njsonl=%#v\nsqlite=%#v", tool, jsonSummary, sqliteSummary)
+	}
+}
+
+func normalizedPhase2TerminalSummary(t *testing.T, record map[string]any) map[string]any {
+	t.Helper()
+	encoded, err := json.Marshal(record["summary"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var summary map[string]any
+	if err := json.Unmarshal(encoded, &summary); err != nil {
+		t.Fatal(err)
+	}
+	result, ok := summary["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("terminal summary result = %#v", summary["result"])
+	}
+	for _, key := range []string{
+		"files_scanned", "bytes_scanned", "source_entries_validated", "item_count", "item_error_count", "remaining_count", "match_count", "response_bytes",
+	} {
+		if value, found := result[key]; found {
+			number, numeric := value.(float64)
+			if !numeric || number < 0 {
+				t.Fatalf("terminal summary counter %s = %#v", key, value)
+			}
+			result[key] = float64(0)
+		}
+	}
+	return summary
+}
+
 func toolCallRecords(records []map[string]any) []map[string]any {
 	out := make([]map[string]any, 0, len(records))
 	for _, record := range records {
@@ -1405,6 +1756,57 @@ func auditRecords(t *testing.T, text string) []map[string]any {
 		out = append(out, record)
 	}
 	return out
+}
+
+func completeAuditRecords(t *testing.T, text string) []map[string]any {
+	t.Helper()
+	lastNewline := strings.LastIndexByte(text, '\n')
+	if lastNewline < 0 {
+		return nil
+	}
+	return auditRecords(t, text[:lastNewline])
+}
+
+type synchronizedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(p)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
+}
+
+func connectPhase2TestSession(t *testing.T, root string, log *audit.Logger) (context.Context, *sdk.ClientSession, func()) {
+	t.Helper()
+	cfg, err := config.Validate(config.Config{Mode: config.ModeStdio, ObsidianRoot: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	application, err := New(cfg, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	session, stop := connectPipeTransport(t, ctx, application)
+	return ctx, session, func() {
+		stop()
+		cancel()
+	}
+}
+
+func assertVaultSnapshotUnchanged(t *testing.T, root string, before []string, operation string) {
+	t.Helper()
+	if after := testutil.Snapshot(t, root); !reflect.DeepEqual(before, after) {
+		t.Fatalf("%s mutated vault:\nbefore=%#v\nafter=%#v", operation, before, after)
+	}
 }
 
 func findToolRecord(records []map[string]any, tool, outcome, errorCode string) map[string]any {

@@ -1282,6 +1282,15 @@ func probeSQLiteDegradation(ctx context.Context, gatewayBin string) (sqliteDegra
 		return sqliteDegradationProof{}, errors.New("SQLite degradation fixture setup failed")
 	}
 	defer os.RemoveAll(root)
+	notePath := filepath.Join(root, "degradation.md")
+	noteBody := []byte("# Degradation\nretrieval remains available while telemetry is degraded\n")
+	if err := os.WriteFile(notePath, noteBody, 0o600); err != nil {
+		return sqliteDegradationProof{}, errors.New("SQLite degradation fixture setup failed")
+	}
+	noteBefore, err := os.Lstat(notePath)
+	if err != nil {
+		return sqliteDegradationProof{}, errors.New("SQLite degradation fixture setup failed")
+	}
 	dbPath, cleanup, err := newPrivateSQLiteStore()
 	if err != nil {
 		return sqliteDegradationProof{}, err
@@ -1306,18 +1315,25 @@ func probeSQLiteDegradation(ctx context.Context, gatewayBin string) (sqliteDegra
 		return sqliteDegradationProof{}, err
 	}
 
-	out, measured, err := callMeasured[obsidian.ResolveOutput](ctx, session, obsidian.ToolResolve, map[string]any{"path": "."})
+	out, measured, err := callMeasured[obsidian.ReadOutput](ctx, session, obsidian.ToolRead, map[string]any{
+		"path": "degradation.md", "max_bytes": 4,
+	})
 	if err != nil {
 		return sqliteDegradationProof{}, errors.New("SQLite degradation tool call failed")
 	}
+	noteAfterBody, bodyErr := os.ReadFile(notePath)
+	noteAfter, statErr := os.Lstat(notePath)
+	noteUnchanged := bodyErr == nil && statErr == nil && bytes.Equal(noteAfterBody, noteBody) &&
+		noteAfter.Mode() == noteBefore.Mode() && noteAfter.Size() == noteBefore.Size() && noteAfter.ModTime().Equal(noteBefore.ModTime())
 	stderrBody, err := os.ReadFile(stderrPath)
 	if err != nil {
 		return sqliteDegradationProof{}, errors.New("SQLite degradation observation failed")
 	}
 	proof := sqliteDegradationProof{
-		FailureInjected:      true,
-		DegradationObserved:  bytes.Contains(stderrBody, []byte("runtime warning: telemetry degraded")),
-		ToolCallSucceeded:    out.OK && out.Exists && out.Type == "directory",
+		FailureInjected:     true,
+		DegradationObserved: bytes.Contains(stderrBody, []byte("runtime warning: telemetry degraded")),
+		ToolCallSucceeded: out.OK && out.Error == nil && out.Content != nil && *out.Content == "# De" && out.Truncated &&
+			out.Coverage.Continuation == "cursor" && out.Coverage.NextCursor != "" && noteUnchanged,
 		SDKResultBytes:       measured.sdkResultBytes,
 		LatencyMicroseconds:  measured.latency.Microseconds(),
 		BoundMicroseconds:    performanceP95LimitUS,
@@ -1346,6 +1362,9 @@ func requireExactToolList(ctx context.Context, session *sdk.ClientSession) (int,
 	listed, err := session.ListTools(ctx, nil)
 	if err != nil {
 		return 0, errors.New("candidate tool list failed")
+	}
+	if !exactCandidateToolGrammar(listed.Tools) {
+		return 0, errors.New("candidate tool grammar did not match the exact five-tool contract")
 	}
 	names := make([]string, 0, len(listed.Tools))
 	for _, tool := range listed.Tools {

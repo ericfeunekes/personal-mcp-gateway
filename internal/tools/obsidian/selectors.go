@@ -200,10 +200,13 @@ func (s *MarkdownSource) selectHeading(selector SourceSelector) (SourceSelection
 }
 
 func (s *MarkdownSource) selectBlock(selector SourceSelector) (SourceSelection, error) {
-	if selection, ok := s.selectLargeTopLevelSingleLineBlock(selector); ok {
-		return selection, nil
+	if selection, err, handled := s.selectLargeBlockWithGoldmark(selector); handled {
+		return selection, err
 	}
-	structure := s.markdownStructure()
+	return s.selectBlockFromStructure(selector, s.markdownStructure())
+}
+
+func (s *MarkdownSource) selectBlockFromStructure(selector SourceSelector, structure markdownStructure) (SourceSelection, error) {
 	var found *blockLocator
 	for i := range structure.blocks {
 		block := &structure.blocks[i]
@@ -221,104 +224,55 @@ func (s *MarkdownSource) selectBlock(selector SourceSelector) (SourceSelection, 
 	return s.contentSelection(selector, found.start, found.end), nil
 }
 
-const structuralFastPathMinLines = 4096
+const structuralPrefixMinLines = 4096
 
-// selectLargeTopLevelSingleLineBlock avoids constructing an irrelevant
-// high-density AST when the requested block is provably one plain top-level
-// source line. Conservative shape checks fall back to the Goldmark adapter for
-// containers, code/HTML, setext ambiguity, multiline paragraphs, and duplicate
-// raw candidates.
-func (s *MarkdownSource) selectLargeTopLevelSingleLineBlock(selector SourceSelector) (SourceSelection, bool) {
-	if len(s.lines) < structuralFastPathMinLines {
-		return SourceSelection{}, false
+type rawBlockCandidate struct {
+	line   int
+	offset int
+}
+
+// selectLargeBlockWithGoldmark avoids parsing an irrelevant high-density tail
+// without making Markdown decisions itself. The raw scan only discovers lines
+// that contain the requested token. Goldmark classifies the leaf block that
+// owns each candidate and must observe that block ending before the prefix
+// boundary. If the bounded parse cannot prove closure, the cached full parse is
+// authoritative.
+func (s *MarkdownSource) selectLargeBlockWithGoldmark(selector SourceSelector) (SourceSelection, error, bool) {
+	if len(s.lines) < structuralPrefixMinLines {
+		return SourceSelection{}, nil, false
 	}
+
 	frontmatterEnd, _ := s.frontmatterEnd()
-	candidate := -1
-	for index := range s.lines {
-		line := s.lines[index]
+	candidates := make([]rawBlockCandidate, 0, 1)
+	for index, line := range s.lines {
 		if line.Start < frontmatterEnd {
 			continue
 		}
 		id, ok := trailingBlockID(s.source[line.Start:line.ContentEnd])
-		if !ok || id != selector.BlockID {
-			continue
-		}
-		if candidate >= 0 {
-			return SourceSelection{}, false
-		}
-		candidate = index
-	}
-	if candidate < 0 || !plainTopLevelLine(s.lineContent(candidate)) {
-		return SourceSelection{}, false
-	}
-	if candidate > 0 && len(bytes.TrimSpace(s.lineContent(candidate-1))) != 0 {
-		return SourceSelection{}, false
-	}
-	if candidate+1 < len(s.lines) {
-		next := s.lineContent(candidate + 1)
-		if len(bytes.TrimSpace(next)) != 0 && !definiteParagraphInterrupt(next) {
-			return SourceSelection{}, false
+		if ok && id == selector.BlockID {
+			candidates = append(candidates, rawBlockCandidate{line: index, offset: line.Start})
 		}
 	}
-	line := s.lines[candidate]
-	return s.contentSelection(selector, line.Start, line.End), true
-}
+	if len(candidates) == 0 {
+		return SourceSelection{}, ErrSourceUnitNotFound, true
+	}
 
-func plainTopLevelLine(line []byte) bool {
-	indent := 0
-	for indent < len(line) && line[indent] == ' ' && indent < 4 {
-		indent++
+	lastCandidateLine := candidates[len(candidates)-1].line
+	boundaryLine := lastCandidateLine + 2
+	if boundaryLine >= len(s.lines) {
+		return SourceSelection{}, nil, false
 	}
-	if indent > 3 || (indent < len(line) && line[indent] == '\t') {
-		return false
+	prefixEnd := s.lines[boundaryLine].End
+	if prefixEnd >= len(s.source) {
+		return SourceSelection{}, nil, false
 	}
-	line = line[indent:]
-	if len(line) == 0 {
-		return false
-	}
-	switch line[0] {
-	case '#', '>', '`', '~', '<':
-		return false
-	case '-', '+', '*':
-		return len(line) < 2 || (line[1] != ' ' && line[1] != '\t')
-	default:
-		return !orderedListMarker(line)
-	}
-}
 
-func definiteParagraphInterrupt(line []byte) bool {
-	indent := 0
-	for indent < len(line) && line[indent] == ' ' && indent < 4 {
-		indent++
+	structure, resolved := s.parseMarkdownStructureThrough(prefixEnd, candidates)
+	if !resolved {
+		return SourceSelection{}, nil, false
 	}
-	if indent > 3 || indent == len(line) || line[indent] == '\t' {
-		return false
-	}
-	line = line[indent:]
-	switch line[0] {
-	case '#':
-		return len(line) > 1 && (line[1] == ' ' || line[1] == '\t')
-	case '>', '`', '~':
-		return true
-	case '-', '+', '*':
-		return len(line) > 2 && (line[1] == ' ' || line[1] == '\t') && len(bytes.TrimSpace(line[2:])) > 0
-	default:
-		return orderedListInterrupt(line)
-	}
-}
-
-func orderedListInterrupt(line []byte) bool {
-	return len(line) > 3 && line[0] == '1' && (line[1] == '.' || line[1] == ')') &&
-		(line[2] == ' ' || line[2] == '\t') && len(bytes.TrimSpace(line[3:])) > 0
-}
-
-func orderedListMarker(line []byte) bool {
-	index := 0
-	for index < len(line) && index < 9 && line[index] >= '0' && line[index] <= '9' {
-		index++
-	}
-	return index > 0 && index < len(line)-1 && (line[index] == '.' || line[index] == ')') &&
-		(line[index+1] == ' ' || line[index+1] == '\t')
+	selection, err := s.selectBlockFromStructure(selector, structure)
+	return selection, err, true
 }
 
 func (s *MarkdownSource) selectOutline(selector SourceSelector) SourceSelection {
@@ -377,14 +331,20 @@ func (s *MarkdownSource) markdownStructure() markdownStructure {
 }
 
 func (s *MarkdownSource) parseMarkdownStructure() markdownStructure {
-	parseSource := s.source
+	structure, _ := s.parseMarkdownStructureThrough(len(s.source), nil)
+	return structure
+}
+
+func (s *MarkdownSource) parseMarkdownStructureThrough(parseEnd int, candidates []rawBlockCandidate) (markdownStructure, bool) {
+	parseSource := s.source[:parseEnd]
 	base := 0
 	if frontmatterEnd, ok := s.frontmatterEnd(); ok {
 		base = frontmatterEnd
-		parseSource = s.source[frontmatterEnd:]
+		parseSource = s.source[frontmatterEnd:parseEnd]
 	}
 	root := blockOnlyMarkdownParser.Parse(text.NewReader(parseSource))
 	structure := markdownStructure{}
+	resolved := make([]bool, len(candidates))
 	_ = ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
 		if !entering || node.Type() != ast.TypeBlock {
 			return ast.WalkContinue, nil
@@ -401,12 +361,23 @@ func (s *MarkdownSource) parseMarkdownStructure() markdownStructure {
 			}
 		}
 
-		if node.IsRaw() || hasBlockChild(node) {
+		if hasBlockChild(node) {
 			return ast.WalkContinue, nil
 		}
 		_, isHeading := node.(*ast.Heading)
 		start, end, ok := s.rawNodeRange(node, isHeading, parseSource, base)
 		if !ok {
+			return ast.WalkContinue, nil
+		}
+		firstCandidate := sort.Search(len(candidates), func(i int) bool {
+			return candidates[i].offset >= start
+		})
+		for i := firstCandidate; i < len(candidates) && candidates[i].offset < end; i++ {
+			if end < parseEnd {
+				resolved[i] = true
+			}
+		}
+		if node.IsRaw() {
 			return ast.WalkContinue, nil
 		}
 		if id, ok := trailingBlockID(s.source[start:end]); ok {
@@ -421,7 +392,12 @@ func (s *MarkdownSource) parseMarkdownStructure() markdownStructure {
 	sort.SliceStable(structure.blocks, func(i, j int) bool {
 		return structure.blocks[i].start < structure.blocks[j].start
 	})
-	return structure
+	for _, ok := range resolved {
+		if !ok {
+			return markdownStructure{}, false
+		}
+	}
+	return structure, true
 }
 
 func hasBlockChild(node ast.Node) bool {
@@ -467,15 +443,18 @@ func (s *MarkdownSource) rawNodeRange(node ast.Node, heading bool, parseSource [
 		}
 	}
 
-	if heading && !isATXHeading(node, parseSource) && last+1 < len(s.lines) {
+	if heading && isSetextHeading(node) && last+1 < len(s.lines) {
 		last++
 	}
 	return s.lines[first].Start, s.lines[last].End, true
 }
 
-func isATXHeading(node ast.Node, source []byte) bool {
-	position := node.Pos()
-	return position >= 0 && position < len(source) && source[position] == '#'
+func isSetextHeading(node ast.Node) bool {
+	heading, ok := node.(*ast.Heading)
+	if !ok || heading.Lines().Len() == 0 {
+		return false
+	}
+	return node.Pos() == heading.Lines().At(0).Start
 }
 
 func trailingBlockID(source []byte) (string, bool) {

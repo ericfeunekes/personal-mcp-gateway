@@ -287,21 +287,62 @@ func TestLargeSingleLineBlockAvoidsIrrelevantDenseTailWithoutChangingBoundary(t 
 	}
 }
 
-func TestLargeSingleLineBlockFastPathFallsBackForSetextAndDuplicates(t *testing.T) {
-	padding := strings.Repeat("\n", structuralFastPathMinLines)
-	for name, markdown := range map[string]string{
-		"setext":                "title ^same\n---\n" + padding,
-		"ordered non-interrupt": "title ^same\n2. continuation\n" + padding,
-		"duplicate":             "first ^same\n\nsecond ^same\n" + padding,
-	} {
-		t.Run(name, func(t *testing.T) {
-			source := mustMarkdownSource(t, markdown)
-			_, err := source.Select(SourceSelector{Kind: SourceSelectorBlock, BlockID: "same"})
-			if name != "duplicate" && !errors.Is(err, ErrSourceUnitNotFound) {
-				t.Fatalf("%s error = %v, want not found", name, err)
-			}
-			if name == "duplicate" && !errors.Is(err, ErrSourceUnitAmbiguous) {
-				t.Fatalf("duplicate error = %v, want ambiguous", err)
+func TestBlockSelectionIsInvariantAcrossStructuralPrefixThreshold(t *testing.T) {
+	tests := []struct {
+		name     string
+		markdown string
+		want     string
+		wantErr  error
+	}{
+		{name: "short tilde", markdown: "target ^same\n~ continuation\n\n", wantErr: ErrSourceUnitNotFound},
+		{name: "double tilde", markdown: "target ^same\n~~ continuation\n\n", wantErr: ErrSourceUnitNotFound},
+		{name: "short backtick", markdown: "target ^same\n` continuation\n\n", wantErr: ErrSourceUnitNotFound},
+		{name: "double backtick", markdown: "target ^same\n`` continuation\n\n", wantErr: ErrSourceUnitNotFound},
+		{name: "tilde fence interrupt", markdown: "target ^same\n~~~\ncode\n~~~\n", want: "target ^same\n"},
+		{name: "backtick fence interrupt", markdown: "target ^same\n```\ncode\n```\n", want: "target ^same\n"},
+		{name: "ordered list interrupt", markdown: "target ^same\n1. item\n   continuation\n", want: "target ^same\n"},
+		{name: "bullet list interrupt", markdown: "target ^same\n- item\n  continuation\n", want: "target ^same\n"},
+		{name: "ordered list continuation", markdown: "target ^same\n2. continuation\n\n", wantErr: ErrSourceUnitNotFound},
+		{name: "setext beginning with hash", markdown: "#not-atx ^same\n---\n\n", wantErr: ErrSourceUnitNotFound},
+		{name: "duplicate blocks", markdown: "first ^same\n\nsecond ^same\n\n", wantErr: ErrSourceUnitAmbiguous},
+		{name: "repeated marker in one block", markdown: "first ^same\nsecond ^same\n\n", want: "first ^same\nsecond ^same\n"},
+		{name: "fenced code", markdown: "```\nfake ^same\n```\n\n", wantErr: ErrSourceUnitNotFound},
+		{name: "indented code", markdown: "    fake ^same\n\n", wantErr: ErrSourceUnitNotFound},
+		{name: "unresolved prefix falls back", markdown: "target ^same\ncontinuation one\ncontinuation two\ncontinuation three\n\n", wantErr: ErrSourceUnitNotFound},
+	}
+	sizes := []struct {
+		name  string
+		lines int
+	}{
+		{name: "small"},
+		{name: "below", lines: structuralPrefixMinLines - 1},
+		{name: "at", lines: structuralPrefixMinLines},
+		{name: "above", lines: structuralPrefixMinLines + 1},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			for _, size := range sizes {
+				t.Run(size.name, func(t *testing.T) {
+					markdown := test.markdown
+					if size.lines > 0 {
+						markdown = padMarkdownToPhysicalLines(t, markdown, size.lines)
+					}
+					source := mustMarkdownSource(t, markdown)
+					selection, err := source.Select(SourceSelector{Kind: SourceSelectorBlock, BlockID: "same"})
+					if test.wantErr != nil {
+						if !errors.Is(err, test.wantErr) {
+							t.Fatalf("error = %v, want %v", err, test.wantErr)
+						}
+						return
+					}
+					if err != nil {
+						t.Fatalf("Select: %v", err)
+					}
+					if got := string(selection.Content); got != test.want {
+						t.Fatalf("content = %q, want %q", got, test.want)
+					}
+				})
 			}
 		})
 	}
@@ -348,4 +389,16 @@ func mustMarkdownSource(t *testing.T, source string) *MarkdownSource {
 		t.Fatalf("NewMarkdownSource: %v", err)
 	}
 	return markdown
+}
+
+func padMarkdownToPhysicalLines(t *testing.T, markdown string, lines int) string {
+	t.Helper()
+	current := strings.Count(markdown, "\n")
+	if len(markdown) > 0 && !strings.HasSuffix(markdown, "\n") {
+		current++
+	}
+	if current > lines {
+		t.Fatalf("fixture has %d physical lines, want at most %d", current, lines)
+	}
+	return markdown + strings.Repeat("\n", lines-current)
 }

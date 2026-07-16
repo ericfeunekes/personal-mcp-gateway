@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -19,61 +21,34 @@ import (
 )
 
 func TestPhase2ExactSurfaceSchemasAreClosedAndAgentOriented(t *testing.T) {
-	application := newTestApp(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	session, stop := connectPipeTransport(t, ctx, application)
-	defer stop()
+	t.Run("pipe", func(t *testing.T) {
+		application := newTestApp(t)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		session, stop := connectPipeTransport(t, ctx, application)
+		defer stop()
 
-	listed, err := session.ListTools(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := make([]string, 0, len(listed.Tools))
-	byName := make(map[string]*sdk.Tool, len(listed.Tools))
-	for _, tool := range listed.Tools {
-		got = append(got, tool.Name)
-		byName[tool.Name] = tool
-		schema := schemaObject(t, tool.InputSchema)
-		if additional, ok := schema["additionalProperties"].(bool); !ok || additional {
-			t.Fatalf("%s input schema is not closed: %#v", tool.Name, schema)
+		assertPhase2ToolDescriptors(t, listPhase2Tools(t, ctx, session))
+		assertPhase2SDKSchemaEnforcement(t, ctx, session)
+	})
+
+	t.Run("streamable HTTP", func(t *testing.T) {
+		application := newTestApp(t)
+		server := httptest.NewServer(application.HTTPHandler())
+		defer server.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		client := sdk.NewClient(&sdk.Implementation{Name: "phase2-schema-test", Version: "v0.0.1"}, nil)
+		session, err := client.Connect(ctx, &sdk.StreamableClientTransport{Endpoint: server.URL + "/mcp"}, nil)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	sort.Strings(got)
-	want := []string{obsidian.ToolGrep, obsidian.ToolLS, obsidian.ToolRead, obsidian.ToolReadMany, obsidian.ToolResolve}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("tools = %#v, want exact Phase 2 surface %#v", got, want)
-	}
+		defer session.Close()
 
-	readSelector := schemaProperty(t, schemaObject(t, byName[obsidian.ToolRead].InputSchema), "selector")
-	assertClosedSelectorUnion(t, readSelector)
-	readManyRequests := schemaProperty(t, schemaObject(t, byName[obsidian.ToolReadMany].InputSchema), "requests")
-	requestSchema, ok := readManyRequests["items"].(map[string]any)
-	if !ok || requestSchema["additionalProperties"] != false {
-		t.Fatalf("read_many request schema is not closed: %#v", readManyRequests)
-	}
-	assertClosedSelectorUnion(t, schemaProperty(t, requestSchema, "selector"))
-
-	if !strings.Contains(byName[obsidian.ToolRead].Description, "grep") ||
-		!strings.Contains(byName[obsidian.ToolRead].Description, "read_many") ||
-		!strings.Contains(byName[obsidian.ToolReadMany].Description, "Accumulate only the new items") ||
-		!strings.Contains(byName[obsidian.ToolGrep].Description, "deterministic canonical-path order") {
-		t.Fatalf("retrieval descriptions do not teach the intended journey")
-	}
-
-	invalid, err := session.CallTool(ctx, &sdk.CallToolParams{Name: obsidian.ToolRead, Arguments: map[string]any{
-		"path": "README.md",
-		"selector": map[string]any{
-			"kind":    obsidian.SelectorFrontmatter,
-			"heading": "not allowed for frontmatter",
-		},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !invalid.IsError {
-		t.Fatal("mixed selector fields passed SDK schema validation")
-	}
+		assertPhase2ToolDescriptors(t, listPhase2Tools(t, ctx, session))
+		assertPhase2SDKSchemaEnforcement(t, ctx, session)
+	})
 }
 
 func TestPhase2SDKJourneyGrepReadAndContinuedReadMany(t *testing.T) {
@@ -233,16 +208,288 @@ func TestPhase2TelemetryKeepsRetrievalEvidencePrivate(t *testing.T) {
 	}
 }
 
-func assertClosedSelectorUnion(t *testing.T, schema map[string]any) {
+func listPhase2Tools(t *testing.T, ctx context.Context, session *sdk.ClientSession) map[string]*sdk.Tool {
 	t.Helper()
+	listed, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(listed.Tools))
+	byName := make(map[string]*sdk.Tool, len(listed.Tools))
+	for _, tool := range listed.Tools {
+		if _, duplicate := byName[tool.Name]; duplicate {
+			t.Fatalf("duplicate tool descriptor %q", tool.Name)
+		}
+		got = append(got, tool.Name)
+		byName[tool.Name] = tool
+	}
+	sort.Strings(got)
+	want := []string{obsidian.ToolGrep, obsidian.ToolLS, obsidian.ToolRead, obsidian.ToolReadMany, obsidian.ToolResolve}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("tools = %#v, want exact Phase 2 surface %#v", got, want)
+	}
+	return byName
+}
+
+func assertPhase2ToolDescriptors(t *testing.T, tools map[string]*sdk.Tool) {
+	t.Helper()
+	descriptions := map[string]string{
+		obsidian.ToolResolve:  obsidian.ResolveDescription,
+		obsidian.ToolLS:       obsidian.LSDescription,
+		obsidian.ToolRead:     obsidian.ReadDescription,
+		obsidian.ToolReadMany: obsidian.ReadManyDescription,
+		obsidian.ToolGrep:     obsidian.GrepDescription,
+	}
+	for name, wantDescription := range descriptions {
+		tool := tools[name]
+		if tool == nil {
+			t.Fatalf("missing descriptor %q", name)
+		}
+		if tool.Description != wantDescription {
+			t.Fatalf("%s description = %q, want %q", name, tool.Description, wantDescription)
+		}
+		assertExactReadOnlyAnnotations(t, tool)
+	}
+
+	resolve := schemaObject(t, tools[obsidian.ToolResolve].InputSchema)
+	assertExactObjectGrammar(t, resolve, []string{"base", "path"}, []string{"path"})
+	assertPropertyType(t, resolve, "path", "string")
+	assertPropertyType(t, resolve, "base", "string")
+
+	ls := schemaObject(t, tools[obsidian.ToolLS].InputSchema)
+	assertExactObjectGrammar(t, ls, []string{"base", "cursor", "limit", "path"}, []string{"path"})
+	for _, name := range []string{"path", "base", "cursor"} {
+		assertPropertyType(t, ls, name, "string")
+	}
+	assertIntegerContract(t, schemaProperty(t, ls, "limit"), 1, 500, 100)
+
+	read := schemaObject(t, tools[obsidian.ToolRead].InputSchema)
+	assertExactObjectGrammar(t, read, []string{"base", "cursor", "max_bytes", "path", "selector"}, []string{"path"})
+	for _, name := range []string{"path", "base", "cursor"} {
+		assertPropertyType(t, read, name, "string")
+	}
+	assertIntegerContract(t, schemaProperty(t, read, "max_bytes"), 1, obsidian.MaxReadBytes, obsidian.DefaultReadBytes)
+	assertSelectorContract(t, schemaProperty(t, read, "selector"))
+
+	readMany := schemaObject(t, tools[obsidian.ToolReadMany].InputSchema)
+	assertExactObjectGrammar(t, readMany, []string{"cursor", "max_bytes", "requests"}, []string{"requests"})
+	assertPropertyType(t, readMany, "cursor", "string")
+	assertIntegerContract(t, schemaProperty(t, readMany, "max_bytes"), 1, obsidian.MaxReadManyBytes, obsidian.DefaultReadManyBytes)
+	requests := schemaProperty(t, readMany, "requests")
+	assertSchemaValue(t, requests, "type", "array")
+	assertSchemaValue(t, requests, "minItems", 1)
+	assertSchemaValue(t, requests, "maxItems", obsidian.MaxReadManyRequests)
+	request, ok := requests["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("read_many request items = %#v", requests["items"])
+	}
+	assertExactObjectGrammar(t, request, []string{"base", "max_bytes", "path", "selector"}, []string{"path"})
+	for _, name := range []string{"path", "base"} {
+		assertPropertyType(t, request, name, "string")
+	}
+	assertIntegerContract(t, schemaProperty(t, request, "max_bytes"), 1, obsidian.MaxReadBytes, obsidian.DefaultReadBytes)
+	assertSelectorContract(t, schemaProperty(t, request, "selector"))
+
+	grep := schemaObject(t, tools[obsidian.ToolGrep].InputSchema)
+	assertExactObjectGrammar(t, grep, []string{
+		"base", "case_sensitive", "context_lines", "cursor", "limit", "max_bytes", "max_files", "path", "pattern", "regex",
+	}, []string{"pattern"})
+	for _, name := range []string{"pattern", "path", "base", "cursor"} {
+		assertPropertyType(t, grep, name, "string")
+	}
+	pattern := schemaProperty(t, grep, "pattern")
+	assertSchemaValue(t, pattern, "minLength", 1)
+	assertSchemaValue(t, pattern, "maxLength", obsidian.MaxGrepPatternBytes)
+	assertSchemaValue(t, schemaProperty(t, grep, "path"), "default", ".")
+	assertBooleanContract(t, schemaProperty(t, grep, "regex"), true)
+	assertBooleanContract(t, schemaProperty(t, grep, "case_sensitive"), false)
+	assertIntegerContract(t, schemaProperty(t, grep, "context_lines"), 0, obsidian.MaxGrepContextLines, obsidian.DefaultGrepContextLines)
+	assertIntegerContract(t, schemaProperty(t, grep, "limit"), 1, obsidian.MaxGrepLimit, obsidian.DefaultGrepLimit)
+	assertIntegerContract(t, schemaProperty(t, grep, "max_files"), 1, obsidian.MaxGrepMaxFiles, obsidian.DefaultGrepMaxFiles)
+	assertIntegerContract(t, schemaProperty(t, grep, "max_bytes"), 1, obsidian.MaxGrepMaxBytes, obsidian.DefaultGrepMaxBytes)
+}
+
+func assertExactReadOnlyAnnotations(t *testing.T, tool *sdk.Tool) {
+	t.Helper()
+	annotations := tool.Annotations
+	if annotations == nil || !annotations.ReadOnlyHint || annotations.DestructiveHint == nil || *annotations.DestructiveHint ||
+		annotations.OpenWorldHint == nil || *annotations.OpenWorldHint || annotations.IdempotentHint || annotations.Title != "" {
+		t.Fatalf("%s annotations = %#v, want exact read-only/non-destructive/closed-world hints", tool.Name, annotations)
+	}
+}
+
+func assertExactObjectGrammar(t *testing.T, schema map[string]any, wantProperties, wantRequired []string) {
+	t.Helper()
+	assertSchemaValue(t, schema, "type", "object")
+	assertSchemaValue(t, schema, "additionalProperties", false)
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("schema properties = %#v", schema["properties"])
+	}
+	gotProperties := make([]string, 0, len(properties))
+	for name := range properties {
+		gotProperties = append(gotProperties, name)
+	}
+	sort.Strings(gotProperties)
+	wantProperties = append([]string(nil), wantProperties...)
+	sort.Strings(wantProperties)
+	if !reflect.DeepEqual(gotProperties, wantProperties) {
+		t.Fatalf("schema properties = %#v, want %#v", gotProperties, wantProperties)
+	}
+	gotRequired := schemaStringSlice(t, schema, "required")
+	sort.Strings(gotRequired)
+	wantRequired = append([]string(nil), wantRequired...)
+	sort.Strings(wantRequired)
+	if !reflect.DeepEqual(gotRequired, wantRequired) {
+		t.Fatalf("schema required = %#v, want %#v", gotRequired, wantRequired)
+	}
+}
+
+func schemaStringSlice(t *testing.T, schema map[string]any, name string) []string {
+	t.Helper()
+	raw, ok := schema[name].([]any)
+	if !ok {
+		t.Fatalf("schema %s = %#v", name, schema[name])
+	}
+	values := make([]string, len(raw))
+	for index, value := range raw {
+		text, ok := value.(string)
+		if !ok {
+			t.Fatalf("schema %s[%d] = %#v", name, index, value)
+		}
+		values[index] = text
+	}
+	return values
+}
+
+func assertPropertyType(t *testing.T, schema map[string]any, name, want string) {
+	t.Helper()
+	assertSchemaValue(t, schemaProperty(t, schema, name), "type", want)
+}
+
+func assertIntegerContract(t *testing.T, schema map[string]any, minimum, maximum, defaultValue any) {
+	t.Helper()
+	assertSchemaValue(t, schema, "type", "integer")
+	assertSchemaValue(t, schema, "minimum", minimum)
+	assertSchemaValue(t, schema, "maximum", maximum)
+	assertSchemaValue(t, schema, "default", defaultValue)
+}
+
+func assertBooleanContract(t *testing.T, schema map[string]any, defaultValue bool) {
+	t.Helper()
+	assertSchemaValue(t, schema, "type", "boolean")
+	assertSchemaValue(t, schema, "default", defaultValue)
+}
+
+func assertSchemaValue(t *testing.T, schema map[string]any, name string, want any) {
+	t.Helper()
+	got := schema[name]
+	data, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var normalized any
+	if err := json.Unmarshal(data, &normalized); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, normalized) {
+		t.Fatalf("schema %s = %#v, want %#v in %#v", name, got, normalized, schema)
+	}
+}
+
+func assertSelectorContract(t *testing.T, schema map[string]any) {
+	t.Helper()
+	assertSchemaValue(t, schema, "default", map[string]any{"kind": obsidian.SelectorContent, "start_line": 1})
 	variants, ok := schema["oneOf"].([]any)
 	if !ok || len(variants) != 5 {
 		t.Fatalf("selector oneOf = %#v", schema["oneOf"])
 	}
+	byKind := make(map[string]map[string]any, len(variants))
 	for index, raw := range variants {
 		variant, ok := raw.(map[string]any)
-		if !ok || variant["additionalProperties"] != false {
-			t.Fatalf("selector variant %d is not closed: %#v", index, raw)
+		if !ok {
+			t.Fatalf("selector variant %d = %#v", index, raw)
 		}
+		kindSchema := schemaProperty(t, variant, "kind")
+		kind, ok := kindSchema["const"].(string)
+		if !ok || kind == "" {
+			t.Fatalf("selector variant %d kind.const = %#v", index, kindSchema["const"])
+		}
+		if _, duplicate := byKind[kind]; duplicate {
+			t.Fatalf("duplicate selector kind.const %q", kind)
+		}
+		byKind[kind] = variant
+	}
+	selectorVariant := func(kind string, properties, required []string) map[string]any {
+		t.Helper()
+		variant, ok := byKind[kind]
+		if !ok {
+			t.Fatalf("selector variant %q missing; kinds = %#v", kind, byKind)
+		}
+		assertExactObjectGrammar(t, variant, properties, required)
+		kindSchema := schemaProperty(t, variant, "kind")
+		assertSchemaValue(t, kindSchema, "type", "string")
+		assertSchemaValue(t, kindSchema, "const", kind)
+		return variant
+	}
+	content := selectorVariant(obsidian.SelectorContent, []string{"kind", "start_line"}, []string{"kind"})
+	assertIntegerContract(t, schemaProperty(t, content, "start_line"), 1, obsidian.MaxMarkdownSourceLines, 1)
+	heading := selectorVariant(obsidian.SelectorHeading, []string{"heading", "kind", "occurrence"}, []string{"heading", "kind"})
+	headingText := schemaProperty(t, heading, "heading")
+	assertSchemaValue(t, headingText, "type", "string")
+	assertSchemaValue(t, headingText, "minLength", 1)
+	assertIntegerContract(t, schemaProperty(t, heading, "occurrence"), 1, obsidian.MaxMarkdownSourceLines, 1)
+	block := selectorVariant(obsidian.SelectorBlock, []string{"block_id", "kind"}, []string{"block_id", "kind"})
+	blockID := schemaProperty(t, block, "block_id")
+	assertSchemaValue(t, blockID, "type", "string")
+	assertSchemaValue(t, blockID, "minLength", 1)
+	selectorVariant(obsidian.SelectorFrontmatter, []string{"kind"}, []string{"kind"})
+	selectorVariant(obsidian.SelectorOutline, []string{"kind"}, []string{"kind"})
+}
+
+func assertPhase2SDKSchemaEnforcement(t *testing.T, ctx context.Context, session *sdk.ClientSession) {
+	t.Helper()
+	for name, arguments := range map[string]map[string]any{
+		"ls zero limit": {"path": ".", "limit": 0},
+		"ls over limit": {"path": ".", "limit": 501},
+		"mixed selector fields": {
+			"path": "README.md",
+			"selector": map[string]any{
+				"kind":    obsidian.SelectorFrontmatter,
+				"heading": "not allowed for frontmatter",
+			},
+		},
+	} {
+		toolName := obsidian.ToolLS
+		if name == "mixed selector fields" {
+			toolName = obsidian.ToolRead
+		}
+		result, err := session.CallTool(ctx, &sdk.CallToolParams{Name: toolName, Arguments: arguments})
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !result.IsError {
+			t.Fatalf("%s passed SDK schema validation", name)
+		}
+	}
+
+	pattern := strings.Repeat("é", obsidian.MaxGrepPatternBytes/2+1)
+	if len([]rune(pattern)) > obsidian.MaxGrepPatternBytes || len([]byte(pattern)) <= obsidian.MaxGrepPatternBytes {
+		t.Fatalf("invalid multibyte pattern fixture: runes=%d bytes=%d", len([]rune(pattern)), len([]byte(pattern)))
+	}
+	result, err := session.CallTool(ctx, &sdk.CallToolParams{Name: obsidian.ToolGrep, Arguments: map[string]any{
+		"pattern": pattern,
+		"path":    ".",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Fatal("multibyte grep pattern above 4096 bytes passed domain enforcement")
+	}
+	var out obsidian.GrepOutput
+	unmarshalStructured(t, result, &out)
+	if out.OK || out.Error == nil || out.Error.Code != "input_too_large" {
+		t.Fatalf("multibyte grep pattern error = %#v", out)
 	}
 }
