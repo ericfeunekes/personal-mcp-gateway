@@ -318,7 +318,29 @@ func TestLocalReleaseInstallsExactCandidate(t *testing.T) {
 	if strings.Contains(string(output), repo) {
 		t.Fatalf("release output leaked a private path: %s", output)
 	}
-	wantOutput := "state=pending id=release-0001 commit=0123456789ab sha256=candidate0000\n" +
+	active := releaseActiveDir(repo)
+	candidateIdentity, err := os.ReadFile(filepath.Join(active, "candidate-sha256"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dependencyIdentity, err := os.ReadFile(filepath.Join(active, "dependency-sha256"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitIdentity, err := os.ReadFile(filepath.Join(active, "commit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reportTuple, err := os.ReadFile(filepath.Join(repo, "report-set-tuple"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTuple := string(commitIdentity) + "\n" + string(candidateIdentity) + "\n" + string(dependencyIdentity) + "\n"
+	if string(reportTuple) != wantTuple {
+		t.Fatalf("validated report tuple = %q, pending manifest tuple = %q", reportTuple, wantTuple)
+	}
+	wantOutput := "state=pending id=release-0001 commit=0123456789ab sha256=" + string(candidateIdentity[:12]) +
+		" dependency_sha256=" + string(dependencyIdentity[:12]) + "\n" +
 		"accept=make release-accept RELEASE_ID=release-0001\n" +
 		"rollback=make release-rollback RELEASE_ID=release-0001\n"
 	if string(output) != wantOutput {
@@ -329,18 +351,28 @@ func TestLocalReleaseInstallsExactCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Count(string(logData), "go:run ./cmd/gateway-smoke"); got != 3 ||
-		!strings.Contains(string(logData), "--performance-json") || !strings.Contains(string(logData), "--resource-json") {
+	if got := strings.Count(string(logData), "go:run ./cmd/gateway-smoke"); got != 4 ||
+		!strings.Contains(string(logData), "--report-json") || !strings.Contains(string(logData), "--performance-json") ||
+		!strings.Contains(string(logData), "--resource-json") || !strings.Contains(string(logData), "--validate-report-set") ||
+		strings.Count(string(logData), "--candidate-commit 0123456789abcdef0123456789abcdef01234567") != 4 ||
+		strings.Count(string(logData), "--candidate-sha256 "+string(candidateIdentity)) != 4 ||
+		strings.Count(string(logData), "--dependency-sha256 "+string(dependencyIdentity)) != 4 {
 		t.Fatalf("candidate smoke calls = %q", logData)
 	}
 	assertFileContains(t, logFile, "launchctl:kickstart -k")
 	assertFileContains(t, verifyCount, "1")
-	active := releaseActiveDir(repo)
 	assertFileContains(t, filepath.Join(active, "state"), "pending")
 	assertFileContains(t, filepath.Join(active, "previous"), "previous-binary")
 	assertFileContains(t, filepath.Join(active, "candidate"), "candidate-binary")
 	if info, statErr := os.Stat(filepath.Join(active, "authority")); statErr != nil || info.Mode()&0o111 == 0 {
 		t.Fatalf("pinned authority is not executable: info=%v err=%v", info, statErr)
+	}
+	snapshotPath, err := os.ReadFile(harness.smokeCandidateRecord)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(string(snapshotPath)); !os.IsNotExist(err) {
+		t.Fatalf("private smoke candidate survived release cleanup: %v", err)
 	}
 }
 
@@ -358,6 +390,13 @@ func TestLocalReleasePinsDefaultHealthMarkerOutsideCallerTMPDIR(t *testing.T) {
 		t.Fatalf("release exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
 	}
 	assertFileContains(t, harness.logFile, "health:/tmp/personal-mcp-gateway/tunnel-health.url\n")
+	entries, err := os.ReadDir(callerTMP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("private report capture was not cleaned: %v", entries)
+	}
 }
 
 func TestLocalReleaseSuppressesHostileGateOutput(t *testing.T) {
@@ -537,8 +576,17 @@ func TestLocalReleaseGuidesEveryNonResumableActiveStateOnStderr(t *testing.T) {
 				t.Fatal(err)
 			}
 			stdout, stderr, exit := harness.runChannels()
+			candidateIdentity, err := os.ReadFile(filepath.Join(active, "candidate-sha256"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			dependencyIdentity, err := os.ReadFile(filepath.Join(active, "dependency-sha256"))
+			if err != nil {
+				t.Fatal(err)
+			}
 			want := "error=state_conflict message=event conflicts with release state\n" +
-				"state=" + test.state + " id=release-0001 commit=0123456789ab sha256=candidate0000\n" + test.guidance
+				"state=" + test.state + " id=release-0001 commit=0123456789ab sha256=" + string(candidateIdentity[:12]) +
+				" dependency_sha256=" + string(dependencyIdentity[:12]) + "\n" + test.guidance
 			if exit != 1 || stdout != "" || stderr != want {
 				t.Fatalf("exit=%d stdout=%q stderr=%q want=%q", exit, stdout, stderr, want)
 			}
@@ -608,6 +656,68 @@ func TestLocalReleaseRejectsCandidateChangedDuringSmoke(t *testing.T) {
 		t.Fatalf("mutated-candidate release err=%v output=%q", err, output)
 	}
 	assertFileContains(t, target, "previous-binary")
+}
+
+func TestLocalReleasePinsOneSnapshotAcrossOriginalReplaceAndRestore(t *testing.T) {
+	harness := newLocalReleaseHarness(t, releaseOptions{previous: true, replaceRestoreCandidate: true})
+	stdout, stderr, exit := harness.runChannels()
+	if exit != 0 || stderr != "" {
+		t.Fatalf("replace-and-restore release exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+	assertFileContains(t, filepath.Join(releaseActiveDir(harness.repo), "candidate"), "candidate-binary")
+	snapshotPath, err := os.ReadFile(harness.smokeCandidateRecord)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(string(snapshotPath)); !os.IsNotExist(err) {
+		t.Fatalf("shared smoke snapshot survived cleanup: %v", err)
+	}
+}
+
+func TestLocalReleaseRejectsCandidateChangedAfterReportValidation(t *testing.T) {
+	harness := newLocalReleaseHarness(t, releaseOptions{previous: true, mutateCandidateAfterReports: true})
+	stdout, stderr, exit := harness.runChannels()
+	if exit != 1 || stdout != "" || stderr != "error=artifact_mismatch message=release artifact does not match\n" {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+	assertFileContains(t, harness.target, "previous-binary")
+	if _, err := os.Stat(releaseActiveDir(harness.repo)); !os.IsNotExist(err) {
+		t.Fatalf("post-report candidate drift created release state: %v", err)
+	}
+}
+
+func TestLocalReleaseRejectsDependencyChangedDuringSmoke(t *testing.T) {
+	harness := newLocalReleaseHarness(t, releaseOptions{previous: true, mutateDependencyDuringSmoke: true})
+	stdout, stderr, exit := harness.runChannels()
+	if exit != 1 || stdout != "" || stderr != "error=release_changed message=release inputs changed during validation\n" {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+	assertFileContains(t, harness.target, "previous-binary")
+	if _, err := os.Stat(releaseActiveDir(harness.repo)); !os.IsNotExist(err) {
+		t.Fatalf("dependency drift created release state: %v", err)
+	}
+}
+
+func TestLocalReleaseRejectsMalformedOrDriftedReportSetBeforeActivation(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		options releaseOptions
+	}{
+		{name: "malformed", options: releaseOptions{previous: true, malformedReport: true}},
+		{name: "cross-report drift", options: releaseOptions{previous: true, crossReportDrift: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			harness := newLocalReleaseHarness(t, test.options)
+			stdout, stderr, exit := harness.runChannels()
+			if exit != 1 || stdout != "" || stderr != "error=release_smoke_failed message=release candidate report set is invalid\n" {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+			}
+			assertFileContains(t, harness.target, "previous-binary")
+			if _, err := os.Stat(releaseActiveDir(harness.repo)); !os.IsNotExist(err) {
+				t.Fatalf("invalid report set created release state: %v", err)
+			}
+		})
+	}
 }
 
 func TestLocalReleaseRejectsCommitChangedDuringRelease(t *testing.T) {
@@ -993,29 +1103,35 @@ fi
 }
 
 type releaseOptions struct {
-	previous                   bool
-	failTests                  bool
-	failPerformanceSmoke       bool
-	failResourceSmoke          bool
-	failFirstVerification      bool
-	failAllVerification        bool
-	failRestore                bool
-	candidateAlias             bool
-	mutateCandidateDuringSmoke bool
-	changeCommitOnRecheck      bool
-	failSecondPreflight        bool
-	corruptStage               bool
-	alternateEnv               bool
+	previous                    bool
+	failTests                   bool
+	failPerformanceSmoke        bool
+	failResourceSmoke           bool
+	failFirstVerification       bool
+	failAllVerification         bool
+	failRestore                 bool
+	candidateAlias              bool
+	mutateCandidateDuringSmoke  bool
+	mutateCandidateAfterReports bool
+	replaceRestoreCandidate     bool
+	changeCommitOnRecheck       bool
+	failSecondPreflight         bool
+	corruptStage                bool
+	alternateEnv                bool
+	mutateDependencyDuringSmoke bool
+	malformedReport             bool
+	crossReportDrift            bool
 }
 
 type localReleaseHarness struct {
-	t           *testing.T
-	repo        string
-	target      string
-	vault       string
-	logFile     string
-	verifyCount string
-	env         []string
+	t                    *testing.T
+	repo                 string
+	target               string
+	vault                string
+	logFile              string
+	verifyCount          string
+	smokeCandidateRecord string
+	env                  []string
 }
 
 func runLocalRelease(t *testing.T, options releaseOptions) (repo, target, logFile, verifyCount string, output []byte, runErr error) {
@@ -1038,6 +1154,12 @@ func newLocalReleaseHarness(t *testing.T, options releaseOptions) *localReleaseH
 		candidate = target
 	}
 	vault := filepath.Join(repo, "vault")
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module release.test\n\ngo 1.25\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "go.sum"), []byte("synthetic dependency lock\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1094,31 +1216,131 @@ case "$*" in
   *) exit 2 ;;
 esac
 `)
-	writeExecutable(t, filepath.Join(binDir, "go"), `#!/bin/sh
+	writeExecutable(t, filepath.Join(binDir, "go"), `#!/bin/bash
+set -euo pipefail
 if [ -n "${CONTROL_PLANE_API_KEY:-}" ]; then printf '%s\n' "$CONTROL_PLANE_API_KEY"; exit 9; fi
 printf 'go:%s\n' "$*" >>"$CALL_LOG"
-expected="run ./cmd/gateway-smoke --gateway-bin $EXPECTED_CANDIDATE --obsidian-root $EXPECTED_VAULT"
-performance="$expected --performance-json"
-resource="$expected --resource-json"
-case "$*" in
-  "$expected") ;;
-  "$performance")
+argument() {
+  local wanted="$1"
+  shift
+  while (( $# > 0 )); do
+    if [[ "$1" == "$wanted" && $# -gt 1 ]]; then printf '%s\n' "$2"; return 0; fi
+    shift
+  done
+  return 1
+}
+has_argument() {
+  local wanted="$1"
+  shift
+  for value in "$@"; do [[ "$value" == "$wanted" ]] && return 0; done
+  return 1
+}
+[[ "${1:-}" == run && "${2:-}" == ./cmd/gateway-smoke ]] || { printf 'unexpected smoke args\n'; exit 7; }
+shift 2
+	smoke_candidate="$(argument --gateway-bin "$@")"
+	[[ "$smoke_candidate" != "$EXPECTED_CANDIDATE" && -f "$smoke_candidate" && ! -L "$smoke_candidate" && -x "$smoke_candidate" ]] || exit 7
+	[[ "$(stat -f %Lp "$smoke_candidate")" == 700 && "$(stat -f %Lp "$(dirname "$smoke_candidate")")" == 700 ]] || exit 7
+	if [[ -f "$SMOKE_CANDIDATE_RECORD" ]]; then
+	  [[ "$(cat "$SMOKE_CANDIDATE_RECORD")" == "$smoke_candidate" ]] || exit 7
+	else
+	  printf '%s' "$smoke_candidate" >"$SMOKE_CANDIDATE_RECORD"
+	fi
+[[ "$(argument --repo-root "$@")" == "$TEST_REPO" ]] || exit 7
+[[ "$(argument --candidate-commit "$@")" == 0123456789abcdef0123456789abcdef01234567 ]] || exit 7
+candidate_sha="$(argument --candidate-sha256 "$@")"
+dependency_sha="$(argument --dependency-sha256 "$@")"
+[[ "$candidate_sha" =~ ^[0-9a-f]{64}$ && "$dependency_sha" =~ ^[0-9a-f]{64}$ ]] || exit 7
+	[[ "$candidate_sha" == "$(shasum -a 256 "$smoke_candidate" | awk '{print $1}')" ]] || exit 7
+go_mod_sha="$(shasum -a 256 "$TEST_REPO/go.mod" | awk '{print $1}')"
+go_sum_sha="$(shasum -a 256 "$TEST_REPO/go.sum" | awk '{print $1}')"
+actual_dependency_sha="$(printf 'go.mod=%s\ngo.sum=%s\n' "$go_mod_sha" "$go_sum_sha" | shasum -a 256 | awk '{print $1}')"
+[[ "$dependency_sha" == "$actual_dependency_sha" ]] || exit 7
+if has_argument --validate-report-set "$@"; then
+  files=()
+  positional=0
+  for value in "$@"; do
+    if (( positional )); then files+=("$value"); fi
+    [[ "$value" == --validate-report-set ]] && positional=1
+  done
+  [[ ${#files[@]} -eq 3 ]] || exit 7
+  grep -q '"report_kind":"functional"' "${files[0]}" || exit 8
+  grep -q '"report_schema":"personal-mcp-gateway.functional.v3"' "${files[0]}" || exit 8
+  grep -q '"tool_count":5' "${files[0]}" || exit 8
+  grep -q '"synthetic_retrieval_equivalent":true' "${files[0]}" || exit 8
+  grep -q '"report_kind":"performance"' "${files[1]}" || exit 8
+	  grep -q '"report_schema":"personal-mcp-gateway.performance.v3"' "${files[1]}" || exit 8
+  grep -q '"descriptor_count":5' "${files[1]}" || exit 8
+  grep -q '"synthetic_grep":' "${files[1]}" || exit 8
+  grep -q '"current_sqlite":' "${files[1]}" || exit 8
+	  grep -q '"report_kind":"resource"' "${files[2]}" || exit 8
+	  grep -q '"report_schema":"personal-mcp-gateway.resource.v4"' "${files[2]}" || exit 8
+  grep -q '"descriptor_count":5' "${files[2]}" || exit 8
+  grep -q '"measured_call_count":311' "${files[2]}" || exit 8
+  grep -q '"fixture":' "${files[2]}" || exit 8
+  grep -q '"process":' "${files[2]}" || exit 8
+  grep -q '"cold":' "${files[2]}" || exit 8
+  grep -q '"boundaries":' "${files[2]}" || exit 8
+  grep -q '"batches":' "${files[2]}" || exit 8
+  for file in "${files[@]}"; do
+    grep -q '"candidate_commit":"0123456789abcdef0123456789abcdef01234567"' "$file" || exit 8
+    grep -q "\"candidate_sha256\":\"$candidate_sha\"" "$file" || exit 8
+    grep -q "\"dependency_sha256\":\"$dependency_sha\"" "$file" || exit 8
+  done
+  printf '%s\n%s\n%s\n' 0123456789abcdef0123456789abcdef01234567 "$candidate_sha" "$dependency_sha" >"$REPORT_SET_TUPLE"
+  if [[ "${MUTATE_CANDIDATE_AFTER_REPORTS:-0}" == 1 ]]; then printf '# changed after reports\n' >>"$GATEWAY_CANDIDATE"; fi
+  exit 0
+fi
+[[ "$(argument --obsidian-root "$@")" == "$EXPECTED_VAULT" ]] || exit 7
+kind=""
+schema_version=3
+if has_argument --report-json "$@"; then
+  kind=functional
+  if [[ "${MALFORMED_REPORT:-0}" == 1 ]]; then printf '{'; exit 0; fi
+elif has_argument --performance-json "$@"; then
+  kind=performance
+  if [ "${FAIL_PERFORMANCE_SMOKE:-0}" = 1 ]; then
+    printf 'hostile private-sentinel %s\n' "$TEST_REPO"
+    printf 'hostile runtime-secret\n' >&2
+    exit 8
+  fi
+elif has_argument --resource-json "$@"; then
+  kind=resource
+  schema_version=4
+  if [[ "${CROSS_REPORT_DRIFT:-0}" == 1 ]]; then dependency_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; fi
     if [ "${FAIL_PERFORMANCE_SMOKE:-0}" = 1 ]; then
-      printf 'hostile private-sentinel %s\n' "$TEST_REPO"
-      printf 'hostile runtime-secret\n' >&2
       exit 8
     fi
-    ;;
-  "$resource")
     if [ "${FAIL_RESOURCE_SMOKE:-0}" = 1 ]; then
       printf 'hostile private-sentinel %s\n' "$TEST_REPO"
       printf 'hostile runtime-secret\n' >&2
       exit 8
     fi
+else
+  printf 'unexpected smoke args\n'; exit 7
+fi
+case "$kind" in
+  functional)
+    proof='"report_schema":"personal-mcp-gateway.functional.v3","candidate_runtime":{"go_version":"go1.0","goos":"darwin","goarch":"arm64"},"machine":{"logical_cpu_count":1,"gomaxprocs":1},"current_vault":{"inventory_policy":"obsidian_markdown_v1","inventory_complete":true,"markdown_file_count":1,"markdown_byte_count":1,"stopped_by":"scope"},"synthetic_vault":{"inventory_policy":"obsidian_markdown_v1","inventory_complete":true,"markdown_file_count":3,"markdown_byte_count":3,"stopped_by":"scope"},"current_process":{},"synthetic_process":{},"tool_calls":{"resolve":2,"ls":3,"read":1,"read_many":2,"grep":1},"tool_count":5,"sdk_result_count":9,"max_sdk_result_bytes":1,"max_structured_result_bytes":1,"max_client_latency_microseconds":1,"total_files_scanned":1,"total_bytes_scanned":1,"total_source_entries_validated":1,"current_resolve_existing_directory":true,"synthetic_canonical_resolve":true,"synthetic_page_count":2,"synthetic_entry_count":3,"synthetic_second_page_progress":true,"synthetic_no_duplicates":true,"synthetic_full_equivalence":true,"synthetic_read_selected":true,"synthetic_grep_match_count":3,"synthetic_read_many_pages":2,"synthetic_read_many_continued":true,"synthetic_retrieval_equivalent":true,"synthetic_telemetry_sanitized":true'
     ;;
-  *) printf 'unexpected smoke args\n'; exit 7 ;;
+  performance)
+	    proof='"report_schema":"personal-mcp-gateway.performance.v3","candidate_runtime":{"go_version":"go1.0","goos":"darwin","goarch":"arm64"},"machine":{"logical_cpu_count":1,"gomaxprocs":1},"current_vault":{"inventory_policy":"obsidian_markdown_v1","inventory_complete":true,"markdown_file_count":1,"markdown_byte_count":1,"stopped_by":"scope"},"synthetic_corpus":{"inventory_policy":"obsidian_markdown_v1","inventory_complete":true,"markdown_file_count":50,"markdown_byte_count":256000,"stopped_by":"scope"},"descriptor_count":5,"cardinality_bucket":"2_10","resolve_cached":{},"ls_first_limit_1":{},"ls_continued_limit_1":{},"ls_first_limit_100":{},"synthetic_read":{},"synthetic_grep":{},"broad_current_grep":{},"synthetic_process":{},"current_vault_process":{},"stratified":[],"current_sqlite":{},"stratified_sqlite":{},"sqlite_degradation":{},"cancellation":{}'
+    ;;
+  resource)
+	    proof='"report_schema":"personal-mcp-gateway.resource.v4","descriptor_count":5,"candidate_runtime":{"go_version":"go1.0","goos":"darwin","goarch":"arm64"},"machine":{"logical_cpu_count":1,"gomaxprocs":1},"vault":{"inventory_policy":"obsidian_markdown_v1","inventory_complete":true,"markdown_file_count":1,"markdown_byte_count":1,"stopped_by":"scope"},"fixture":{"generated_markdown_files":1,"generated_bytes":1,"inventory_markdown_files":1,"inventory_bytes":1,"inventory_complete":true,"inventory_reconciled":true},"process":{"baseline_cpu_microseconds":1,"final_cpu_microseconds":2,"cpu_delta_microseconds":1,"lifetime_cpu_microseconds":2,"baseline_rss_bytes":1,"final_rss_bytes":1,"max_observed_rss_bytes":1,"high_water_rss_bytes":1,"baseline_fd_count":1,"final_fd_count":1,"max_observed_fd_count":1,"fds_recovered":true},"workload":{"batch_count":3,"calls_per_batch":100,"calls_per_tool_per_batch":20,"mixed_call_count":300,"boundary_call_count":11,"measured_call_count":311,"tool_calls":{"resolve":60,"ls":60,"read":64,"read_many":60,"grep":67},"max_client_latency_microseconds":1,"max_sdk_result_bytes":1,"max_structured_bytes":1,"max_files_scanned":1,"max_bytes_scanned":1,"max_source_entries_validated":1,"every_call_within_two_seconds":true,"every_sdk_result_within_64kib":true},"boundaries":{"call_count":11,"near_8mib_structural_accepted":true,"dense_50000_structural_accepted":true,"over_8mib_error_code":"input_too_large","over_50000_lines_error_code":"input_too_large","grep_exact_matching_error_code":"response_too_large","grep_exact_nonmatching_accepted":true,"grep_exact_context_error_code":"response_too_large","grep_exact_unicode_error_code":"response_too_large","grep_exact_zero_width_error_code":"response_too_large","grep_exact_invalid_utf8_error_code":"invalid_utf8","grep_over_1mib_error_code":"input_too_large","every_call_within_two_seconds":true,"every_sdk_result_within_64kib":true},"cold":{},"baseline":{},"high_water_rss_bytes":1,"high_water_rss_delta_bytes":0,"high_water_within_bound":true,"max_heap_alloc_growth_bytes":0,"heap_alloc_growth_within_bound":true,"max_rss_after_30_seconds_growth_bytes":0,"rss_after_30_seconds_growth_within_bound":true,"gc_acknowledgement_count":4,"all_fds_recovered":true,"batches":[],"idle":{}'
+    ;;
 esac
-if [ "${MUTATE_CANDIDATE:-0}" = 1 ]; then printf '# changed\n' >>"$GATEWAY_CANDIDATE"; fi
+printf '{"report_kind":"%s","schema_version":%s,"passed":true,"candidate_commit":"%s","candidate_sha256":"%s","dependency_sha256":"%s",%s}\n' "$kind" "$schema_version" 0123456789abcdef0123456789abcdef01234567 "$candidate_sha" "$dependency_sha" "$proof"
+if [[ "$kind" == functional && "${REPLACE_RESTORE_CANDIDATE:-0}" == 1 ]]; then
+  cp "$GATEWAY_CANDIDATE" "$GATEWAY_CANDIDATE.restore"
+  printf '#!/bin/sh\n# distinguishable-candidate-b\n' >"$GATEWAY_CANDIDATE"
+  chmod 755 "$GATEWAY_CANDIDATE"
+elif [[ "$kind" == performance && "${REPLACE_RESTORE_CANDIDATE:-0}" == 1 ]]; then
+  cp "$GATEWAY_CANDIDATE.restore" "$GATEWAY_CANDIDATE"
+  chmod 755 "$GATEWAY_CANDIDATE"
+  rm -f "$GATEWAY_CANDIDATE.restore"
+fi
+if [[ "$kind" == resource && "${MUTATE_CANDIDATE:-0}" = 1 ]]; then printf '# changed\n' >>"$GATEWAY_CANDIDATE"; fi
+if [[ "$kind" == resource && "${MUTATE_DEPENDENCY:-0}" = 1 ]]; then printf 'changed dependency\n' >>"$TEST_REPO/go.sum"; fi
 exit 0
 `)
 	makeScript := fmt.Sprintf(`#!/bin/sh
@@ -1178,6 +1400,8 @@ exec "$REAL_INSTALL" "$@"
 	}
 	env := append(testEnv(binDir),
 		"CALL_LOG="+logFile,
+		"REPORT_SET_TUPLE="+filepath.Join(repo, "report-set-tuple"),
+		"SMOKE_CANDIDATE_RECORD="+filepath.Join(repo, "smoke-candidate-path"),
 		"VERIFY_COUNT="+verifyCount,
 		"FAIL_FIRST_VERIFY="+failValue,
 		"FAIL_TESTS="+boolString(options.failTests),
@@ -1187,6 +1411,11 @@ exec "$REAL_INSTALL" "$@"
 		"FAIL_RESTORE="+boolString(options.failRestore),
 		"CORRUPT_STAGE="+boolString(options.corruptStage),
 		"MUTATE_CANDIDATE="+boolString(options.mutateCandidateDuringSmoke),
+		"MUTATE_CANDIDATE_AFTER_REPORTS="+boolString(options.mutateCandidateAfterReports),
+		"REPLACE_RESTORE_CANDIDATE="+boolString(options.replaceRestoreCandidate),
+		"MUTATE_DEPENDENCY="+boolString(options.mutateDependencyDuringSmoke),
+		"MALFORMED_REPORT="+boolString(options.malformedReport),
+		"CROSS_REPORT_DRIFT="+boolString(options.crossReportDrift),
 		"CHANGE_COMMIT_ON_RECHECK="+boolString(options.changeCommitOnRecheck),
 		"FAIL_SECOND_PREFLIGHT="+boolString(options.failSecondPreflight),
 		"REVPARSE_COUNT="+filepath.Join(repo, "revparse-count"),
@@ -1205,7 +1434,8 @@ exec "$REAL_INSTALL" "$@"
 		"GO=go",
 		"TUNNEL_HEALTH_URL_FILE="+filepath.Join(repo, "health.url"),
 	)
-	return &localReleaseHarness{t: t, repo: repo, target: target, vault: vault, logFile: logFile, verifyCount: verifyCount, env: env}
+	return &localReleaseHarness{t: t, repo: repo, target: target, vault: vault, logFile: logFile, verifyCount: verifyCount,
+		smokeCandidateRecord: filepath.Join(repo, "smoke-candidate-path"), env: env}
 }
 
 func (h *localReleaseHarness) run(extra ...string) ([]byte, error) {
@@ -1287,7 +1517,10 @@ argument() {
 }
 
 identity() {
-  printf 'state=%s id=%s commit=0123456789ab sha256=candidate0000\n' "$(cat "$active/state")" "$(cat "$active/id")"
+  printf 'state=%s id=%s commit=%s sha256=%s dependency_sha256=%s\n' \
+    "$(cat "$active/state")" "$(cat "$active/id")" \
+    "$(cut -c1-12 "$active/commit")" "$(cut -c1-12 "$active/candidate-sha256")" \
+    "$(cut -c1-12 "$active/dependency-sha256")"
 }
 
 clear_active() {
@@ -1352,16 +1585,24 @@ case "${1:-status}" in
 	prepare)
     mkdir -p -- "$state_root"
     [[ ! -e "$active" ]] || error_line state_conflict 'a release transaction is already active'
-    mkdir -p -- "$active"
     candidate="$(argument --candidate "$@")"
+    candidate_sha256="$(argument --candidate-sha256 "$@")"
+    actual_candidate_sha256="$(shasum -a 256 "$candidate" | awk '{print $1}')"
+    [[ "$actual_candidate_sha256" == "$candidate_sha256" ]] || error_line artifact_mismatch 'release artifact does not match'
     authority="$(argument --authority "$@")"
 	    target="$(argument --target "$@")"
+	    commit="$(argument --commit "$@")"
+	    dependency_sha256="$(argument --dependency-sha256 "$@")"
 	    printf 'health:%s\n' "$(argument --health-url-file "$@")" >>"$CALL_LOG"
+    mkdir -p -- "$active"
     install -m 755 "$candidate" "$active/candidate"
     install -m 755 "$authority" "$active/authority"
     if [[ -f "$target" ]]; then install -m 755 "$target" "$active/previous"; fi
     printf '%s' release-0001 >"$active/id"
     printf '%s' "$target" >"$active/target"
+    printf '%s' "$commit" >"$active/commit"
+	    printf '%s' "$candidate_sha256" >"$active/candidate-sha256"
+    printf '%s' "$dependency_sha256" >"$active/dependency-sha256"
     printf '%s' prepared >"$active/state"
     ;;
   resume)

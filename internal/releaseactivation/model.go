@@ -3,7 +3,6 @@ package releaseactivation
 import (
 	"encoding/hex"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -14,7 +13,7 @@ func ValidateSnapshot(snapshot Snapshot) *Error {
 	}
 	m := snapshot.Manifest
 	if m.Version != ManifestVersion || !isActiveState(m.State) ||
-		!validReleaseID(m.ID) || !validToken(m.Commit) ||
+		!validReleaseID(m.ID) || !validCommit(m.Commit) || !validSHA256(m.DependencySHA256) ||
 		m.CandidateFile == "" || !validSHA256(m.CandidateSHA256) ||
 		m.AuthorityFile == "" || !validSHA256(m.AuthoritySHA256) ||
 		!absolutePaths(m.TargetPath, m.PlistPath, m.WrapperPath, m.MCPWrapperPath, m.StdoutPath,
@@ -355,6 +354,10 @@ func validReleaseID(id ReleaseID) bool {
 	return validSHA256(value)
 }
 
-func validToken(value string) bool {
-	return value != "" && !strings.ContainsAny(value, " \t\r\n") && len(value) <= 128
+func validCommit(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && hex.EncodeToString(decoded) == value
 }

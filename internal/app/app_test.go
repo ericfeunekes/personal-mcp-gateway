@@ -270,7 +270,13 @@ func TestSQLiteTelemetryFromRealToolCallsIsSanitized(t *testing.T) {
 	defer stop()
 
 	listedTools := listedToolNames(t, ctx, session)
-	wantTools := []string{obsidian.ToolLS, obsidian.ToolResolve}
+	wantTools := []string{
+		obsidian.ToolGrep,
+		obsidian.ToolLS,
+		obsidian.ToolRead,
+		obsidian.ToolReadMany,
+		obsidian.ToolResolve,
+	}
 	if !reflect.DeepEqual(listedTools, wantTools) {
 		t.Fatalf("tools = %#v, want %#v", listedTools, wantTools)
 	}
@@ -437,6 +443,91 @@ func TestJSONLAndSQLiteSafeSummariesMatchForRealCursorCalls(t *testing.T) {
 	}
 }
 
+func TestPhase2JSONLAndSQLiteSafeSummariesMatchAcrossOutcomeClasses(t *testing.T) {
+	const runID = "phase2-summary-parity-run"
+
+	var jsonl bytes.Buffer
+	jsonLog := audit.NewJSONL(&jsonl, runID)
+	jsonEvidence := drivePhase2SafeSummaryScenario(t, testutil.FixtureVault(t), jsonLog)
+	jsonRecords := toolCallRecords(auditRecords(t, jsonl.String()))
+
+	dbPath := filepath.Join(t.TempDir(), "phase2-summary-parity.sqlite")
+	sqliteLog, err := audit.NewSQLite(dbPath, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqliteEvidence := drivePhase2SafeSummaryScenario(t, testutil.FixtureVault(t), sqliteLog)
+	if err := sqliteLog.Close(); err != nil {
+		t.Fatal(err)
+	}
+	sqliteRecords := toolCallRecords(sqliteAuditRows(t, dbPath))
+
+	if len(jsonRecords) != len(sqliteRecords) || len(jsonRecords) != 12 {
+		t.Fatalf("Phase 2 tool-call record counts jsonl=%d sqlite=%d, want 12", len(jsonRecords), len(sqliteRecords))
+	}
+	for i := range jsonRecords {
+		for _, key := range []string{"tool", "outcome", "error_code"} {
+			jsonValue, _ := jsonRecords[i][key].(string)
+			sqliteValue, _ := sqliteRecords[i][key].(string)
+			if jsonValue != sqliteValue {
+				t.Fatalf("record[%d] %s differs: jsonl=%#v sqlite=%#v", i, key, jsonRecords[i][key], sqliteRecords[i][key])
+			}
+		}
+		if !reflect.DeepEqual(jsonRecords[i]["summary"], sqliteRecords[i]["summary"]) {
+			t.Fatalf("Phase 2 summary[%d] differs:\njsonl=%#v\nsqlite=%#v", i, jsonRecords[i]["summary"], sqliteRecords[i]["summary"])
+		}
+	}
+
+	batchWithItemError := jsonRecords[3]
+	if batchWithItemError["tool"] != obsidian.ToolReadMany || batchWithItemError["outcome"] != "ok" {
+		t.Fatalf("item-error batch record = %#v", batchWithItemError)
+	}
+	batchResult := summarySection(t, batchWithItemError, "result")
+	if intFromRecord(batchResult, "item_count") != 2 || intFromRecord(batchResult, "item_error_count") != 1 {
+		t.Fatalf("item-error batch summary = %#v", batchResult)
+	}
+	for _, expected := range []struct {
+		index int
+		tool  string
+		code  string
+	}{
+		{2, obsidian.ToolRead, "not_found"},
+		{6, obsidian.ToolReadMany, "cursor_invalid"},
+		{9, obsidian.ToolGrep, "invalid_regex"},
+		{11, obsidian.ToolRead, "cursor_stale"},
+	} {
+		record := jsonRecords[expected.index]
+		if record["tool"] != expected.tool || record["outcome"] != "tool_error" || record["error_code"] != expected.code {
+			t.Fatalf("record[%d] = %#v, want %s tool_error/%s", expected.index, record, expected.tool, expected.code)
+		}
+	}
+	for _, index := range []int{0, 4, 7, 10} {
+		result := summarySection(t, jsonRecords[index], "result")
+		if result["truncated"] != true || result["continuation"] != "cursor" || result["result_complete"] != false {
+			t.Fatalf("partial summary[%d] = %#v", index, result)
+		}
+	}
+	restart := summarySection(t, jsonRecords[11], "result")
+	if restart["continuation"] != "restart" || restart["stopped_by"] != "source_change" || restart["scope_complete"] != false {
+		t.Fatalf("restart summary = %#v", restart)
+	}
+
+	jsonText := jsonl.String()
+	sqliteText := mustJSON(t, sqliteRecords)
+	for _, forbidden := range append(jsonEvidence.forbidden, sqliteEvidence.forbidden...) {
+		if strings.Contains(jsonText, forbidden) || strings.Contains(sqliteText, forbidden) {
+			t.Fatalf("Phase 2 telemetry retained prohibited evidence %q", forbidden)
+		}
+	}
+	for _, cursor := range append(jsonEvidence.cursors, sqliteEvidence.cursors...) {
+		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(cursor)))
+		if strings.Contains(jsonText, cursor) || strings.Contains(sqliteText, cursor) ||
+			strings.Contains(jsonText, digest) || strings.Contains(sqliteText, digest) {
+			t.Fatal("Phase 2 telemetry retained a cursor or cursor digest")
+		}
+	}
+}
+
 func TestSQLiteHTTPTelemetryRecordsRoutes(t *testing.T) {
 	root := testutil.FixtureVault(t)
 	dbPath := filepath.Join(t.TempDir(), "telemetry.sqlite")
@@ -575,6 +666,25 @@ func TestStreamableHTTPTransportAndHealthReadiness(t *testing.T) {
 	})
 	if !list.OK || !list.Truncated {
 		t.Fatalf("ls over HTTP = %#v", list)
+	}
+	read := callTool[obsidian.ReadOutput](t, ctx, session, obsidian.ToolRead, map[string]any{"path": "README.md"})
+	if !read.OK || read.Content == nil || *read.Content != "synthetic root note\n" {
+		t.Fatalf("read over HTTP = %#v", read)
+	}
+	batch := callTool[obsidian.ReadManyOutput](t, ctx, session, obsidian.ToolReadMany, map[string]any{
+		"requests": []any{
+			map[string]any{"path": "home/projects/alpha.md"},
+			map[string]any{"path": "home/projects/beta.md"},
+		},
+	})
+	if !batch.OK || len(batch.Items) != 2 || batch.Coverage.Continuation != "complete" {
+		t.Fatalf("read_many over HTTP = %#v", batch)
+	}
+	grep := callTool[obsidian.GrepOutput](t, ctx, session, obsidian.ToolGrep, map[string]any{
+		"pattern": "synthetic", "path": ".", "regex": false, "context_lines": 0,
+	})
+	if !grep.OK || len(grep.Matches) != 3 || grep.Coverage.Continuation != "complete" {
+		t.Fatalf("grep over HTTP = %#v", grep)
 	}
 }
 
@@ -777,6 +887,7 @@ func TestReadyzFailsClosedWhenRootDisappears(t *testing.T) {
 
 func TestReadyzFailsWhenTelemetryDegraded(t *testing.T) {
 	root := testutil.FixtureVault(t)
+	before := testutil.Snapshot(t, root)
 	cfg, err := config.Validate(config.Config{
 		Mode:         config.ModeHTTP,
 		ObsidianRoot: root,
@@ -803,6 +914,26 @@ func TestReadyzFailsWhenTelemetryDegraded(t *testing.T) {
 	if strings.Contains(rec.Body.String(), root) {
 		t.Fatalf("/readyz leaked root: %q", rec.Body.String())
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, stop := connectPipeTransport(t, ctx, application)
+	defer stop()
+	result, err := session.CallTool(ctx, &sdk.CallToolParams{Name: obsidian.ToolRead, Arguments: map[string]any{
+		"path": "README.md", "max_bytes": 4,
+	}})
+	if err != nil || result == nil || result.IsError {
+		t.Fatalf("retrieval result did not survive telemetry degradation: result=%#v err=%v", result, err)
+	}
+	assertSDKResultBudget(t, result)
+	var out obsidian.ReadOutput
+	unmarshalStructured(t, result, &out)
+	if !out.OK || out.Coverage.Continuation != "cursor" || out.Coverage.NextCursor == "" {
+		t.Fatalf("degraded retrieval output = %#v", out)
+	}
+	if after := testutil.Snapshot(t, root); !reflect.DeepEqual(before, after) {
+		t.Fatalf("telemetry-degraded retrieval mutated vault:\nbefore=%#v\nafter=%#v", before, after)
+	}
 }
 
 func TestToolCallsDoNotMutateVault(t *testing.T) {
@@ -823,6 +954,59 @@ func TestToolCallsDoNotMutateVault(t *testing.T) {
 
 	_ = callTool[obsidian.ResolveOutput](t, ctx, session, obsidian.ToolResolve, map[string]any{"path": "README.md"})
 	_ = callTool[obsidian.LSOutput](t, ctx, session, obsidian.ToolLS, map[string]any{"path": ".", "limit": 10})
+	_ = callTool[obsidian.ReadOutput](t, ctx, session, obsidian.ToolRead, map[string]any{"path": "README.md"})
+	_ = callTool[obsidian.ReadManyOutput](t, ctx, session, obsidian.ToolReadMany, map[string]any{
+		"requests": []any{
+			map[string]any{"path": "README.md"},
+			map[string]any{"path": "home/projects/alpha.md"},
+		},
+	})
+	_ = callTool[obsidian.GrepOutput](t, ctx, session, obsidian.ToolGrep, map[string]any{
+		"pattern": "synthetic", "path": ".", "regex": false, "context_lines": 0,
+	})
+
+	for _, call := range []struct {
+		name string
+		args map[string]any
+	}{
+		{name: obsidian.ToolRead, args: map[string]any{"path": "README.md", "max_bytes": 4}},
+		{name: obsidian.ToolRead, args: map[string]any{"path": "missing.md"}},
+		{name: obsidian.ToolReadMany, args: map[string]any{"requests": []any{
+			map[string]any{"path": "README.md"}, map[string]any{"path": "missing.md"},
+		}}},
+		{name: obsidian.ToolReadMany, args: map[string]any{"requests": []any{
+			map[string]any{"path": "README.md"}, map[string]any{"path": "home/projects/alpha.md"},
+		}, "max_bytes": 4}},
+		{name: obsidian.ToolGrep, args: map[string]any{"pattern": "synthetic", "path": ".", "regex": false, "context_lines": 0, "limit": 1}},
+		{name: obsidian.ToolGrep, args: map[string]any{"pattern": "(", "path": ".", "regex": true}},
+	} {
+		result, callErr := session.CallTool(ctx, &sdk.CallToolParams{Name: call.name, Arguments: call.args})
+		if callErr != nil || result == nil {
+			t.Fatalf("%s outcome call failed: result=%#v err=%v", call.name, result, callErr)
+		}
+		assertSDKResultBudget(t, result)
+	}
+
+	tools := obsidian.New(application.vault)
+	canceled, cancelCall := context.WithCancel(context.Background())
+	cancelCall()
+	expired, cancelExpired := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancelExpired()
+	literal := false
+	for _, outcomeCtx := range []context.Context{canceled, expired} {
+		_, readOut, readErr := tools.Read(outcomeCtx, nil, obsidian.ReadInput{Path: "README.md"})
+		if readErr != nil || readOut.OK || readOut.Error == nil {
+			t.Fatalf("terminal read outcome = %#v err=%v", readOut, readErr)
+		}
+		_, batchOut, batchErr := tools.ReadMany(outcomeCtx, nil, obsidian.ReadManyInput{Requests: []obsidian.ReadRequest{{Path: "README.md"}}})
+		if batchErr != nil || batchOut.OK || batchOut.Error == nil {
+			t.Fatalf("terminal read_many outcome = %#v err=%v", batchOut, batchErr)
+		}
+		_, grepOut, grepErr := tools.Grep(outcomeCtx, nil, obsidian.GrepInput{Pattern: "synthetic", Path: ".", Regex: &literal})
+		if grepErr != nil || grepOut.OK || grepOut.Error == nil {
+			t.Fatalf("terminal grep outcome = %#v err=%v", grepOut, grepErr)
+		}
+	}
 
 	after := testutil.Snapshot(t, root)
 	if !reflect.DeepEqual(before, after) {
@@ -907,7 +1091,13 @@ func connectPipeTransport(t *testing.T, ctx context.Context, application *App) (
 func assertTools(t *testing.T, ctx context.Context, session *sdk.ClientSession) {
 	t.Helper()
 	got := listedToolNames(t, ctx, session)
-	want := []string{obsidian.ToolLS, obsidian.ToolResolve}
+	want := []string{
+		obsidian.ToolGrep,
+		obsidian.ToolLS,
+		obsidian.ToolRead,
+		obsidian.ToolReadMany,
+		obsidian.ToolResolve,
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("tools = %#v, want %#v", got, want)
 	}
@@ -925,7 +1115,7 @@ func listedToolNames(t *testing.T, ctx context.Context, session *sdk.ClientSessi
 	}
 	sort.Strings(got)
 	for _, tool := range tools.Tools {
-		assertSchemaRequiresPath(t, tool)
+		assertRequiredToolInputs(t, tool)
 		assertReadOnlyToolAnnotations(t, tool)
 	}
 	return got
@@ -948,7 +1138,7 @@ func assertReadOnlyToolAnnotations(t *testing.T, tool *sdk.Tool) {
 	}
 }
 
-func assertSchemaRequiresPath(t *testing.T, tool *sdk.Tool) {
+func assertRequiredToolInputs(t *testing.T, tool *sdk.Tool) {
 	t.Helper()
 	data, err := json.Marshal(tool.InputSchema)
 	if err != nil {
@@ -961,15 +1151,28 @@ func assertSchemaRequiresPath(t *testing.T, tool *sdk.Tool) {
 	if err := json.Unmarshal(data, &schema); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := schema.Properties["path"]; !ok {
-		t.Fatalf("%s schema missing path property: %s", tool.Name, data)
+	want := []string{"path"}
+	switch tool.Name {
+	case obsidian.ToolReadMany:
+		want = []string{"requests"}
+	case obsidian.ToolGrep:
+		want = []string{"pattern"}
 	}
-	for _, field := range schema.Required {
-		if field == "path" {
-			return
+	for _, required := range want {
+		if _, ok := schema.Properties[required]; !ok {
+			t.Fatalf("%s schema missing %s property: %s", tool.Name, required, data)
+		}
+		found := false
+		for _, field := range schema.Required {
+			if field == required {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("%s schema does not require %s: %s", tool.Name, required, data)
 		}
 	}
-	t.Fatalf("%s schema does not require path: %s", tool.Name, data)
 }
 
 func callTool[Out any](t *testing.T, ctx context.Context, session *sdk.ClientSession, name string, args map[string]any) Out {
@@ -1051,6 +1254,121 @@ func driveSafeSummaryScenario(t *testing.T, root string, log *audit.Logger) []st
 		t.Fatalf("summary scenario continued ls = %#v", continued)
 	}
 	return []string{first.Coverage.NextCursor}
+}
+
+type phase2SafeSummaryEvidence struct {
+	cursors   []string
+	forbidden []string
+}
+
+func drivePhase2SafeSummaryScenario(t *testing.T, root string, log *audit.Logger) phase2SafeSummaryEvidence {
+	t.Helper()
+	const (
+		privatePath    = "private-health-workout.md"
+		secondPath     = "private-health-recovery.md"
+		privatePattern = "private-health-needle"
+		privateBody    = "# Private Health\nprivate-health-needle workout evidence\nsecond line\n"
+		changedBody    = "# Private Health\nchanged private medical evidence\n"
+	)
+	if err := os.WriteFile(filepath.Join(root, privatePath), []byte(privateBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, secondPath), []byte(privatePattern+" recovery evidence\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Validate(config.Config{Mode: config.ModeStdio, ObsidianRoot: root, Telemetry: config.TelemetryStderr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	application, err := New(cfg, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	session, stop := connectPipeTransport(t, ctx, application)
+	defer stop()
+
+	call := func(name string, args map[string]any, wantError bool, out any) *sdk.CallToolResult {
+		t.Helper()
+		result, callErr := session.CallTool(ctx, &sdk.CallToolParams{Name: name, Arguments: args})
+		if callErr != nil {
+			t.Fatal(callErr)
+		}
+		if result.IsError != wantError {
+			t.Fatalf("%s IsError=%v, want %v: %#v", name, result.IsError, wantError, result.Content)
+		}
+		if out != nil {
+			unmarshalStructured(t, result, out)
+		}
+		return result
+	}
+
+	readArgs := map[string]any{"path": privatePath, "max_bytes": 8}
+	var firstRead obsidian.ReadOutput
+	call(obsidian.ToolRead, readArgs, false, &firstRead)
+	if !firstRead.OK || firstRead.Coverage.NextCursor == "" {
+		t.Fatalf("partial read setup = %#v", firstRead)
+	}
+	readContinue := map[string]any{"path": privatePath, "max_bytes": 8, "cursor": firstRead.Coverage.NextCursor}
+	var continuedRead obsidian.ReadOutput
+	call(obsidian.ToolRead, readContinue, false, &continuedRead)
+	call(obsidian.ToolRead, map[string]any{"path": "missing-private-health.md"}, true, &obsidian.ReadOutput{})
+
+	itemErrorRequests := []any{map[string]any{"path": privatePath}, map[string]any{"path": "missing-private-health.md"}}
+	var itemErrorBatch obsidian.ReadManyOutput
+	call(obsidian.ToolReadMany, map[string]any{"requests": itemErrorRequests}, false, &itemErrorBatch)
+	if !itemErrorBatch.OK || len(itemErrorBatch.Items) != 2 || itemErrorBatch.Items[1].OK {
+		t.Fatalf("item-error batch = %#v", itemErrorBatch)
+	}
+	batchRequests := []any{map[string]any{"path": privatePath}, map[string]any{"path": secondPath}}
+	batchArgs := map[string]any{"requests": batchRequests, "max_bytes": 8}
+	var firstBatch obsidian.ReadManyOutput
+	call(obsidian.ToolReadMany, batchArgs, false, &firstBatch)
+	if !firstBatch.OK || firstBatch.Coverage.NextCursor == "" {
+		t.Fatalf("partial read_many setup = %#v", firstBatch)
+	}
+	var continuedBatch obsidian.ReadManyOutput
+	call(obsidian.ToolReadMany, map[string]any{"requests": batchRequests, "max_bytes": 8, "cursor": firstBatch.Coverage.NextCursor}, false, &continuedBatch)
+	call(obsidian.ToolReadMany, map[string]any{"requests": batchRequests, "max_bytes": 8, "cursor": "invalid"}, true, &obsidian.ReadManyOutput{})
+
+	grepArgs := map[string]any{
+		"pattern": privatePattern, "path": ".", "regex": false, "context_lines": 0, "limit": 1,
+	}
+	var firstGrep obsidian.GrepOutput
+	call(obsidian.ToolGrep, grepArgs, false, &firstGrep)
+	if !firstGrep.OK || firstGrep.Coverage.NextCursor == "" {
+		t.Fatalf("partial grep setup = %#v", firstGrep)
+	}
+	var continuedGrep obsidian.GrepOutput
+	call(obsidian.ToolGrep, map[string]any{
+		"pattern": privatePattern, "path": ".", "regex": false, "context_lines": 0, "limit": 1,
+		"cursor": firstGrep.Coverage.NextCursor,
+	}, false, &continuedGrep)
+	call(obsidian.ToolGrep, map[string]any{"pattern": "(", "path": ".", "regex": true}, true, &obsidian.GrepOutput{})
+
+	var staleSeed obsidian.ReadOutput
+	call(obsidian.ToolRead, readArgs, false, &staleSeed)
+	if staleSeed.Coverage.NextCursor == "" {
+		t.Fatalf("stale read seed = %#v", staleSeed)
+	}
+	if err := os.WriteFile(filepath.Join(root, privatePath), []byte(changedBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	call(obsidian.ToolRead, map[string]any{"path": privatePath, "max_bytes": 8, "cursor": staleSeed.Coverage.NextCursor}, true, &obsidian.ReadOutput{})
+
+	return phase2SafeSummaryEvidence{
+		cursors: []string{
+			firstRead.Coverage.NextCursor,
+			firstBatch.Coverage.NextCursor,
+			firstGrep.Coverage.NextCursor,
+			staleSeed.Coverage.NextCursor,
+		},
+		forbidden: []string{
+			privatePath, secondPath, "missing-private-health.md", privatePattern, privateBody, changedBody,
+			audit.HashString(log.RunID(), privatePattern),
+		},
+	}
 }
 
 func toolCallRecords(records []map[string]any) []map[string]any {

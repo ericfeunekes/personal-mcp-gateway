@@ -18,14 +18,17 @@ func TestManagerPrepareResumeAccept(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared.State != StatePrepared || !prepared.PreviousPresent || prepared.ID == "" {
+	if prepared.State != StatePrepared || !prepared.PreviousPresent || prepared.ID == "" ||
+		prepared.Version != 2 || prepared.Commit != request.Commit || prepared.CandidateSHA256 != request.CandidateSHA256 ||
+		prepared.DependencySHA256 != request.DependencySHA256 {
 		t.Fatalf("prepared manifest = %#v", prepared)
 	}
 	pending, err := manager.Resume(ctx, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pending.State != StatePending || pending.ID != prepared.ID {
+	if pending.State != StatePending || pending.ID != prepared.ID || pending.Commit != request.Commit ||
+		pending.CandidateSHA256 != request.CandidateSHA256 || pending.DependencySHA256 != request.DependencySHA256 {
 		t.Fatalf("resume = %#v, want same pending release", pending)
 	}
 	if want := []string{"install", "restart", "ready"}; !reflect.DeepEqual(runtime.calls, want) {
@@ -38,6 +41,50 @@ func TestManagerPrepareResumeAccept(t *testing.T) {
 	status, err := manager.Status(ctx)
 	if err != nil || status != nil {
 		t.Fatalf("status after accept = %#v, %v; want clear", status, err)
+	}
+}
+
+func TestManagerPrepareRequiresFullCommitAndDependencyIdentity(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*PrepareRequest)
+	}{
+		{name: "short commit", mutate: func(request *PrepareRequest) { request.Commit = "0123456789abcdef" }},
+		{name: "uppercase commit", mutate: func(request *PrepareRequest) { request.Commit = strings.Repeat("A", 40) }},
+		{name: "missing candidate digest", mutate: func(request *PrepareRequest) { request.CandidateSHA256 = "" }},
+		{name: "uppercase candidate digest", mutate: func(request *PrepareRequest) { request.CandidateSHA256 = strings.Repeat("A", 64) }},
+		{name: "missing dependency", mutate: func(request *PrepareRequest) { request.DependencySHA256 = "" }},
+		{name: "uppercase dependency", mutate: func(request *PrepareRequest) { request.DependencySHA256 = strings.Repeat("A", 64) }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manager, runtime, request := newManagerFixture(t, true)
+			test.mutate(&request)
+			prepared, err := manager.Prepare(context.Background(), request)
+			if got := SanitizedError(err); prepared != nil || got == nil || got.Code != ErrorStateMalformed {
+				t.Fatalf("Prepare = %#v, %v; want state_malformed", prepared, err)
+			}
+			if len(runtime.calls) != 0 {
+				t.Fatalf("invalid identity reached runtime: %v", runtime.calls)
+			}
+			if active, inspectErr := manager.Store.Inspect(); inspectErr != nil || active != nil {
+				t.Fatalf("invalid identity published state: %#v, %v", active, inspectErr)
+			}
+		})
+	}
+}
+
+func TestManagerPrepareRejectsCandidateOutsideValidatedReportTuple(t *testing.T) {
+	manager, runtime, request := newManagerFixture(t, true)
+	request.CandidateSHA256 = strings.Repeat("a", 64)
+	prepared, err := manager.Prepare(context.Background(), request)
+	if got := SanitizedError(err); prepared != nil || got == nil || got.Code != ErrorArtifactMismatch {
+		t.Fatalf("Prepare = %#v, %v; want artifact_mismatch", prepared, err)
+	}
+	if len(runtime.calls) != 0 {
+		t.Fatalf("candidate mismatch reached runtime: %v", runtime.calls)
+	}
+	if active, inspectErr := manager.Store.Inspect(); inspectErr != nil || active != nil {
+		t.Fatalf("candidate mismatch published state: %#v, %v", active, inspectErr)
 	}
 }
 
@@ -685,8 +732,14 @@ func newManagerFixture(t *testing.T, previous bool) (*Manager, *fakeManagerRunti
 		}
 	}
 	manager := &Manager{Store: store, Runtime: runtime, ControllerPath: authority}
+	candidatePath := write("candidate", "candidate", 0o700)
+	candidateSHA256, err := HashRegular(candidatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	request := PrepareRequest{
-		Commit: "0123456789abcdef", CandidatePath: write("candidate", "candidate", 0o700), AuthorityPath: authority,
+		Commit: strings.Repeat("1", 40), CandidateSHA256: candidateSHA256, DependencySHA256: strings.Repeat("9", 64),
+		CandidatePath: candidatePath, AuthorityPath: authority,
 		TargetPath: target, EffectiveUID: 501, LaunchAgentLabel: "local.test.gateway",
 		PlistPath: write("launch.plist", "plist", 0o600), WrapperPath: write("wrapper", "wrapper", 0o700),
 		MCPWrapperPath: write("mcp-wrapper", "mcp wrapper", 0o700),

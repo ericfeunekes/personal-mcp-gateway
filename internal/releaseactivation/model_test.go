@@ -296,12 +296,15 @@ func TestValidateSnapshotRejectsMalformedAndPartialManifests(t *testing.T) {
 		name   string
 		mutate func(*Manifest)
 	}{
-		{name: "version", mutate: func(m *Manifest) { m.Version++ }},
+		{name: "future version", mutate: func(m *Manifest) { m.Version++ }},
+		{name: "version one has no fallback", mutate: func(m *Manifest) { m.Version = 1 }},
 		{name: "clear manifest", mutate: func(m *Manifest) { m.State = StateClear }},
 		{name: "unknown state", mutate: func(m *Manifest) { m.State = State("unknown") }},
 		{name: "short id", mutate: func(m *Manifest) { m.ID = "abcdef" }},
 		{name: "uppercase id", mutate: func(m *Manifest) { m.ID = ReleaseID(strings.ToUpper(string(m.ID))) }},
 		{name: "commit", mutate: func(m *Manifest) { m.Commit = "" }},
+		{name: "short commit", mutate: func(m *Manifest) { m.Commit = "0123456789abcdef" }},
+		{name: "dependency hash", mutate: func(m *Manifest) { m.DependencySHA256 = "" }},
 		{name: "candidate file", mutate: func(m *Manifest) { m.CandidateFile = "" }},
 		{name: "candidate hash", mutate: func(m *Manifest) { m.CandidateSHA256 = "short" }},
 		{name: "authority file", mutate: func(m *Manifest) { m.AuthorityFile = "" }},
@@ -421,6 +424,7 @@ func validManifest(state State, previous bool) Manifest {
 		State:                 state,
 		ID:                    testID,
 		Commit:                "0123456789abcdef0123456789abcdef01234567",
+		DependencySHA256:      strings.Repeat("9", 64),
 		CandidateFile:         "candidate",
 		CandidateSHA256:       testCandidate,
 		AuthorityFile:         "authority",

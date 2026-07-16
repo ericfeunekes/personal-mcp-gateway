@@ -157,6 +157,7 @@ Current first-slice resource budgets:
 - telemetry event body: 16 KiB after summarization;
 - vault-relative path/base input: 4096 bytes and 128 segments;
 - Obsidian tool operation timeout: 2 seconds.
+- encoded SDK `CallToolResult` for every activated Obsidian tool: 64 KiB absolute, including text and structured content.
 
 ## Current Implementation
 

@@ -37,6 +37,8 @@ Implemented first-slice tools:
 
 The local implementation derives registration, schemas, backend-ready names, and safe telemetry from one descriptor authority. Filesystem access is fd-anchored per operation, pagination re-scans the complete shallow directory while retaining only `O(limit)` candidates, and JSONL/SQLite summaries cannot retain raw paths, entry names, cursor values, or content. Phase 1 proof now covers candidate smoke, current-vault and stratified performance, ten cold processes, repeated-call CPU/memory/descriptor bounds, a 60-second idle window, refreshed authenticated metadata, model-selected two-page cursor continuation, and exact-candidate release acceptance.
 
+The 64 KiB encoded SDK result limit is the absolute context envelope for every Obsidian tool. Phase 2 retrieval may accept source/content work budgets up to 256 KiB, but it must page any larger selected work beneath that envelope with caller-carried cursors. Single-note Markdown parsing is capped at 8 MiB and 50,000 physical source lines so source-unit selection remains memory-bounded without another agent-facing option. `grep` likewise rejects an examined physical line larger than 1 MiB instead of buffering unbounded line evidence. Retrieval uses one shared coverage grammar; `grep` favors useful early pages and reports incomplete scope rather than continuing an expensive scan only to strengthen a completeness claim.
+
 Not implemented yet: `read`, `read_many`, `grep`, `links`, `traverse`, `backlinks`, and `path_between`.
 
 ## Stateless Path Model

@@ -318,7 +318,12 @@ func prepareRaceCLI(root string, uid int, candidate, authority string, manager *
 			return nil, dependencies{}, err
 		}
 	}
-	args := []string{"prepare", "--commit", strings.Repeat("b", 40), "--candidate", candidate, "--authority", authority,
+	candidateSHA256, err := releaseactivation.HashRegular(candidate)
+	if err != nil {
+		return nil, dependencies{}, err
+	}
+	args := []string{"prepare", "--commit", strings.Repeat("b", 40), "--candidate-sha256", candidateSHA256, "--dependency-sha256", strings.Repeat("9", 64),
+		"--candidate", candidate, "--authority", authority,
 		"--target", filepath.Join(root, "target"), "--label", label, "--repo-root", repo,
 		"--environment", filepath.Join(root, "prepare.env"), "--health-url-file", filepath.Join(root, "health-url"),
 		"--ready-timeout-seconds", "5", "--ready-poll-milliseconds", "50"}

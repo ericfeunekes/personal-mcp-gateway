@@ -234,6 +234,8 @@ func parsePrepare(args []string, deps dependencies) (releaseactivation.PrepareRe
 	var request releaseactivation.PrepareRequest
 	var repoRoot string
 	set.StringVar(&request.Commit, "commit", "", "")
+	set.StringVar(&request.CandidateSHA256, "candidate-sha256", "", "")
+	set.StringVar(&request.DependencySHA256, "dependency-sha256", "", "")
 	set.StringVar(&request.CandidatePath, "candidate", "", "")
 	set.StringVar(&request.AuthorityPath, "authority", "", "")
 	set.StringVar(&request.TargetPath, "target", "", "")
@@ -246,8 +248,12 @@ func parsePrepare(args []string, deps dependencies) (releaseactivation.PrepareRe
 	if err := set.Parse(args); err != nil || set.NArg() != 0 {
 		return request, &usageError{}
 	}
-	if !allNonempty(request.Commit, request.CandidatePath, request.AuthorityPath, request.TargetPath,
+	if !allNonempty(request.Commit, request.CandidateSHA256, request.DependencySHA256, request.CandidatePath, request.AuthorityPath, request.TargetPath,
 		request.LaunchAgentLabel, repoRoot, request.EnvironmentPath, request.HealthURLFile) {
+		return request, &usageError{}
+	}
+	if !validGitOID(request.Commit) || len(request.CandidateSHA256) != 64 || !validGitOID(request.CandidateSHA256) ||
+		len(request.DependencySHA256) != 64 || !validGitOID(request.DependencySHA256) {
 		return request, &usageError{}
 	}
 	if !releaseactivation.ValidLaunchAgentLabel(request.LaunchAgentLabel) {
@@ -427,7 +433,7 @@ func manifestRecords(manifest *releaseactivation.Manifest) []string {
 	if manifest == nil {
 		return []string{"state=clear"}
 	}
-	identity := fmt.Sprintf("state=%s id=%s commit=%s sha256=%s", manifest.State, manifest.ID, short(manifest.Commit), short(manifest.CandidateSHA256))
+	identity := fmt.Sprintf("state=%s id=%s commit=%s sha256=%s dependency_sha256=%s", manifest.State, manifest.ID, short(manifest.Commit), short(manifest.CandidateSHA256), short(manifest.DependencySHA256))
 	switch manifest.State {
 	case releaseactivation.StatePrepared:
 		return []string{identity, "resume=make release", "rollback=make release-rollback RELEASE_ID=" + string(manifest.ID)}

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"personal-mcp-gateway/internal/fsx"
 )
 
@@ -45,6 +47,35 @@ func StructuredOutputFits(value any) (bool, int, error) {
 		return false, 0, err
 	}
 	return size <= MaxStructuredResultBytes, size, nil
+}
+
+// CompleteSDKResultBytes measures the same CallToolResult shape emitted by the
+// typed SDK wrapper: the domain-owned fixed text content plus the already
+// marshaled structured output. This is the absolute context boundary; the
+// smaller structured budget above is only an early fitting guard.
+func CompleteSDKResultBytes(result *sdk.CallToolResult, output any) (int, error) {
+	if result == nil {
+		return 0, errors.New("nil call tool result")
+	}
+	structured, err := json.Marshal(output)
+	if err != nil {
+		return 0, fmt.Errorf("encode structured output: %w", err)
+	}
+	probe := *result
+	probe.StructuredContent = json.RawMessage(structured)
+	encoded, err := json.Marshal(&probe)
+	if err != nil {
+		return 0, fmt.Errorf("encode complete SDK result: %w", err)
+	}
+	return len(encoded), nil
+}
+
+func CompleteSDKResultFits(result *sdk.CallToolResult, output any) (bool, int, error) {
+	size, err := CompleteSDKResultBytes(result, output)
+	if err != nil {
+		return false, 0, err
+	}
+	return size <= MaxSDKResultBytes, size, nil
 }
 
 // FitLSOutput deterministically returns the largest leading candidate page
@@ -167,6 +198,13 @@ func FitLSOutput(ctx context.Context, request LSFitRequest, cursorFor CursorForP
 		return LSOutput{}, err
 	}
 	if !fits {
+		return LSOutput{}, ErrResponseTooLarge
+	}
+	completeFits, _, err := CompleteSDKResultFits(successCallResult(), out)
+	if err != nil {
+		return LSOutput{}, err
+	}
+	if !completeFits {
 		return LSOutput{}, ErrResponseTooLarge
 	}
 	return out, nil

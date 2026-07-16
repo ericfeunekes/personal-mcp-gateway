@@ -16,7 +16,6 @@ import (
 
 	"personal-mcp-gateway/internal/audit"
 	"personal-mcp-gateway/internal/config"
-	"personal-mcp-gateway/internal/fsx"
 	"personal-mcp-gateway/internal/testutil"
 	"personal-mcp-gateway/internal/tools/obsidian"
 )
@@ -32,15 +31,29 @@ func TestPhase1DescriptorsTeachCanonicalContinuation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Tools) != 2 {
-		t.Fatalf("tool count = %d, want 2", len(listed.Tools))
+	if len(listed.Tools) != 5 {
+		t.Fatalf("tool count = %d, want 5", len(listed.Tools))
 	}
 	byName := map[string]*sdk.Tool{}
 	for _, tool := range listed.Tools {
 		byName[tool.Name] = tool
 	}
-	if got := byName[obsidian.ToolResolve].Description; got != obsidian.ResolveDescription {
+	resolve := byName[obsidian.ToolResolve]
+	if resolve == nil {
+		t.Fatal("resolve descriptor missing")
+	}
+	if got := resolve.Description; got != obsidian.ResolveDescription {
 		t.Fatalf("resolve description = %q", got)
+	}
+	for name, description := range map[string]string{
+		obsidian.ToolRead:     obsidian.ReadDescription,
+		obsidian.ToolReadMany: obsidian.ReadManyDescription,
+		obsidian.ToolGrep:     obsidian.GrepDescription,
+	} {
+		tool := byName[name]
+		if tool == nil || tool.Description != description {
+			t.Fatalf("%s descriptor = %#v", name, tool)
+		}
 	}
 	ls := byName[obsidian.ToolLS]
 	if ls == nil || ls.Description != obsidian.LSDescription {
@@ -97,10 +110,10 @@ func TestPhase1DescriptorsTeachCanonicalContinuation(t *testing.T) {
 	for _, guidance := range []string{
 		"allowed non-hidden entries already inspected as metadata",
 		"do not call resolve merely to inspect an entry returned here",
-		"use next_cursor instead of widening limit",
-		"the next call must pass next_cursor as cursor with identical path, base, and limit",
+		"use next_cursor without widening limits or budgets",
+		"the next call must pass next_cursor unchanged as cursor and repeat every other query field",
 		"pass it unchanged only in the cursor input field, never path or base",
-		"never widen limit to continue",
+		"never widen a limit or budget to continue",
 	} {
 		if !strings.Contains(string(encodedOutput), guidance) {
 			t.Fatalf("ls output schema lacks %q guidance: %s", guidance, encodedOutput)
@@ -247,7 +260,7 @@ func TestPhase1CursorStalesAfterDirectoryMutationWithoutWriting(t *testing.T) {
 	}
 }
 
-func TestPhase1CursorRejectionAndUnsignedRewriteAtSDKBoundary(t *testing.T) {
+func TestPhase1CursorRejectionAndSealedRewriteAtSDKBoundary(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{"a.md", "b.md", "c.md"} {
 		if err := os.WriteFile(filepath.Join(root, name), []byte(name), 0o600); err != nil {
@@ -264,39 +277,45 @@ func TestPhase1CursorRejectionAndUnsignedRewriteAtSDKBoundary(t *testing.T) {
 	firstResult := phase1Call(t, ctx, session, obsidian.ToolLS, map[string]any{"path": ".", "limit": 1})
 	var first obsidian.LSOutput
 	unmarshalStructured(t, firstResult, &first)
-	issued, err := obsidian.DecodeCursor(first.Coverage.NextCursor)
-	if err != nil {
-		t.Fatal(err)
+	rewriteBoundary := func(cursor, boundary string) string {
+		t.Helper()
+		decoded, err := base64.RawURLEncoding.DecodeString(cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var envelope map[string]any
+		if err := json.Unmarshal(decoded, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		position, ok := envelope["position"].(map[string]any)
+		if !ok {
+			t.Fatalf("cursor position = %#v", envelope["position"])
+		}
+		position["nfc"] = boundary
+		position["stored"] = boundary
+		encoded, err := json.Marshal(envelope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return base64.RawURLEncoding.EncodeToString(encoded)
 	}
 
-	existingCursor, err := obsidian.EncodeCursor(issued.Tool, issued.Query, issued.Source, fsx.Position{NFC: "b.md", Stored: "b.md"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	existingCursor := rewriteBoundary(first.Coverage.NextCursor, "b.md")
 	existing := phase1Call(t, ctx, session, obsidian.ToolLS, map[string]any{"path": ".", "limit": 1, "cursor": existingCursor})
-	var existingOut obsidian.LSOutput
-	unmarshalStructured(t, existing, &existingOut)
-	if existing.IsError || !existingOut.OK || len(existingOut.Entries) != 1 || existingOut.Entries[0].Name != "c.md" ||
-		existingOut.Coverage.FilesScanned != 3 || !existingOut.Coverage.ScopeComplete || existingOut.Coverage.Consistency != "stable" {
-		t.Fatalf("existing-boundary rewrite = result %#v output %#v", existing, existingOut)
-	}
-	assertSDKResultBudget(t, existing)
+	assertCursorToolError(t, existing, "cursor_invalid", 0)
 
-	missingCursor, err := obsidian.EncodeCursor(issued.Tool, issued.Query, issued.Source, fsx.Position{NFC: "bb.md", Stored: "bb.md"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	missingCursor := rewriteBoundary(first.Coverage.NextCursor, "bb.md")
 	missing := phase1Call(t, ctx, session, obsidian.ToolLS, map[string]any{"path": ".", "limit": 1, "cursor": missingCursor})
-	assertCursorToolError(t, missing, "cursor_invalid", 3)
+	assertCursorToolError(t, missing, "cursor_invalid", 0)
 
 	digest := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
-	validShape := fmt.Sprintf(`{"version":1,"tool":"ls","query":%q,"source":%q,"position":{"nfc":"a.md","stored":"a.md"}}`, digest, digest)
+	validShape := fmt.Sprintf(`{"version":2,"tool":"ls","query":%q,"source":%q,"position":{"nfc":"a.md","stored":"a.md"},"seal":%q}`, digest, digest, digest)
 	malformed := map[string]string{
 		"invalid alphabet": "%",
 		"oversized":        strings.Repeat("A", obsidian.MaxCursorBytes+1),
 		"unknown field":    encodeRawCursor(validShape[:len(validShape)-1] + `,"extra":true}`),
 		"trailing value":   encodeRawCursor(validShape + `{}`),
-		"unsupported":      encodeRawCursor(strings.Replace(validShape, `"version":1`, `"version":2`, 1)),
+		"unsupported":      encodeRawCursor(strings.Replace(validShape, `"version":2`, `"version":3`, 1)),
 	}
 	for name, cursor := range malformed {
 		t.Run(name, func(t *testing.T) {

@@ -29,10 +29,10 @@ func TestRunProbesBuiltGatewayCandidate(t *testing.T) {
 	candidate := buildGatewayCandidate(t)
 	vault := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	if err := run([]string{
+	if err := run(append([]string{
 		"--gateway-bin", candidate,
 		"--obsidian-root", vault,
-	}, &stdout, &stderr); err != nil {
+	}, provenanceArgs(t, candidate)...), &stdout, &stderr); err != nil {
 		t.Fatalf("run() failed: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
 	}
 	if stdout.String() != defaultSuccessMessage+"\n" || stderr.Len() != 0 {
@@ -52,11 +52,11 @@ func TestRunReportJSONIsOneSanitizedAggregate(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	if err := run([]string{
+	if err := run(append([]string{
 		"--gateway-bin", candidate,
 		"--obsidian-root", vault,
 		"--report-json",
-	}, &stdout, &stderr); err != nil {
+	}, provenanceArgs(t, candidate)...), &stdout, &stderr); err != nil {
 		t.Fatalf("run() failed: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
 	}
 	if stderr.Len() != 0 {
@@ -77,12 +77,15 @@ func TestRunReportJSONIsOneSanitizedAggregate(t *testing.T) {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		t.Fatalf("report contained trailing JSON: %v", err)
 	}
-	if !report.Passed || report.SchemaVersion != smokeReportVersion || report.ToolCount != 2 ||
+	if !report.Passed || report.ReportKind != reportKindFunctional || report.SchemaVersion != smokeReportVersion ||
+		!validGitOID(report.CandidateCommit) || !validDigest(report.CandidateSHA256) || !validDigest(report.DependencySHA256) || report.ToolCount != 5 ||
 		!report.CurrentResolveExistingDir || !report.SyntheticCanonicalResolve ||
 		report.SyntheticPageCount < 2 || report.SyntheticEntryCount != 3 ||
 		!report.SyntheticSecondProgress || !report.SyntheticNoDuplicates ||
-		!report.SyntheticFullEquivalence || report.SDKResultCount < 5 ||
-		report.MaxSDKResultBytes <= 0 {
+		!report.SyntheticFullEquivalence || !report.SyntheticReadSelected || report.SyntheticGrepMatchCount != 3 ||
+		report.SyntheticReadManyPages < 2 || !report.SyntheticReadManyContinued || !report.SyntheticRetrievalEquivalent ||
+		!report.SyntheticTelemetrySanitized || report.SDKResultCount < 8 || report.MaxSDKResultBytes <= 0 ||
+		!functionalBehaviorPasses(report) || !functionalReportEvidencePasses(report) {
 		t.Fatalf("report = %#v", report)
 	}
 }
@@ -100,13 +103,19 @@ func TestRunPerformanceJSONIsBoundedAndSanitized(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	for _, name := range []string{"private-root-alpha.md", "private-root-beta.md"} {
+		privateNames = append(privateNames, name)
+		if err := os.WriteFile(filepath.Join(vault, name), []byte("private-root-performance-content\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	var stdout, stderr bytes.Buffer
-	if err := run([]string{
+	if err := run(append([]string{
 		"--gateway-bin", candidate,
 		"--obsidian-root", vault,
 		"--performance-json",
-	}, &stdout, &stderr); err != nil {
+	}, provenanceArgs(t, candidate)...), &stdout, &stderr); err != nil {
 		t.Fatalf("run() failed: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
 	}
 	if stderr.Len() != 0 {
@@ -136,7 +145,9 @@ func TestRunPerformanceJSONIsBoundedAndSanitized(t *testing.T) {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		t.Fatalf("performance report contained trailing JSON: %v", err)
 	}
-	if !report.Passed || report.SchemaVersion != smokeReportVersion || report.DescriptorCount != 2 || report.CardinalityBucket != "2_10" {
+	if !report.Passed || report.ReportKind != reportKindPerformance || report.SchemaVersion != smokeReportVersion ||
+		!validGitOID(report.CandidateCommit) || !validDigest(report.CandidateSHA256) || !validDigest(report.DependencySHA256) ||
+		report.DescriptorCount != 5 || report.CardinalityBucket != "2_10" || !performanceReportEvidencePasses(report) {
 		t.Fatalf("report header = %#v", report)
 	}
 	for name, metrics := range map[string]performanceMetrics{
@@ -300,14 +311,18 @@ func TestProbeCandidateResourcesUsesFreshProcessesAndEmitsOnlySanitizedAggregate
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !report.Passed || report.SchemaVersion != resourceReportVersion || report.DescriptorCount != 2 || report.Cold.FreshProcessCount != 2 ||
+	report.ReportKind = reportKindResource
+	report.CandidateCommit = strings.Repeat("a", 40)
+	report.CandidateSHA256 = strings.Repeat("b", 64)
+	report.DependencySHA256 = strings.Repeat("c", 64)
+	if !report.Passed || report.SchemaVersion != resourceReportVersion || report.DescriptorCount != 5 || report.Cold.FreshProcessCount != 2 ||
 		len(report.Batches) != resourceBatchCount || report.Baseline.MeasuredCallCount != 0 ||
 		!report.Baseline.GCAcknowledged || !report.Baseline.FDRecoveredAtEverySample ||
 		report.Baseline.Memory.HeapAllocBytes == 0 || report.Baseline.Memory.HeapSysBytes == 0 ||
 		report.GCAcknowledgementCount != resourceBatchCount+1 || !report.HighWaterWithinBound ||
 		!report.HeapAllocGrowthWithinBound || !report.RSSAfter30SecondsGrowthWithinBound || !report.AllFDsRecovered ||
 		!report.Idle.CPUWithinBound || !report.Idle.FDsRecovered || !report.Idle.NoExtraToolCalls ||
-		!report.Idle.NoVaultActivity || !report.Idle.DescriptorsUnchanged || report.Idle.DescriptorCountAfter != 2 {
+		!report.Idle.NoVaultActivity || !report.Idle.DescriptorsUnchanged || report.Idle.DescriptorCountAfter != 5 {
 		t.Fatalf("resource report = %#v", report)
 	}
 	for _, batch := range report.Batches {
@@ -358,10 +373,7 @@ func TestObserveResourceIdleRejectsRealCandidateLSActivity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	relativeRepresentative, _, err := selectRepresentativeDirectory(ctx, candidate.process.session)
-	if err != nil {
-		t.Fatal(err)
-	}
+	relativeRepresentative := "representative"
 	sampler := &idleInterferenceSampler{started: make(chan struct{})}
 	options := resourceProbeOptions{IdleDuration: 150 * time.Millisecond, ControlTime: 2 * time.Second}
 	type result struct {
@@ -445,7 +457,7 @@ func TestSystemResourceSamplerAgainstBuiltCandidate(t *testing.T) {
 	if err != nil && err.Error() != "candidate resource gate failed" {
 		t.Fatalf("%v: %#v", err, report)
 	}
-	if report.Cold.FreshProcessCount != 2 || report.DescriptorCount != 2 || report.Baseline.MeasuredCallCount != 0 ||
+	if report.Cold.FreshProcessCount != 2 || report.DescriptorCount != 5 || report.Baseline.MeasuredCallCount != 0 ||
 		report.GCAcknowledgementCount != resourceBatchCount+1 || !report.HighWaterWithinBound ||
 		!report.HeapAllocGrowthWithinBound || !report.RSSAfter30SecondsGrowthWithinBound || !report.AllFDsRecovered ||
 		!report.Idle.CPUWithinBound || !report.Idle.FDsRecovered ||
@@ -559,7 +571,7 @@ func TestDefaultResourceProbeContractIsFrozen(t *testing.T) {
 		IdleDuration:  60 * time.Second,
 		ControlTime:   5 * time.Second,
 	}
-	if !reflect.DeepEqual(got, want) || resourceReportVersion != 2 || resourceBatchCount != 3 || resourceBatchCalls != 100 ||
+	if !reflect.DeepEqual(got, want) || resourceReportVersion != 4 || resourceBatchCount != 3 || resourceBatchCalls != 100 ||
 		resourceHeapAllocGrowthLimitBytes != uint64(256*1024) || resourceRSSGrowthLimitBytes != int64(8*1024*1024) ||
 		resourceRSSLimitBytes != int64(64*1024*1024) {
 		t.Fatalf("resource probe defaults = %#v, version=%d batches=%d calls=%d heap=%d rss=%d hwm=%d", got, resourceReportVersion, resourceBatchCount, resourceBatchCalls, resourceHeapAllocGrowthLimitBytes, resourceRSSGrowthLimitBytes, resourceRSSLimitBytes)
@@ -1039,6 +1051,22 @@ func TestResourceReportPassesRejectsEachGateFailure(t *testing.T) {
 		{name: "idle telemetry", mutate: func(r *resourceReport) { r.Idle.NoExtraToolCalls = false }},
 		{name: "idle vault activity", mutate: func(r *resourceReport) { r.Idle.NoVaultActivity = false }},
 		{name: "descriptor drift", mutate: func(r *resourceReport) { r.Idle.DescriptorsUnchanged = false }},
+		{name: "cold negative startup", mutate: func(r *resourceReport) { r.Cold.StartupP50Microseconds = -1 }},
+		{name: "cold unordered first call", mutate: func(r *resourceReport) {
+			r.Cold.FirstCallP50Microseconds = 2
+			r.Cold.FirstCallP95Microseconds = 1
+		}},
+		{name: "cold unordered process cpu", mutate: func(r *resourceReport) {
+			r.Cold.ProcessCPUP95Microseconds = 2
+			r.Cold.ProcessCPUMaxMicroseconds = 1
+		}},
+		{name: "idle cpu delta raw", mutate: func(r *resourceReport) { r.Idle.CPUTimeDeltaMicroseconds++ }},
+		{name: "idle cpu bound raw", mutate: func(r *resourceReport) { r.Idle.CPUTimeBoundMicroseconds++ }},
+		{name: "idle fd before raw", mutate: func(r *resourceReport) { r.Idle.FDBeforeCount++ }},
+		{name: "idle telemetry raw", mutate: func(r *resourceReport) { r.Idle.ToolCallRowsAfter++ }},
+		{name: "idle activity raw", mutate: func(r *resourceReport) { r.Idle.VaultActivityTotalAfter++ }},
+		{name: "idle active raw", mutate: func(r *resourceReport) { r.Idle.VaultActivityActiveAfter++ }},
+		{name: "idle descriptor raw", mutate: func(r *resourceReport) { r.Idle.DescriptorCountAfter-- }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			report := passing
@@ -1079,6 +1107,7 @@ func TestAlignedB0LiteralLimitsAreIndependentAndInclusive(t *testing.T) {
 			report := passingResourceGateReport()
 			report.Batches = append([]resourceBatchReport(nil), report.Batches...)
 			test.mutate(&report, report.Baseline.RSSAfter30SecondsBytes)
+			report.Process.HighWaterRSSBytes = report.HighWaterRSSBytes
 			report = deriveResourceReport(report)
 			if got := resourceReportPasses(report, 10); got != test.want {
 				t.Fatalf("resourceReportPasses = %v, want %v; report=%#v", got, test.want, report)
@@ -1091,9 +1120,34 @@ func passingResourceGateReport() resourceReport {
 	const baselineRSS = int64(16 * 1024 * 1024)
 	const baselineHeap = uint64(1024 * 1024)
 	report := resourceReport{
-		SchemaVersion:     resourceReportVersion,
-		DescriptorCount:   2,
-		Cold:              coldResourceReport{FreshProcessCount: 10},
+		ReportKind:       reportKindResource,
+		ReportSchema:     resourceReportSchema,
+		SchemaVersion:    resourceReportVersion,
+		DescriptorCount:  5,
+		Cold:             coldResourceReport{FreshProcessCount: 10, MaxSDKResultBytes: 1, MaxStructuredBytes: 1},
+		CandidateRuntime: candidateRuntimeProfile{GoVersion: "go1.26.1", GOOS: "darwin", GOARCH: "amd64"},
+		Machine:          machineProfile{LogicalCPUCount: 8, GOMAXPROCS: 8},
+		Vault:            vaultAggregateProfile{InventoryPolicy: markdownInventoryPolicy, InventoryComplete: true, StoppedBy: "scope"},
+		Fixture: resourceVaultReport{
+			GeneratedMarkdownFiles: 13, GeneratedBytes: 1, InventoryMarkdownFiles: 13, InventoryBytes: 1,
+			InventoryComplete: true, InventoryReconciled: true,
+		},
+		Workload: resourceWorkloadReport{
+			BatchCount: resourceBatchCount, CallsPerBatch: resourceBatchCalls, CallsPerToolPerBatch: resourceCallsPerToolPerBatch,
+			MixedCallCount: resourceBatchCount * resourceBatchCalls, BoundaryCallCount: resourceBoundaryCalls, MeasuredCallCount: resourceMeasuredCalls,
+			ToolCalls:                    resourceToolCallCounts{Resolve: 60, LS: 60, Read: 64, ReadMany: 60, Grep: 67},
+			MaxClientLatencyMicroseconds: 1, MaxSDKResultBytes: 1, MaxStructuredBytes: 1, MaxBytesScanned: 1,
+			EveryCallWithinTwoSeconds: true, EverySDKResultWithin64KiB: true,
+		},
+		Boundaries: resourceBoundaryReport{
+			CallCount: resourceBoundaryCalls, BatchNumber: 1, RanAfterBaseline: true, RanBeforeBlockingGC: true,
+			Near8MiBStructuralAccepted: true, Dense50000StructuralAccepted: true,
+			Over8MiBErrorCode: "input_too_large", Over50000LinesErrorCode: "input_too_large",
+			GrepExactMatchingErrorCode: obsidian.ResponseTooLargeCode, GrepExactNonmatchingAccepted: true,
+			GrepExactContextErrorCode: obsidian.ResponseTooLargeCode, GrepExactUnicodeErrorCode: obsidian.ResponseTooLargeCode,
+			GrepExactZeroWidthErrorCode: obsidian.ResponseTooLargeCode, GrepExactInvalidUTF8ErrorCode: obsidian.InvalidUTF8Code,
+			GrepOver1MiBErrorCode: "input_too_large", EveryCallWithinTwoSeconds: true, EverySDKResultWithin64KiB: true,
+		},
 		HighWaterRSSBytes: baselineRSS + 4*1024*1024,
 		Baseline: resourceBaselineReport{
 			MeasuredCallCount: 0,
@@ -1118,14 +1172,48 @@ func passingResourceGateReport() resourceReport {
 			passingResourceBatch(baselineHeap, baselineRSS),
 		},
 		Idle: idleResourceReport{
-			RSSBeforeBytes:       baselineRSS,
-			RSSAfterBytes:        baselineRSS,
-			CPUWithinBound:       true,
-			FDsRecovered:         true,
-			NoExtraToolCalls:     true,
-			NoVaultActivity:      true,
-			DescriptorsUnchanged: true,
+			DurationMicroseconds:      100,
+			CPUTimeBeforeMicroseconds: 1,
+			CPUTimeAfterMicroseconds:  1,
+			CPUTimeDeltaMicroseconds:  0,
+			CPUTimeBoundMicroseconds:  1,
+			RSSBeforeBytes:            baselineRSS,
+			RSSAfterBytes:             baselineRSS,
+			FDBeforeCount:             7,
+			FDAfterCount:              7,
+			CPUWithinBound:            true,
+			FDsRecovered:              true,
+			NoExtraToolCalls:          true,
+			NoVaultActivity:           true,
+			DescriptorCountAfter:      5,
+			DescriptorsUnchanged:      true,
+			ExpectedToolCallRows:      resourceMeasuredCalls,
+			ToolCallRowsBefore:        resourceMeasuredCalls,
+			ToolCallRowsAfter:         resourceMeasuredCalls,
 		},
+	}
+	for index := range report.Batches {
+		report.Batches[index].ToolCalls = resourceToolCallCounts{Resolve: 20, LS: 20, Read: 20, ReadMany: 20, Grep: 20}
+		report.Batches[index].MaxClientLatencyMicroseconds = 1
+		report.Batches[index].MaxSDKResultBytes = 1
+		report.Batches[index].MaxStructuredBytes = 1
+		report.Batches[index].EveryCallWithinTwoSeconds = true
+		report.Batches[index].EverySDKResultWithin64KiB = true
+	}
+	report.Batches[0].BoundaryCallCount = resourceBoundaryCalls
+	report.Process = candidateProcessProfile{
+		BaselineCPUMicroseconds: report.Baseline.CPUTimeMicroseconds,
+		FinalCPUMicroseconds:    report.Idle.CPUTimeAfterMicroseconds,
+		CPUDeltaMicroseconds:    report.Idle.CPUTimeAfterMicroseconds - report.Baseline.CPUTimeMicroseconds,
+		LifetimeCPUMicroseconds: report.Idle.CPUTimeAfterMicroseconds,
+		BaselineRSSBytes:        report.Baseline.RSSAfter30SecondsBytes,
+		FinalRSSBytes:           report.Idle.RSSAfterBytes,
+		MaxObservedRSSBytes:     report.Baseline.RSSAfter30SecondsBytes,
+		HighWaterRSSBytes:       report.HighWaterRSSBytes,
+		BaselineFDCount:         report.Baseline.FDImmediateCount,
+		FinalFDCount:            report.Idle.FDAfterCount,
+		MaxObservedFDCount:      report.Baseline.FDImmediateCount,
+		FDsRecovered:            true,
 	}
 	return deriveResourceReport(report)
 }
@@ -1180,7 +1268,7 @@ func (s *fixedResourceSampler) Sample(_ context.Context, pid int, _ bool) (proce
 	}
 	s.pids[pid] = struct{}{}
 	s.cpu++
-	return processResourceSample{rssBytes: 1024 * 1024, cpuMicros: s.cpu, fdCount: 7}, nil
+	return processResourceSample{rssBytes: 24 * 1024 * 1024, cpuMicros: s.cpu, fdCount: 7}, nil
 }
 
 func (s *fixedResourceSampler) distinctPIDs() int {
@@ -1252,10 +1340,15 @@ func TestRunSanitizesCandidateStartFailure(t *testing.T) {
 	privateCandidate := filepath.Join(t.TempDir(), "missing-gateway")
 	privateVault := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	err := run([]string{
+	args := []string{
 		"--gateway-bin", privateCandidate,
 		"--obsidian-root", privateVault,
-	}, &stdout, &stderr)
+	}
+	identityCandidate := filepath.Join(t.TempDir(), "identity-candidate")
+	if err := os.WriteFile(identityCandidate, []byte("identity"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	err := run(append(args, provenanceArgs(t, identityCandidate)...), &stdout, &stderr)
 	if err == nil {
 		t.Fatal("run() succeeded with missing candidate")
 	}
@@ -1279,6 +1372,48 @@ func buildGatewayCandidate(t *testing.T) string {
 	return candidate
 }
 
+func provenanceArgs(t *testing.T, candidate string) []string {
+	t.Helper()
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module provenance.test\n\ngo 1.25\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "go.sum"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"add", "go.mod", "go.sum"},
+		{"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-q", "-m", "fixture"},
+	} {
+		command := exec.Command("git", args...)
+		command.Dir = repo
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("prepare provenance repository: %v\n%s", err, output)
+		}
+	}
+	headCommand := exec.Command("git", "rev-parse", "HEAD")
+	headCommand.Dir = repo
+	headOutput, err := headCommand.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidateHash, err := hashRegularBounded(candidate, maxCandidateBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dependencyHash, err := canonicalDependencySHA256(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []string{
+		"--repo-root", repo,
+		"--candidate-commit", strings.TrimSpace(string(headOutput)),
+		"--candidate-sha256", candidateHash,
+		"--dependency-sha256", dependencyHash,
+	}
+}
+
 func assertOnlySanitizedReportValues(t *testing.T, value any) {
 	t.Helper()
 	switch typed := value.(type) {
@@ -1292,9 +1427,17 @@ func assertOnlySanitizedReportValues(t *testing.T, value any) {
 		}
 	case string:
 		switch typed {
-		case "2_10", "11_100", "101_1000", "1001_plus":
+		case "2_10", "11_100", "101_1000", "1001_plus",
+			reportKindFunctional, reportKindPerformance, reportKindResource,
+			functionalReportSchema, performanceReportSchema, resourceReportSchema, markdownInventoryPolicy,
+			"scope", "file_limit", "byte_limit", "timeout", "source_change", "complete", "cursor",
+			"result_limit", "response_limit", "input_too_large", obsidian.ResponseTooLargeCode,
+			obsidian.InvalidUTF8Code:
 		default:
-			t.Fatalf("unexpected string value in sanitized report: %q", typed)
+			if !validGitOID(typed) && !validDigest(typed) &&
+				typed != runtime.Version() && typed != runtime.GOOS && typed != runtime.GOARCH {
+				t.Fatalf("unexpected string value in sanitized report: %q", typed)
+			}
 		}
 	case float64, bool, nil:
 	default:

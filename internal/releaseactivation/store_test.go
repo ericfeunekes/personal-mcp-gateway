@@ -70,7 +70,8 @@ func TestStorePrepareLoadRewriteAndClear(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared.Version != ManifestVersion || prepared.CandidateSHA256 == "" || prepared.AuthoritySHA256 == "" || prepared.PreviousSHA256 == "" {
+	if prepared.Version != ManifestVersion || prepared.DependencySHA256 != manifest.DependencySHA256 ||
+		prepared.CandidateSHA256 == "" || prepared.AuthoritySHA256 == "" || prepared.PreviousSHA256 == "" {
 		t.Fatalf("prepared manifest missing store-owned facts: %#v", prepared)
 	}
 	assertMode(t, store.Root(), 0o700)
@@ -132,6 +133,11 @@ func TestStorePrepareLoadRewriteAndClear(t *testing.T) {
 	tamperedBinding.TargetPath = "/tmp/different-target"
 	if err := locked.Rewrite(tamperedBinding); !errors.Is(err, ErrStateConflict) {
 		t.Fatalf("Rewrite mutable target error = %v, want ErrStateConflict", err)
+	}
+	tamperedDependency := *rewritten
+	tamperedDependency.DependencySHA256 = strings.Repeat("8", 64)
+	if err := locked.Rewrite(tamperedDependency); !errors.Is(err, ErrStateConflict) {
+		t.Fatalf("Rewrite mutable dependency identity error = %v, want ErrStateConflict", err)
 	}
 	entries, err := os.ReadDir(active)
 	if err != nil {
@@ -607,9 +613,15 @@ func TestStoreLoadRejectsMalformedStateWithoutCleaningEvidence(t *testing.T) {
 		mutate func(t *testing.T, store *Store)
 	}{
 		{
-			name: "unsupported version",
+			name: "future version",
 			mutate: func(t *testing.T, store *Store) {
 				updateManifestFile(t, store, func(raw map[string]any) { raw["version"] = float64(ManifestVersion + 1) })
+			},
+		},
+		{
+			name: "version one has no fallback",
+			mutate: func(t *testing.T, store *Store) {
+				updateManifestFile(t, store, func(raw map[string]any) { raw["version"] = float64(1) })
 			},
 		},
 		{
@@ -818,6 +830,7 @@ func storeTestManifest(withPrevious bool) Manifest {
 		State:                 StatePrepared,
 		ID:                    ReleaseID(strings.Repeat("a", 64)),
 		Commit:                strings.Repeat("b", 40),
+		DependencySHA256:      strings.Repeat("9", 64),
 		TargetPath:            "/tmp/personal-mcp-gateway",
 		PreviousPresent:       withPrevious,
 		CandidateFile:         candidateFileName,

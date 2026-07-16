@@ -17,9 +17,13 @@ type Manager struct {
 
 // PrepareRequest contains resolved, non-secret release bindings. Manager owns
 // release identity allocation, hashing, prior-target discovery, and manifest
-// construction so callers cannot claim observations they did not make.
+// construction. CandidateSHA256 is the previously validated report-set
+// identity; Manager re-observes the bytes under the lifecycle lock before it
+// publishes that identity.
 type PrepareRequest struct {
 	Commit                string
+	CandidateSHA256       string
+	DependencySHA256      string
 	CandidatePath         string
 	AuthorityPath         string
 	TargetPath            string
@@ -76,6 +80,9 @@ func (m *Manager) Prepare(ctx context.Context, request PrepareRequest) (*Manifes
 	if request.EffectiveUID != m.Store.effectiveUID || !ValidLaunchAgentLabel(request.LaunchAgentLabel) {
 		return nil, lifecycleError(ErrorStateMalformed)
 	}
+	if !validCommit(request.Commit) || !validSHA256(request.CandidateSHA256) || !validSHA256(request.DependencySHA256) {
+		return nil, lifecycleError(ErrorStateMalformed)
+	}
 	sources := ArtifactSources{Candidate: request.CandidatePath, Authority: request.AuthorityPath}
 	previousPresent, err := pathExists(request.TargetPath)
 	if err != nil {
@@ -95,6 +102,9 @@ func (m *Manager) Prepare(ctx context.Context, request PrepareRequest) (*Manifes
 	candidateHash, err := HashRegular(request.CandidatePath)
 	if err != nil {
 		return nil, err
+	}
+	if candidateHash != request.CandidateSHA256 {
+		return nil, lifecycleError(ErrorArtifactMismatch)
 	}
 	authorityHash, err := HashRegular(request.AuthorityPath)
 	if err != nil {
@@ -125,7 +135,8 @@ func (m *Manager) Prepare(ctx context.Context, request PrepareRequest) (*Manifes
 	}
 	manifest := Manifest{
 		Version: ManifestVersion, State: StatePrepared, ID: id, Commit: request.Commit,
-		CandidateFile: candidateFileName, CandidateSHA256: candidateHash,
+		DependencySHA256: request.DependencySHA256,
+		CandidateFile:    candidateFileName, CandidateSHA256: candidateHash,
 		AuthorityFile: authorityFileName, AuthoritySHA256: authorityHash,
 		PreviousPresent: previousPresent, PreviousSHA256: previousHash,
 		TargetPath: request.TargetPath, EffectiveUID: request.EffectiveUID,

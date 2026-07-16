@@ -2,6 +2,8 @@ package obsidian
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -9,6 +11,51 @@ import (
 	"personal-mcp-gateway/internal/fsx"
 	"personal-mcp-gateway/internal/testutil"
 )
+
+func TestLSCursorIsStableAcrossVaultInstancesAndBoundToRoot(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"a.md", "b.md"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	firstVault, err := fsx.NewVault(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, first, err := New(firstVault).LS(context.Background(), nil, LSInput{Path: ".", Limit: 1})
+	if err != nil || !first.OK || first.Coverage.NextCursor == "" {
+		t.Fatalf("first = %#v err=%v", first, err)
+	}
+
+	secondVault, err := fsx.NewVault(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, second, err := New(secondVault).LS(context.Background(), nil, LSInput{
+		Path: ".", Limit: 1, Cursor: first.Coverage.NextCursor,
+	})
+	if err != nil || !second.OK || len(second.Entries) != 1 || second.Entries[0].Name != "b.md" {
+		t.Fatalf("same-root continuation = %#v err=%v", second, err)
+	}
+
+	otherRoot := t.TempDir()
+	for _, name := range []string{"a.md", "b.md"} {
+		if err := os.WriteFile(filepath.Join(otherRoot, name), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	otherVault, err := fsx.NewVault(otherRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rejected, err := New(otherVault).LS(context.Background(), nil, LSInput{
+		Path: ".", Limit: 1, Cursor: first.Coverage.NextCursor,
+	})
+	if err != nil || rejected.OK || rejected.Error == nil || rejected.Error.Code != CursorInvalidCode || rejected.Coverage.FilesScanned != 0 {
+		t.Fatalf("different-root continuation = %#v err=%v", rejected, err)
+	}
+}
 
 func TestLSTimeoutReturnsStructuredToolError(t *testing.T) {
 	root := testutil.FixtureVault(t)

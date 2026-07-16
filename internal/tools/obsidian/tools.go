@@ -69,7 +69,34 @@ func Descriptors(vault *fsx.Vault) ([]localmcp.ToolDescriptor, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []localmcp.ToolDescriptor{resolve, ls}, nil
+	read, err := localmcp.NewToolDescriptor(sdk.Tool{
+		Name:        ToolRead,
+		Description: ReadDescription,
+		Annotations: readOnlyToolAnnotations(),
+		InputSchema: readInputSchema(),
+	}, tools.Read, summarizeReadArgs, summarizeReadResult)
+	if err != nil {
+		return nil, err
+	}
+	readMany, err := localmcp.NewToolDescriptor(sdk.Tool{
+		Name:        ToolReadMany,
+		Description: ReadManyDescription,
+		Annotations: readOnlyToolAnnotations(),
+		InputSchema: readManyInputSchema(),
+	}, tools.ReadMany, summarizeReadManyArgs, summarizeReadManyResult)
+	if err != nil {
+		return nil, err
+	}
+	grep, err := localmcp.NewToolDescriptor(sdk.Tool{
+		Name:        ToolGrep,
+		Description: GrepDescription,
+		Annotations: readOnlyToolAnnotations(),
+		InputSchema: grepInputSchema(),
+	}, tools.Grep, summarizeGrepArgs, summarizeGrepResult)
+	if err != nil {
+		return nil, err
+	}
+	return []localmcp.ToolDescriptor{resolve, ls, read, readMany, grep}, nil
 }
 
 func readOnlyToolAnnotations() *sdk.ToolAnnotations {
@@ -157,6 +184,17 @@ func (t *Tools) LS(ctx context.Context, _ *sdk.CallToolRequest, input LSInput) (
 	if err != nil {
 		return lsErrorWithWork(err, CoverageWork{}, RestartStopError)
 	}
+	var decoded *DecodedCursor
+	if input.Cursor != "" {
+		value, cursorErr := DecodeCursor(t.vault, input.Cursor)
+		if cursorErr != nil {
+			return lsErrorWithWork(cursorErr, CoverageWork{}, RestartStopError)
+		}
+		if value.Tool != ToolLS {
+			return lsErrorWithWork(ErrCursorMismatch, CoverageWork{}, RestartStopError)
+		}
+		decoded = &value
+	}
 	directory, err := t.openDir(toolCtx, input.Base, input.Path)
 	if err != nil {
 		return lsErrorWithWork(err, CoverageWork{}, restartStopFor(err))
@@ -165,18 +203,12 @@ func (t *Tools) LS(ctx context.Context, _ *sdk.CallToolRequest, input LSInput) (
 
 	canonical := directory.Resolved().Rel
 	query := LSQueryHash(canonical, limit)
-	var decoded *DecodedCursor
 	var after *fsx.Position
-	if input.Cursor != "" {
-		value, cursorErr := DecodeCursor(input.Cursor)
-		if cursorErr != nil {
-			return lsErrorWithWork(cursorErr, CoverageWork{}, RestartStopError)
-		}
-		if value.Tool != ToolLS || value.Query != query {
+	if decoded != nil {
+		if decoded.Query != query {
 			return lsErrorWithWork(ErrCursorMismatch, CoverageWork{}, RestartStopError)
 		}
-		decoded = &value
-		after = &value.Position
+		after = &decoded.Position
 	}
 
 	page, err := directory.ListPage(toolCtx, fsx.ListOptions{Limit: limit, After: after})
@@ -215,7 +247,7 @@ func (t *Tools) LS(ctx context.Context, _ *sdk.CallToolRequest, input LSInput) (
 		HasMore:    hasMore,
 		Work:       work,
 	}, func(position fsx.Position) (string, error) {
-		return EncodeCursor(ToolLS, query, page.Source, position)
+		return EncodeCursor(t.vault, ToolLS, query, page.Source, position)
 	})
 	if err != nil {
 		return lsErrorWithWork(err, work, RestartStopError)
@@ -277,6 +309,8 @@ func errorCode(err error) string {
 		code = fsx.CodeNotFound
 	case fsx.IsCode(err, fsx.CodeNotDirectory):
 		code = fsx.CodeNotDirectory
+	case fsx.IsCode(err, fsx.CodeNotFile):
+		return UnsupportedFileCode
 	case fsx.IsCode(err, fsx.CodeLimitExceeded):
 		code = fsx.CodeLimitExceeded
 	case fsx.IsCode(err, fsx.CodeInputTooLarge):
@@ -312,7 +346,7 @@ func sanitizedMessage(code string) string {
 	case string(fsx.CodeCanceled):
 		return "operation canceled"
 	case string(fsx.CodeSourceChanged):
-		return "directory changed during operation"
+		return "source changed during operation"
 	case CursorInvalidCode:
 		return CursorErrorMessage(ErrCursorInvalid)
 	case CursorMismatchCode:
@@ -321,18 +355,30 @@ func sanitizedMessage(code string) string {
 		return CursorErrorMessage(ErrCursorStale)
 	case ResponseTooLargeCode:
 		return "response exceeds maximum size"
+	case UnsupportedFileCode:
+		return "file type is not supported"
+	case InvalidUTF8Code:
+		return "source is not valid UTF-8"
+	case InvalidSelectorCode:
+		return "selector is invalid"
+	case SelectorNotFoundCode:
+		return "selected source unit was not found"
+	case SelectorAmbiguousCode:
+		return "selected source unit is ambiguous"
+	case InvalidRegexCode:
+		return "pattern is not a valid regular expression"
 	default:
 		return "tool call failed"
 	}
 }
 
 func successCallResult() *sdk.CallToolResult {
-	return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "Obsidian metadata is available in structuredContent."}}}
+	return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "Obsidian result is available in structuredContent."}}}
 }
 
 func errorCallResult() *sdk.CallToolResult {
 	return &sdk.CallToolResult{
-		Content: []sdk.Content{&sdk.TextContent{Text: "Obsidian metadata request failed; inspect the structured error."}},
+		Content: []sdk.Content{&sdk.TextContent{Text: "Obsidian request failed; inspect the structured error."}},
 		IsError: true,
 	}
 }
@@ -437,9 +483,10 @@ func summarizeLSResult(builder *localmcp.SafeSummaryBuilder, result *sdk.CallToo
 		}
 	}
 	for metric, value := range map[localmcp.CounterMetric]uint64{
-		localmcp.CounterEntryCount:   uint64(len(out.Entries)),
-		localmcp.CounterFilesScanned: out.Coverage.FilesScanned,
-		localmcp.CounterBytesScanned: out.Coverage.BytesScanned,
+		localmcp.CounterEntryCount:             uint64(len(out.Entries)),
+		localmcp.CounterFilesScanned:           out.Coverage.FilesScanned,
+		localmcp.CounterBytesScanned:           out.Coverage.BytesScanned,
+		localmcp.CounterSourceEntriesValidated: out.Coverage.SourceEntriesValidated,
 	} {
 		if err := builder.Counter(localmcp.SectionResult, metric, value); err != nil {
 			return err
@@ -528,6 +575,8 @@ func summaryCoverageValue(value string) (localmcp.EnumValue, bool) {
 		"scope":          localmcp.ValueScope,
 		"result_limit":   localmcp.ValueResultLimit,
 		"response_limit": localmcp.ValueResponseLimit,
+		"file_limit":     localmcp.ValueFileLimit,
+		"byte_limit":     localmcp.ValueByteLimit,
 		"timeout":        localmcp.ValueTimeout,
 		"canceled":       localmcp.ValueCanceled,
 		"source_change":  localmcp.ValueSourceChange,
@@ -557,6 +606,12 @@ func summaryErrorValue(value string) (localmcp.EnumValue, bool) {
 		"cursor_mismatch":    localmcp.ValueCursorMismatch,
 		"cursor_stale":       localmcp.ValueCursorStale,
 		"response_too_large": localmcp.ValueResponseTooLarge,
+		"unsupported_file":   localmcp.ValueUnsupportedFile,
+		"invalid_utf8":       localmcp.ValueInvalidUTF8,
+		"invalid_selector":   localmcp.ValueInvalidSelector,
+		"selector_not_found": localmcp.ValueSelectorNotFound,
+		"selector_ambiguous": localmcp.ValueSelectorAmbiguous,
+		"invalid_regex":      localmcp.ValueInvalidRegex,
 	}
 	result, ok := values[value]
 	return result, ok

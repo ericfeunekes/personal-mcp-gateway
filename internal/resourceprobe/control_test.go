@@ -88,7 +88,7 @@ func TestControllerAcknowledgesCausalGCAndAggregateSnapshots(t *testing.T) {
 	}
 }
 
-func TestControllerGCAcknowledgementIsCausalForGCThenMemStats(t *testing.T) {
+func TestControllerGCAcknowledgementIsCausalForGCReleaseThenMemStats(t *testing.T) {
 	commandRead, commandWrite, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -102,6 +102,8 @@ func TestControllerGCAcknowledgementIsCausalForGCThenMemStats(t *testing.T) {
 
 	gcStarted := make(chan struct{})
 	allowGC := make(chan struct{})
+	releaseStarted := make(chan struct{})
+	allowRelease := make(chan struct{})
 	readStarted := make(chan struct{})
 	allowRead := make(chan struct{})
 	controller := newController(
@@ -111,6 +113,10 @@ func TestControllerGCAcknowledgementIsCausalForGCThenMemStats(t *testing.T) {
 		func() {
 			close(gcStarted)
 			<-allowGC
+		},
+		func() {
+			close(releaseStarted)
+			<-allowRelease
 		},
 		func(memory *runtime.MemStats) {
 			close(readStarted)
@@ -154,6 +160,9 @@ func TestControllerGCAcknowledgementIsCausalForGCThenMemStats(t *testing.T) {
 	waitForStage("GC", gcStarted)
 	requireNoAck("GC")
 	close(allowGC)
+	waitForStage("OS memory release", releaseStarted)
+	requireNoAck("OS memory release")
+	close(allowRelease)
 	waitForStage("MemStats read", readStarted)
 	requireNoAck("MemStats read")
 	close(allowRead)

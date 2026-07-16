@@ -3,7 +3,7 @@ package releaseactivation
 
 import "fmt"
 
-const ManifestVersion = 1
+const ManifestVersion = 2
 
 // State is the durable state of the single release slot. Clear is represented
 // on disk by the absence of an active manifest.
@@ -38,10 +38,11 @@ type ReleaseID string
 // paths and fingerprints needed by the pinned controller, but never raw
 // environment values or credentials.
 type Manifest struct {
-	Version int       `json:"version"`
-	State   State     `json:"state"`
-	ID      ReleaseID `json:"id"`
-	Commit  string    `json:"commit"`
+	Version          int       `json:"version"`
+	State            State     `json:"state"`
+	ID               ReleaseID `json:"id"`
+	Commit           string    `json:"commit"`
+	DependencySHA256 string    `json:"dependency_sha256"`
 
 	CandidateFile   string `json:"candidate_file"`
 	CandidateSHA256 string `json:"candidate_sha256"`

@@ -220,7 +220,7 @@ func (f *compositionFixture) seedPrepared(t *testing.T, candidateName string) *r
 		t.Fatal(err)
 	}
 	manifest := releaseactivation.Manifest{
-		State: releaseactivation.StatePrepared, ID: id, Commit: strings.Repeat("b", 40), PreviousPresent: true,
+		State: releaseactivation.StatePrepared, ID: id, Commit: strings.Repeat("b", 40), DependencySHA256: strings.Repeat("9", 64), PreviousPresent: true,
 		CandidateSHA256: mustHash(t, f.candidate), AuthoritySHA256: mustHash(t, f.controller), PreviousSHA256: mustHash(t, f.target),
 		TargetPath: f.target, EffectiveUID: os.Geteuid(), LaunchAgentLabel: "com.example.realistic-local",
 		PlistPath: f.plist, PlistSHA256: mustHash(t, f.plist), WrapperPath: f.wrapper, WrapperSHA256: mustHash(t, f.wrapper),
@@ -253,7 +253,7 @@ func (f *compositionFixture) seedFirstInstallPrepared(t *testing.T, candidateNam
 		t.Fatal(err)
 	}
 	manifest := releaseactivation.Manifest{
-		State: releaseactivation.StatePrepared, ID: id, Commit: strings.Repeat("c", 40),
+		State: releaseactivation.StatePrepared, ID: id, Commit: strings.Repeat("c", 40), DependencySHA256: strings.Repeat("9", 64),
 		CandidateSHA256: mustHash(t, f.candidate), AuthoritySHA256: mustHash(t, f.controller),
 		TargetPath: f.target, EffectiveUID: os.Geteuid(), LaunchAgentLabel: "com.example.realistic-local",
 		PlistPath: f.plist, PlistSHA256: mustHash(t, f.plist), WrapperPath: f.wrapper, WrapperSHA256: mustHash(t, f.wrapper),
@@ -315,8 +315,8 @@ func buildRealReleaseController(t *testing.T) string {
 }
 
 func pendingRecords(manifest *releaseactivation.Manifest) string {
-	return fmt.Sprintf("state=pending id=%s commit=%s sha256=%s\naccept=make release-accept RELEASE_ID=%s\nrollback=make release-rollback RELEASE_ID=%s\n",
-		manifest.ID, manifest.Commit[:12], manifest.CandidateSHA256[:12], manifest.ID, manifest.ID)
+	return fmt.Sprintf("state=pending id=%s commit=%s sha256=%s dependency_sha256=%s\naccept=make release-accept RELEASE_ID=%s\nrollback=make release-rollback RELEASE_ID=%s\n",
+		manifest.ID, manifest.Commit[:12], manifest.CandidateSHA256[:12], manifest.DependencySHA256[:12], manifest.ID, manifest.ID)
 }
 
 func mustHash(t *testing.T, path string) string {

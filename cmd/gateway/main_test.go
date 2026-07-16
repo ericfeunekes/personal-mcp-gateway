@@ -98,8 +98,24 @@ func TestStdioSubprocessServesMCP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools() failed: %v\nstderr:\n%s", err, stderr.String())
 	}
-	if len(tools.Tools) != 2 {
-		t.Fatalf("tool count = %d, want 2", len(tools.Tools))
+	if len(tools.Tools) != 5 {
+		t.Fatalf("tool count = %d, want 5", len(tools.Tools))
+	}
+	wantTools := map[string]bool{
+		obsidian.ToolResolve:  true,
+		obsidian.ToolLS:       true,
+		obsidian.ToolRead:     true,
+		obsidian.ToolReadMany: true,
+		obsidian.ToolGrep:     true,
+	}
+	for _, tool := range tools.Tools {
+		if !wantTools[tool.Name] {
+			t.Fatalf("unexpected tool %q in exact candidate surface", tool.Name)
+		}
+		delete(wantTools, tool.Name)
+	}
+	if len(wantTools) != 0 {
+		t.Fatalf("missing tools from exact candidate surface: %#v", wantTools)
 	}
 
 	result, err := session.CallTool(ctx, &sdk.CallToolParams{

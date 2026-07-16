@@ -135,8 +135,13 @@ func TestLiveFirstInstallLaunchAgentRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager := &Manager{Store: store, Runtime: NewOSRuntime(), ControllerPath: authority}
+	candidateSHA256, err := HashRegular(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
 	prepared, err := manager.Prepare(context.Background(), PrepareRequest{
-		Commit: strings.Repeat("d", 40), CandidatePath: candidate, AuthorityPath: authority, TargetPath: target,
+		Commit: strings.Repeat("d", 40), CandidateSHA256: candidateSHA256, DependencySHA256: strings.Repeat("9", 64),
+		CandidatePath: candidate, AuthorityPath: authority, TargetPath: target,
 		EffectiveUID: uid, LaunchAgentLabel: label, PlistPath: plist, WrapperPath: wrapper, MCPWrapperPath: mcpWrapper,
 		StdoutPath: stdout, StderrPath: stderr, EnvironmentPath: environment, HealthURLFile: healthFile,
 		ReadyTimeoutSeconds: 30, ReadyPollMilliseconds: 100,

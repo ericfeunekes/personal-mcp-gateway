@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -35,40 +36,77 @@ const (
 	cancellationDelay     = 2 * time.Millisecond
 	cancellationBound     = 100 * time.Millisecond
 	defaultSuccessMessage = "gateway smoke passed: resolve(.) returned an existing directory"
-	smokeReportVersion    = 1
+	smokeReportVersion    = 3
 )
 
 var stratifiedEntryCounts = [...]int{1, 100, 1_000, 10_000}
 
 type smokeReport struct {
-	SchemaVersion             int  `json:"schema_version"`
-	Passed                    bool `json:"passed"`
-	ToolCount                 int  `json:"tool_count"`
-	SDKResultCount            int  `json:"sdk_result_count"`
-	MaxSDKResultBytes         int  `json:"max_sdk_result_bytes"`
-	CurrentResolveExistingDir bool `json:"current_resolve_existing_directory"`
-	SyntheticCanonicalResolve bool `json:"synthetic_canonical_resolve"`
-	SyntheticPageCount        int  `json:"synthetic_page_count"`
-	SyntheticEntryCount       int  `json:"synthetic_entry_count"`
-	SyntheticSecondProgress   bool `json:"synthetic_second_page_progress"`
-	SyntheticNoDuplicates     bool `json:"synthetic_no_duplicates"`
-	SyntheticFullEquivalence  bool `json:"synthetic_full_equivalence"`
+	ReportKind                   string                   `json:"report_kind"`
+	ReportSchema                 string                   `json:"report_schema"`
+	SchemaVersion                int                      `json:"schema_version"`
+	Passed                       bool                     `json:"passed"`
+	CandidateCommit              string                   `json:"candidate_commit"`
+	CandidateSHA256              string                   `json:"candidate_sha256"`
+	DependencySHA256             string                   `json:"dependency_sha256"`
+	CandidateRuntime             candidateRuntimeProfile  `json:"candidate_runtime"`
+	Machine                      machineProfile           `json:"machine"`
+	CurrentVault                 vaultAggregateProfile    `json:"current_vault"`
+	SyntheticVault               vaultAggregateProfile    `json:"synthetic_vault"`
+	CurrentProcess               candidateProcessProfile  `json:"current_process"`
+	SyntheticProcess             candidateProcessProfile  `json:"synthetic_process"`
+	ToolCalls                    functionalToolCallCounts `json:"tool_calls"`
+	ToolCount                    int                      `json:"tool_count"`
+	SDKResultCount               int                      `json:"sdk_result_count"`
+	MaxSDKResultBytes            int                      `json:"max_sdk_result_bytes"`
+	MaxStructuredResultBytes     int                      `json:"max_structured_result_bytes"`
+	MaxClientLatencyMicroseconds int64                    `json:"max_client_latency_microseconds"`
+	TotalFilesScanned            uint64                   `json:"total_files_scanned"`
+	TotalBytesScanned            uint64                   `json:"total_bytes_scanned"`
+	TotalSourceEntriesValidated  uint64                   `json:"total_source_entries_validated"`
+	CurrentResolveExistingDir    bool                     `json:"current_resolve_existing_directory"`
+	SyntheticCanonicalResolve    bool                     `json:"synthetic_canonical_resolve"`
+	SyntheticPageCount           int                      `json:"synthetic_page_count"`
+	SyntheticEntryCount          int                      `json:"synthetic_entry_count"`
+	SyntheticSecondProgress      bool                     `json:"synthetic_second_page_progress"`
+	SyntheticNoDuplicates        bool                     `json:"synthetic_no_duplicates"`
+	SyntheticFullEquivalence     bool                     `json:"synthetic_full_equivalence"`
+	SyntheticReadSelected        bool                     `json:"synthetic_read_selected"`
+	SyntheticGrepMatchCount      int                      `json:"synthetic_grep_match_count"`
+	SyntheticReadManyPages       int                      `json:"synthetic_read_many_pages"`
+	SyntheticReadManyContinued   bool                     `json:"synthetic_read_many_continued"`
+	SyntheticRetrievalEquivalent bool                     `json:"synthetic_retrieval_equivalent"`
+	SyntheticTelemetrySanitized  bool                     `json:"synthetic_telemetry_sanitized"`
 }
 
 type performanceReport struct {
-	SchemaVersion     int                     `json:"schema_version"`
-	Passed            bool                    `json:"passed"`
-	DescriptorCount   int                     `json:"descriptor_count"`
-	CardinalityBucket string                  `json:"cardinality_bucket"`
-	ResolveCached     performanceMetrics      `json:"resolve_cached"`
-	LSFirstLimit1     performanceMetrics      `json:"ls_first_limit_1"`
-	LSContinuedLimit1 performanceMetrics      `json:"ls_continued_limit_1"`
-	LSFirstLimit100   performanceMetrics      `json:"ls_first_limit_100"`
-	Stratified        []stratifiedMetrics     `json:"stratified"`
-	CurrentSQLite     sqliteTelemetryProof    `json:"current_sqlite"`
-	StratifiedSQLite  sqliteTelemetryProof    `json:"stratified_sqlite"`
-	SQLiteDegradation sqliteDegradationProof  `json:"sqlite_degradation"`
-	Cancellation      cancellationObservation `json:"cancellation"`
+	ReportKind          string                  `json:"report_kind"`
+	ReportSchema        string                  `json:"report_schema"`
+	SchemaVersion       int                     `json:"schema_version"`
+	Passed              bool                    `json:"passed"`
+	CandidateCommit     string                  `json:"candidate_commit"`
+	CandidateSHA256     string                  `json:"candidate_sha256"`
+	DependencySHA256    string                  `json:"dependency_sha256"`
+	CandidateRuntime    candidateRuntimeProfile `json:"candidate_runtime"`
+	Machine             machineProfile          `json:"machine"`
+	CurrentVault        vaultAggregateProfile   `json:"current_vault"`
+	SyntheticCorpus     vaultAggregateProfile   `json:"synthetic_corpus"`
+	DescriptorCount     int                     `json:"descriptor_count"`
+	CardinalityBucket   string                  `json:"cardinality_bucket"`
+	ResolveCached       performanceMetrics      `json:"resolve_cached"`
+	LSFirstLimit1       performanceMetrics      `json:"ls_first_limit_1"`
+	LSContinuedLimit1   performanceMetrics      `json:"ls_continued_limit_1"`
+	LSFirstLimit100     performanceMetrics      `json:"ls_first_limit_100"`
+	SyntheticRead       performanceMetrics      `json:"synthetic_read"`
+	SyntheticGrep       performanceMetrics      `json:"synthetic_grep"`
+	BroadCurrentGrep    broadGrepObservation    `json:"broad_current_grep"`
+	SyntheticProcess    candidateProcessProfile `json:"synthetic_process"`
+	CurrentVaultProcess candidateProcessProfile `json:"current_vault_process"`
+	Stratified          []stratifiedMetrics     `json:"stratified"`
+	CurrentSQLite       sqliteTelemetryProof    `json:"current_sqlite"`
+	StratifiedSQLite    sqliteTelemetryProof    `json:"stratified_sqlite"`
+	SQLiteDegradation   sqliteDegradationProof  `json:"sqlite_degradation"`
+	Cancellation        cancellationObservation `json:"cancellation"`
 }
 
 type sqliteTelemetryProof struct {
@@ -129,14 +167,15 @@ type cancellationTelemetry struct {
 }
 
 type performanceMetrics struct {
-	N                  int    `json:"n"`
-	P50Microseconds    int64  `json:"p50_microseconds"`
-	P95Microseconds    int64  `json:"p95_microseconds"`
-	MaxMicroseconds    int64  `json:"max_microseconds"`
-	MaxSDKResultBytes  int    `json:"max_sdk_result_bytes"`
-	MaxStructuredBytes int    `json:"max_structured_bytes"`
-	MaxFilesScanned    uint64 `json:"max_files_scanned"`
-	MaxBytesScanned    uint64 `json:"max_bytes_scanned"`
+	N                         int    `json:"n"`
+	P50Microseconds           int64  `json:"p50_microseconds"`
+	P95Microseconds           int64  `json:"p95_microseconds"`
+	MaxMicroseconds           int64  `json:"max_microseconds"`
+	MaxSDKResultBytes         int    `json:"max_sdk_result_bytes"`
+	MaxStructuredBytes        int    `json:"max_structured_bytes"`
+	MaxFilesScanned           uint64 `json:"max_files_scanned"`
+	MaxBytesScanned           uint64 `json:"max_bytes_scanned"`
+	MaxSourceEntriesValidated uint64 `json:"max_source_entries_validated"`
 }
 
 type callMeasurement struct {
@@ -146,9 +185,10 @@ type callMeasurement struct {
 }
 
 type operationSample struct {
-	measurement  callMeasurement
-	filesScanned uint64
-	bytesScanned uint64
+	measurement            callMeasurement
+	filesScanned           uint64
+	bytesScanned           uint64
+	sourceEntriesValidated uint64
 }
 
 type performanceOperation func() (operationSample, error)
@@ -159,6 +199,7 @@ type syntheticFixture struct {
 	canonicalPath    string
 	directoryPath    string
 	expectedListings []string
+	expectedContents map[string]string
 }
 
 type stratifiedFixture struct {
@@ -194,18 +235,24 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) error {
+	return runWithCandidateSnapshotter(args, stdout, stderr, createPrivateCandidateSnapshot)
+}
+
+func runWithCandidateSnapshotter(args []string, stdout, stderr io.Writer, snapshotter candidateSnapshotter) error {
 	flags := flag.NewFlagSet("gateway-smoke", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	gatewayBin := flags.String("gateway-bin", "", "gateway executable to probe")
 	obsidianRoot := flags.String("obsidian-root", "", "vault root used for the probe")
+	repoRoot := flags.String("repo-root", "", "clean source repository for the candidate")
+	candidateCommit := flags.String("candidate-commit", "", "full source commit for the candidate")
+	candidateSHA256 := flags.String("candidate-sha256", "", "SHA-256 of the candidate executable")
+	dependencySHA256 := flags.String("dependency-sha256", "", "canonical go.mod/go.sum dependency SHA-256")
 	reportJSON := flags.Bool("report-json", false, "emit one sanitized aggregate JSON report")
 	performanceJSON := flags.Bool("performance-json", false, "emit one sanitized current-vault and stratified candidate performance report")
 	resourceJSON := flags.Bool("resource-json", false, "emit one sanitized fresh-process, repeated-batch, and idle resource report")
+	validateReports := flags.Bool("validate-report-set", false, "validate exactly one functional, performance, and resource report")
 	if err := flags.Parse(args); err != nil {
 		return err
-	}
-	if *gatewayBin == "" || *obsidianRoot == "" {
-		return errors.New("--gateway-bin and --obsidian-root are required")
 	}
 	selectedJSONModes := 0
 	for _, selected := range []bool{*reportJSON, *performanceJSON, *resourceJSON} {
@@ -215,6 +262,35 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	if selectedJSONModes > 1 {
 		return errors.New("--report-json, --performance-json, and --resource-json are mutually exclusive")
+	}
+	if *gatewayBin == "" || *repoRoot == "" || *candidateCommit == "" || *candidateSHA256 == "" || *dependencySHA256 == "" {
+		return errors.New("candidate provenance arguments are required")
+	}
+	if !*validateReports && *obsidianRoot == "" {
+		return errors.New("--obsidian-root is required")
+	}
+	if *validateReports && (selectedJSONModes != 0 || *obsidianRoot != "" || len(flags.Args()) != 3) {
+		return errors.New("report-set validation requires exactly three report files")
+	}
+	if !*validateReports && len(flags.Args()) != 0 {
+		return errors.New("unexpected positional arguments")
+	}
+	provenance, err := verifyCandidateProvenance(*repoRoot, *gatewayBin, candidateProvenance{
+		Commit: *candidateCommit, CandidateSHA256: *candidateSHA256, DependencySHA256: *dependencySHA256,
+	})
+	if err != nil {
+		return err
+	}
+	if snapshotter == nil {
+		return errors.New("candidate snapshot failed")
+	}
+	candidatePath, cleanupCandidate, err := snapshotter(*gatewayBin, provenance.CandidateSHA256)
+	if err != nil {
+		return err
+	}
+	defer cleanupCandidate()
+	if *validateReports {
+		return validateReportSet(flags.Args(), provenance)
 	}
 
 	timeout := smokeTimeout
@@ -226,7 +302,11 @@ func run(args []string, stdout, stderr io.Writer) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	if *resourceJSON {
-		report, err := probeCandidateResources(ctx, *gatewayBin, *obsidianRoot, defaultResourceProbeOptions(), systemResourceSampler{})
+		report, err := probeCandidateResources(ctx, candidatePath, *obsidianRoot, defaultResourceProbeOptions(), systemResourceSampler{})
+		report.ReportKind = reportKindResource
+		report.CandidateCommit = provenance.Commit
+		report.CandidateSHA256 = provenance.CandidateSHA256
+		report.DependencySHA256 = provenance.DependencySHA256
 		if report.SchemaVersion != 0 {
 			if encodeErr := json.NewEncoder(stdout).Encode(report); encodeErr != nil {
 				return errors.New("encode resource report failed")
@@ -241,17 +321,39 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 	if *performanceJSON {
-		report, err := probeCurrentVaultPerformance(ctx, *gatewayBin, *obsidianRoot)
+		report, err := probeCurrentVaultPerformance(ctx, candidatePath, *obsidianRoot)
 		if err != nil {
 			return err
 		}
-		report.Stratified, report.StratifiedSQLite, report.Cancellation, err = probeStratifiedPerformance(ctx, *gatewayBin)
+		report.ReportKind = reportKindPerformance
+		report.ReportSchema = performanceReportSchema
+		report.CandidateCommit = provenance.Commit
+		report.CandidateSHA256 = provenance.CandidateSHA256
+		report.DependencySHA256 = provenance.DependencySHA256
+		phase2, err := probePhase2Performance(ctx, candidatePath, *obsidianRoot)
 		if err != nil {
 			return err
 		}
-		report.SQLiteDegradation, err = probeSQLiteDegradation(ctx, *gatewayBin)
+		report.CandidateRuntime = phase2.runtime
+		report.Machine = phase2.machine
+		report.CurrentVault = phase2.currentVault
+		report.SyntheticCorpus = phase2.syntheticCorpus
+		report.SyntheticRead = phase2.syntheticRead
+		report.SyntheticGrep = phase2.syntheticGrep
+		report.BroadCurrentGrep = phase2.broadCurrentGrep
+		report.SyntheticProcess = phase2.syntheticProcess
+		report.CurrentVaultProcess = phase2.currentVaultProcess
+		report.Stratified, report.StratifiedSQLite, report.Cancellation, err = probeStratifiedPerformance(ctx, candidatePath)
 		if err != nil {
 			return err
+		}
+		report.SQLiteDegradation, err = probeSQLiteDegradation(ctx, candidatePath)
+		if err != nil {
+			return err
+		}
+		report.Passed = performanceReportEvidencePasses(report)
+		if !report.Passed {
+			return errors.New("candidate performance report gate failed")
 		}
 		if err := json.NewEncoder(stdout).Encode(report); err != nil {
 			return errors.New("encode performance report failed")
@@ -259,14 +361,30 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
-	report := smokeReport{SchemaVersion: smokeReportVersion, SyntheticNoDuplicates: true}
-	if err := probeCurrentVault(ctx, *gatewayBin, *obsidianRoot, &report); err != nil {
+	runtimeProfile, err := inspectCandidateRuntime(candidatePath)
+	if err != nil {
 		return err
 	}
-	if err := probeSyntheticVault(ctx, *gatewayBin, &report); err != nil {
+	machine, err := inspectMachineProfile()
+	if err != nil {
 		return err
 	}
-	report.Passed = true
+	report := smokeReport{
+		ReportKind: reportKindFunctional, ReportSchema: functionalReportSchema,
+		SchemaVersion: smokeReportVersion, SyntheticNoDuplicates: true,
+		CandidateCommit: provenance.Commit, CandidateSHA256: provenance.CandidateSHA256, DependencySHA256: provenance.DependencySHA256,
+		CandidateRuntime: runtimeProfile, Machine: machine,
+	}
+	if err := probeCurrentVault(ctx, candidatePath, *obsidianRoot, &report); err != nil {
+		return err
+	}
+	if err := probeSyntheticVault(ctx, candidatePath, &report); err != nil {
+		return err
+	}
+	report.Passed = functionalBehaviorPasses(report) && functionalReportEvidencePasses(report)
+	if !report.Passed {
+		return errors.New("candidate functional report gate failed")
+	}
 
 	if *reportJSON {
 		if err := json.NewEncoder(stdout).Encode(report); err != nil {
@@ -274,24 +392,39 @@ func run(args []string, stdout, stderr io.Writer) error {
 		}
 		return nil
 	}
-	_, err := fmt.Fprintln(stdout, defaultSuccessMessage)
+	_, err = fmt.Fprintln(stdout, defaultSuccessMessage)
 	return err
 }
 
 func probeCurrentVault(ctx context.Context, gatewayBin, root string, report *smokeReport) error {
-	session, err := connectCandidate(ctx, gatewayBin, root)
+	inventory, err := inspectVaultAggregate(ctx, root)
 	if err != nil {
 		return err
 	}
-	defer session.Close()
+	report.CurrentVault = inventory
+	process, err := connectCandidateProcessHandle(ctx, exec.Command(gatewayBin,
+		"stdio", "--obsidian-root", root, "--telemetry", "off"), io.Discard)
+	if err != nil {
+		return err
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			_ = process.session.Close()
+		}
+	}()
 
-	toolCount, err := requireExactToolList(ctx, session)
+	toolCount, err := requireExactToolList(ctx, process.session)
 	if err != nil {
 		return err
 	}
 	report.ToolCount = toolCount
+	tracker, err := startCandidateProcessTracker(ctx, process, systemResourceSampler{})
+	if err != nil {
+		return err
+	}
 
-	out, err := callStructured[obsidian.ResolveOutput](ctx, session, obsidian.ToolResolve, map[string]any{"path": "."}, report)
+	out, err := callStructured[obsidian.ResolveOutput](ctx, process.session, obsidian.ToolResolve, map[string]any{"path": "."}, report)
 	if err != nil {
 		return errors.New("candidate resolve call failed")
 	}
@@ -299,6 +432,11 @@ func probeCurrentVault(ctx context.Context, gatewayBin, root string, report *smo
 		return errors.New("resolve did not return an existing directory")
 	}
 	report.CurrentResolveExistingDir = true
+	report.CurrentProcess, err = tracker.finish(ctx, process)
+	if err != nil {
+		return err
+	}
+	closed = true
 	return nil
 }
 
@@ -328,9 +466,13 @@ func probeCurrentVaultPerformance(ctx context.Context, gatewayBin, root string) 
 	if err != nil {
 		return performanceReport{}, err
 	}
-	representative, cardinality, err := selectRepresentativeDirectory(ctx, session)
+	const representative = "."
+	cardinality, err := inspectRootCardinality(ctx, root)
 	if err != nil {
 		return performanceReport{}, err
+	}
+	if cardinality < 2 {
+		return performanceReport{}, errors.New("current vault root has no resumable listing")
 	}
 
 	firstIssued, _, err := callMeasured[obsidian.LSOutput](ctx, session, obsidian.ToolLS, map[string]any{
@@ -429,7 +571,6 @@ func probeCurrentVaultPerformance(ctx context.Context, gatewayBin, root string) 
 
 	return performanceReport{
 		SchemaVersion:     smokeReportVersion,
-		Passed:            true,
 		DescriptorCount:   toolCount,
 		CardinalityBucket: cardinalityBucket(cardinality),
 		ResolveCached:     resolveMetrics,
@@ -592,9 +733,8 @@ func validStratifiedContinuedPage(page obsidian.LSOutput, lastIdentity string, l
 }
 
 func stratifiedMetricsPass(metrics performanceMetrics, entryCount int) bool {
-	return metrics.N == stratifiedSamples && metrics.P95Microseconds <= performanceP95LimitUS &&
-		metrics.MaxSDKResultBytes > 0 && metrics.MaxSDKResultBytes <= obsidian.MaxSDKResultBytes &&
-		metrics.MaxStructuredBytes > 0 && metrics.MaxFilesScanned == uint64(entryCount) && metrics.MaxBytesScanned == 0
+	return performanceMetricsWithin(metrics, stratifiedSamples, performanceP95LimitUS) &&
+		metrics.MaxFilesScanned == uint64(entryCount) && metrics.MaxBytesScanned == 0
 }
 
 func observeBoundedCancellation(ctx context.Context, gatewayBin, root string, directory stratifiedDirectory) (cancellationObservation, error) {
@@ -729,12 +869,29 @@ func probeSyntheticVault(ctx context.Context, gatewayBin string, report *smokeRe
 		return errors.New("synthetic fixture setup failed")
 	}
 	defer os.RemoveAll(fixture.root)
-
-	session, err := connectCandidate(ctx, gatewayBin, fixture.root)
+	inventory, err := inspectVaultAggregate(ctx, fixture.root)
 	if err != nil {
 		return err
 	}
-	defer session.Close()
+	report.SyntheticVault = inventory
+
+	var telemetry bytes.Buffer
+	process, err := connectCandidateProcessHandle(ctx, exec.Command(gatewayBin,
+		"stdio", "--obsidian-root", fixture.root, "--telemetry", "stderr"), &telemetry)
+	if err != nil {
+		return err
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			_ = process.session.Close()
+		}
+	}()
+	tracker, err := startCandidateProcessTracker(ctx, process, systemResourceSampler{})
+	if err != nil {
+		return err
+	}
+	session := process.session
 
 	resolved, err := callStructured[obsidian.ResolveOutput](ctx, session, obsidian.ToolResolve, map[string]any{
 		"path": fixture.canonicalInput,
@@ -818,6 +975,133 @@ func probeSyntheticVault(ctx context.Context, gatewayBin string, report *smokeRe
 	report.SyntheticEntryCount = len(listedPaths)
 	report.SyntheticSecondProgress = secondMoved
 	report.SyntheticFullEquivalence = true
+
+	cursors, err := probeSyntheticRetrieval(ctx, session, fixture, report)
+	if err != nil {
+		return err
+	}
+	report.SyntheticProcess, err = tracker.finish(ctx, process)
+	if err != nil {
+		return err
+	}
+	closed = true
+	if err := verifySyntheticRetrievalTelemetry(telemetry.String(), fixture, cursors); err != nil {
+		return err
+	}
+	report.SyntheticTelemetrySanitized = true
+	return nil
+}
+
+func probeSyntheticRetrieval(ctx context.Context, session *sdk.ClientSession, fixture syntheticFixture, report *smokeReport) ([]string, error) {
+	selected, err := callStructured[obsidian.ReadOutput](ctx, session, obsidian.ToolRead, map[string]any{
+		"path":     fixture.canonicalPath,
+		"selector": map[string]any{"kind": obsidian.SelectorHeading, "heading": "Summary"},
+	}, report)
+	if err != nil || !selected.OK || selected.Content == nil || *selected.Content != fixture.expectedContents[fixture.canonicalPath] ||
+		selected.Coverage.Continuation != "complete" {
+		return nil, errors.New("synthetic read selection failed")
+	}
+	report.SyntheticReadSelected = true
+
+	zero := 0
+	literal := false
+	grep, err := callStructured[obsidian.GrepOutput](ctx, session, obsidian.ToolGrep, map[string]any{
+		"pattern": "phase2-health-needle", "path": fixture.directoryPath, "regex": literal,
+		"context_lines": zero, "limit": 10,
+	}, report)
+	if err != nil || !grep.OK || grep.Coverage.Continuation != "complete" || len(grep.Matches) != len(fixture.expectedListings) {
+		return nil, errors.New("synthetic grep failed")
+	}
+	for index, match := range grep.Matches {
+		if match.Path != fixture.expectedListings[index] || match.Occurrences != 1 || !strings.Contains(match.Text, "phase2-health-needle") {
+			return nil, errors.New("synthetic grep ordering or evidence failed")
+		}
+	}
+	report.SyntheticGrepMatchCount = len(grep.Matches)
+
+	requests := make([]any, len(grep.Matches))
+	for index, match := range grep.Matches {
+		requests[index] = map[string]any{
+			"path":      match.Path,
+			"selector":  map[string]any{"kind": obsidian.SelectorContent, "start_line": 1},
+			"max_bytes": 13,
+		}
+	}
+	arguments := map[string]any{"requests": requests, "max_bytes": 24}
+	accumulated := make([]strings.Builder, len(requests))
+	cursors := []string{}
+	for page := 0; page < 100; page++ {
+		batch, callErr := callStructured[obsidian.ReadManyOutput](ctx, session, obsidian.ToolReadMany, arguments, report)
+		if callErr != nil || !batch.OK || len(batch.Items) == 0 {
+			return nil, errors.New("synthetic read_many call failed")
+		}
+		report.SyntheticReadManyPages++
+		for _, item := range batch.Items {
+			if item.Index < 0 || item.Index >= len(accumulated) || !item.OK || item.Content == nil {
+				return nil, errors.New("synthetic read_many item failed")
+			}
+			accumulated[item.Index].WriteString(*item.Content)
+		}
+		switch batch.Coverage.Continuation {
+		case "complete":
+			if batch.Coverage.NextCursor != "" || batch.RemainingRequestCount != 0 {
+				return nil, errors.New("synthetic read_many completion was invalid")
+			}
+		case "cursor":
+			if batch.Coverage.NextCursor == "" || batch.RemainingRequestCount <= 0 {
+				return nil, errors.New("synthetic read_many continuation was invalid")
+			}
+			cursors = append(cursors, batch.Coverage.NextCursor)
+			arguments["cursor"] = batch.Coverage.NextCursor
+			continue
+		default:
+			return nil, errors.New("synthetic read_many required restart")
+		}
+		break
+	}
+	if report.SyntheticReadManyPages < 2 || len(cursors) == 0 {
+		return nil, errors.New("synthetic read_many did not prove continuation")
+	}
+	for index, expectedPath := range fixture.expectedListings {
+		if accumulated[index].String() != fixture.expectedContents[expectedPath] {
+			return nil, errors.New("synthetic read_many evidence was not equivalent")
+		}
+	}
+	report.SyntheticReadManyContinued = true
+	report.SyntheticRetrievalEquivalent = true
+	return cursors, nil
+}
+
+func verifySyntheticRetrievalTelemetry(encoded string, fixture syntheticFixture, cursors []string) error {
+	for _, forbidden := range append(append([]string{
+		"phase2-health-needle",
+		"alpha training evidence",
+		fixture.canonicalInput,
+		fixture.canonicalPath,
+	}, fixture.expectedListings...), cursors...) {
+		if strings.Contains(encoded, forbidden) {
+			return errors.New("synthetic retrieval telemetry retained private evidence")
+		}
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(encoded), "\n") {
+		if line == "" {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			return errors.New("synthetic retrieval telemetry was invalid")
+		}
+		tool, _ := record["tool"].(string)
+		if record["event"] == "tool.call" && record["outcome"] == "ok" {
+			seen[tool] = true
+		}
+	}
+	for _, tool := range []string{obsidian.ToolRead, obsidian.ToolReadMany, obsidian.ToolGrep} {
+		if !seen[tool] {
+			return errors.New("synthetic retrieval telemetry lacked aggregate tool evidence")
+		}
+	}
 	return nil
 }
 
@@ -1068,9 +1352,9 @@ func requireExactToolList(ctx context.Context, session *sdk.ClientSession) (int,
 		names = append(names, tool.Name)
 	}
 	sort.Strings(names)
-	want := []string{obsidian.ToolLS, obsidian.ToolResolve}
+	want := []string{obsidian.ToolGrep, obsidian.ToolLS, obsidian.ToolRead, obsidian.ToolReadMany, obsidian.ToolResolve}
 	if !reflect.DeepEqual(names, want) {
-		return 0, errors.New("candidate tool list was not exactly ls and resolve")
+		return 0, errors.New("candidate tool list was not exactly grep, ls, read, read_many, and resolve")
 	}
 	return len(names), nil
 }
@@ -1081,9 +1365,20 @@ func callStructured[Out any](ctx context.Context, session *sdk.ClientSession, na
 		return out, err
 	}
 	report.SDKResultCount++
+	report.ToolCalls.add(name)
 	if measured.sdkResultBytes > report.MaxSDKResultBytes {
 		report.MaxSDKResultBytes = measured.sdkResultBytes
 	}
+	if measured.structuredBytes > report.MaxStructuredResultBytes {
+		report.MaxStructuredResultBytes = measured.structuredBytes
+	}
+	if latency := measured.latency.Microseconds(); latency > report.MaxClientLatencyMicroseconds {
+		report.MaxClientLatencyMicroseconds = latency
+	}
+	coverage := functionalCoverage(out)
+	report.TotalFilesScanned += coverage.FilesScanned
+	report.TotalBytesScanned += coverage.BytesScanned
+	report.TotalSourceEntriesValidated += coverage.SourceEntriesValidated
 	return out, nil
 }
 
@@ -1110,90 +1405,6 @@ func callMeasured[Out any](ctx context.Context, session *sdk.ClientSession, name
 	}, nil
 }
 
-func selectRepresentativeDirectory(ctx context.Context, session *sdk.ClientSession) (string, int, error) {
-	var cursor string
-	seenCursors := make(map[string]struct{})
-	for {
-		arguments := map[string]any{"path": ".", "limit": 100}
-		if cursor != "" {
-			arguments["cursor"] = cursor
-		}
-		page, _, err := callMeasured[obsidian.LSOutput](ctx, session, obsidian.ToolLS, arguments)
-		if err != nil || !validPerformancePage(page) {
-			return "", 0, errors.New("current-vault representative selection failed")
-		}
-		for _, entry := range page.Entries {
-			if entry.Type != "directory" {
-				continue
-			}
-			candidate, _, candidateErr := callMeasured[obsidian.LSOutput](ctx, session, obsidian.ToolLS, map[string]any{
-				"path":  entry.Path,
-				"limit": 2,
-			})
-			if candidateErr != nil {
-				return "", 0, errors.New("current-vault representative selection failed")
-			}
-			if len(candidate.Entries) < 2 || !validPerformancePage(candidate) {
-				continue
-			}
-			cardinality, countErr := countDirectoryCardinality(ctx, session, entry.Path)
-			if countErr != nil {
-				return "", 0, countErr
-			}
-			return entry.Path, cardinality, nil
-		}
-
-		switch page.Coverage.Continuation {
-		case "complete":
-			return "", 0, errors.New("current vault has no resumable directory")
-		case "cursor":
-			cursor = page.Coverage.NextCursor
-			if cursor == "" {
-				return "", 0, errors.New("current-vault representative selection failed")
-			}
-			if _, duplicate := seenCursors[cursor]; duplicate {
-				return "", 0, errors.New("current-vault representative selection failed")
-			}
-			seenCursors[cursor] = struct{}{}
-		default:
-			return "", 0, errors.New("current-vault representative selection failed")
-		}
-	}
-}
-
-func countDirectoryCardinality(ctx context.Context, session *sdk.ClientSession, directory string) (int, error) {
-	const cardinalityCeiling = 1001
-	var (
-		cursor string
-		count  int
-	)
-	for {
-		arguments := map[string]any{"path": directory, "limit": 100}
-		if cursor != "" {
-			arguments["cursor"] = cursor
-		}
-		page, _, err := callMeasured[obsidian.LSOutput](ctx, session, obsidian.ToolLS, arguments)
-		if err != nil || !validPerformancePage(page) {
-			return 0, errors.New("current-vault cardinality measurement failed")
-		}
-		count += len(page.Entries)
-		if count >= cardinalityCeiling {
-			return cardinalityCeiling, nil
-		}
-		switch page.Coverage.Continuation {
-		case "complete":
-			return count, nil
-		case "cursor":
-			cursor = page.Coverage.NextCursor
-			if cursor == "" {
-				return 0, errors.New("current-vault cardinality measurement failed")
-			}
-		default:
-			return 0, errors.New("current-vault cardinality measurement failed")
-		}
-	}
-}
-
 func validPerformancePage(page obsidian.LSOutput) bool {
 	return page.OK && page.Coverage.ScopeComplete && page.Coverage.Consistency == "stable" &&
 		(page.Coverage.Continuation == "complete" ||
@@ -1211,9 +1422,10 @@ func validContinuedPerformancePage(page obsidian.LSOutput, firstIdentity string)
 
 func sampleFromLS(measured callMeasurement, page obsidian.LSOutput) operationSample {
 	return operationSample{
-		measurement:  measured,
-		filesScanned: page.Coverage.FilesScanned,
-		bytesScanned: page.Coverage.BytesScanned,
+		measurement:            measured,
+		filesScanned:           page.Coverage.FilesScanned,
+		bytesScanned:           page.Coverage.BytesScanned,
+		sourceEntriesValidated: page.Coverage.SourceEntriesValidated,
 	}
 }
 
@@ -1241,6 +1453,9 @@ func collectPerformanceMetrics(operation performanceOperation, samples int) (per
 		}
 		if sample.bytesScanned > metrics.MaxBytesScanned {
 			metrics.MaxBytesScanned = sample.bytesScanned
+		}
+		if sample.sourceEntriesValidated > metrics.MaxSourceEntriesValidated {
+			metrics.MaxSourceEntriesValidated = sample.sourceEntriesValidated
 		}
 	}
 	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
@@ -1290,21 +1505,29 @@ func newSyntheticFixture() (syntheticFixture, error) {
 
 	directory := "Caf\u00e9"
 	storedNames := []string{"Alpha.md", "Beta.md", "R\u00e9sum\u00e9.md"}
+	contents := map[string]string{
+		"Alpha.md":            "# Workout\nphase2-health-needle alpha\n" + strings.Repeat("alpha training evidence ", 8) + "\n",
+		"Beta.md":             "# Recovery\nphase2-health-needle beta\nrecovery evidence\n",
+		"R\u00e9sum\u00e9.md": "# Summary\nphase2-health-needle summary\nsummary evidence\n",
+	}
 	if err := os.Mkdir(pathOnHost(root, directory), 0o700); err != nil {
 		return syntheticFixture{}, err
 	}
 	for _, name := range storedNames {
-		if err := os.WriteFile(pathOnHost(root, directory, name), []byte("synthetic\n"), 0o600); err != nil {
+		if err := os.WriteFile(pathOnHost(root, directory, name), []byte(contents[name]), 0o600); err != nil {
 			return syntheticFixture{}, err
 		}
 	}
-	if err := os.WriteFile(pathOnHost(root, directory, ".hidden.md"), []byte("synthetic\n"), 0o600); err != nil {
+	if err := os.WriteFile(pathOnHost(root, directory, ".hidden.md"), []byte("phase2-health-needle hidden\n"), 0o600); err != nil {
 		return syntheticFixture{}, err
 	}
 
 	expected := make([]string, 0, len(storedNames))
 	for _, name := range storedNames {
-		expected = append(expected, path.Join(directory, name))
+		canonical := path.Join(directory, name)
+		expected = append(expected, canonical)
+		contents[canonical] = contents[name]
+		delete(contents, name)
 	}
 	sort.Strings(expected)
 	cleanup = false
@@ -1314,6 +1537,7 @@ func newSyntheticFixture() (syntheticFixture, error) {
 		canonicalPath:    path.Join(directory, "R\u00e9sum\u00e9.md"),
 		directoryPath:    directory,
 		expectedListings: expected,
+		expectedContents: contents,
 	}, nil
 }
 

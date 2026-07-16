@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	testID   = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	testHash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	testID         = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	testHash       = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	testDependency = "9999999999999999999999999999999999999999999999999999999999999999"
 )
 
 type fakeManager struct {
@@ -149,14 +150,14 @@ func (f *fakeRuntime) Restart(_ context.Context, manifest releaseactivation.Mani
 func TestRunFormatsPendingRecords(t *testing.T) {
 	manager := &fakeManager{manifest: &releaseactivation.Manifest{
 		State: releaseactivation.StatePending, ID: testID,
-		Commit: "fedcba9876543210", CandidateSHA256: testHash,
+		Commit: "fedcba9876543210", CandidateSHA256: testHash, DependencySHA256: testDependency,
 	}}
 	var stdout, stderr bytes.Buffer
 	exit := runWithDependencies(context.Background(), []string{"status"}, &stdout, &stderr, dependencies{manager: manager})
 	if exit != 0 || stderr.Len() != 0 {
 		t.Fatalf("exit=%d stderr=%q", exit, stderr.String())
 	}
-	want := "state=pending id=" + testID + " commit=fedcba987654 sha256=abcdef012345\n" +
+	want := "state=pending id=" + testID + " commit=fedcba987654 sha256=abcdef012345 dependency_sha256=999999999999\n" +
 		"accept=make release-accept RELEASE_ID=" + testID + "\n" +
 		"rollback=make release-rollback RELEASE_ID=" + testID + "\n"
 	if stdout.String() != want {
@@ -165,15 +166,15 @@ func TestRunFormatsPendingRecords(t *testing.T) {
 }
 
 func TestManifestFormatterCoversEveryState(t *testing.T) {
-	base := releaseactivation.Manifest{ID: testID, Commit: "fedcba9876543210", CandidateSHA256: testHash}
+	base := releaseactivation.Manifest{ID: testID, Commit: "fedcba9876543210", CandidateSHA256: testHash, DependencySHA256: testDependency}
 	tests := []struct {
 		state releaseactivation.State
 		want  string
 	}{
-		{releaseactivation.StatePrepared, "state=prepared id=" + testID + " commit=fedcba987654 sha256=abcdef012345\nresume=make release\nrollback=make release-rollback RELEASE_ID=" + testID + "\n"},
-		{releaseactivation.StatePending, "state=pending id=" + testID + " commit=fedcba987654 sha256=abcdef012345\naccept=make release-accept RELEASE_ID=" + testID + "\nrollback=make release-rollback RELEASE_ID=" + testID + "\n"},
-		{releaseactivation.StateAccepting, "state=accepting id=" + testID + " commit=fedcba987654 sha256=abcdef012345\nresume=make release-accept RELEASE_ID=" + testID + "\n"},
-		{releaseactivation.StateRollingBack, "state=rolling_back id=" + testID + " commit=fedcba987654 sha256=abcdef012345\nresume=make release-rollback RELEASE_ID=" + testID + "\n"},
+		{releaseactivation.StatePrepared, "state=prepared id=" + testID + " commit=fedcba987654 sha256=abcdef012345 dependency_sha256=999999999999\nresume=make release\nrollback=make release-rollback RELEASE_ID=" + testID + "\n"},
+		{releaseactivation.StatePending, "state=pending id=" + testID + " commit=fedcba987654 sha256=abcdef012345 dependency_sha256=999999999999\naccept=make release-accept RELEASE_ID=" + testID + "\nrollback=make release-rollback RELEASE_ID=" + testID + "\n"},
+		{releaseactivation.StateAccepting, "state=accepting id=" + testID + " commit=fedcba987654 sha256=abcdef012345 dependency_sha256=999999999999\nresume=make release-accept RELEASE_ID=" + testID + "\n"},
+		{releaseactivation.StateRollingBack, "state=rolling_back id=" + testID + " commit=fedcba987654 sha256=abcdef012345 dependency_sha256=999999999999\nresume=make release-rollback RELEASE_ID=" + testID + "\n"},
 	}
 	for _, test := range tests {
 		t.Run(string(test.state), func(t *testing.T) {
@@ -192,7 +193,7 @@ func TestManifestFormatterCoversEveryState(t *testing.T) {
 }
 
 func TestReleaseOrGuideResumesPreparedWithoutPrepareArguments(t *testing.T) {
-	prepared := &releaseactivation.Manifest{State: releaseactivation.StatePrepared, ID: testID, Commit: "fedcba9876543210", CandidateSHA256: testHash}
+	prepared := &releaseactivation.Manifest{State: releaseactivation.StatePrepared, ID: testID, Commit: "fedcba9876543210", CandidateSHA256: testHash, DependencySHA256: testDependency}
 	pending := *prepared
 	pending.State = releaseactivation.StatePending
 	manager := &fakeManager{manifest: prepared, resumeResult: &pending}
@@ -207,7 +208,7 @@ func TestReleaseOrGuideResumesPreparedWithoutPrepareArguments(t *testing.T) {
 }
 
 func TestReleaseOrGuidePreparesThenReturnsOnlyPending(t *testing.T) {
-	prepared := &releaseactivation.Manifest{State: releaseactivation.StatePrepared, ID: testID, Commit: "fedcba9876543210", CandidateSHA256: testHash}
+	prepared := &releaseactivation.Manifest{State: releaseactivation.StatePrepared, ID: testID, Commit: "fedcba9876543210", CandidateSHA256: testHash, DependencySHA256: testDependency}
 	pending := *prepared
 	pending.State = releaseactivation.StatePending
 	manager := &fakeManager{prepareResult: prepared, resumeResult: &pending}
@@ -249,11 +250,11 @@ func TestReleaseOrGuideFormatsActiveRecoveryOnStderr(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(string(test.state), func(t *testing.T) {
-			manifest := &releaseactivation.Manifest{State: test.state, ID: testID, Commit: "fedcba9876543210", CandidateSHA256: testHash}
+			manifest := &releaseactivation.Manifest{State: test.state, ID: testID, Commit: "fedcba9876543210", CandidateSHA256: testHash, DependencySHA256: testDependency}
 			var stdout, stderr bytes.Buffer
 			exit := runWithDependencies(context.Background(), []string{"release"}, &stdout, &stderr, dependencies{manager: &fakeManager{manifest: manifest}})
 			want := "error=state_conflict message=event conflicts with release state\n" +
-				"state=" + string(test.state) + " id=" + testID + " commit=fedcba987654 sha256=abcdef012345\n" + test.guidance
+				"state=" + string(test.state) + " id=" + testID + " commit=fedcba987654 sha256=abcdef012345 dependency_sha256=999999999999\n" + test.guidance
 			if exit != 1 || stdout.Len() != 0 || stderr.String() != want {
 				t.Fatalf("exit=%d stdout=%q stderr=%q want=%q", exit, stdout.String(), stderr.String(), want)
 			}
@@ -262,14 +263,14 @@ func TestReleaseOrGuideFormatsActiveRecoveryOnStderr(t *testing.T) {
 }
 
 func TestReleaseOrGuideConvertsPreparedResumeRaceToGuidance(t *testing.T) {
-	prepared := &releaseactivation.Manifest{State: releaseactivation.StatePrepared, ID: testID, Commit: "fedcba9876543210", CandidateSHA256: testHash}
+	prepared := &releaseactivation.Manifest{State: releaseactivation.StatePrepared, ID: testID, Commit: "fedcba9876543210", CandidateSHA256: testHash, DependencySHA256: testDependency}
 	pending := *prepared
 	pending.State = releaseactivation.StatePending
 	manager := &fakeManager{manifest: prepared, resumeResult: &pending, resumeErr: releaseactivation.ErrStateConflict}
 	var stdout, stderr bytes.Buffer
 	exit := runWithDependencies(context.Background(), []string{"release"}, &stdout, &stderr, dependencies{manager: manager})
 	want := "error=state_conflict message=event conflicts with release state\n" +
-		"state=pending id=" + testID + " commit=fedcba987654 sha256=abcdef012345\n" +
+		"state=pending id=" + testID + " commit=fedcba987654 sha256=abcdef012345 dependency_sha256=999999999999\n" +
 		"accept=make release-accept RELEASE_ID=" + testID + "\n" +
 		"rollback=make release-rollback RELEASE_ID=" + testID + "\n"
 	if exit != 1 || stdout.Len() != 0 || stderr.String() != want {
@@ -353,11 +354,11 @@ func TestPrepareAndAdminRejectUnsafeLaunchAgentLabels(t *testing.T) {
 }
 
 func TestPrepareDerivesPrivateBinding(t *testing.T) {
-	manager := &fakeManager{manifest: &releaseactivation.Manifest{State: releaseactivation.StatePrepared, ID: testID, Commit: "commit", CandidateSHA256: testHash}}
+	manager := &fakeManager{manifest: &releaseactivation.Manifest{State: releaseactivation.StatePrepared, ID: testID, Commit: strings.Repeat("a", 40), CandidateSHA256: testHash, DependencySHA256: testDependency}}
 	home := t.TempDir()
 	repo := filepath.Join(home, "repo")
 	args := []string{
-		"prepare", "--commit", "commit", "--candidate", filepath.Join(repo, "candidate"),
+		"prepare", "--commit", strings.Repeat("a", 40), "--candidate-sha256", testHash, "--dependency-sha256", testDependency, "--candidate", filepath.Join(repo, "candidate"),
 		"--authority", filepath.Join(repo, "authority"), "--target", filepath.Join(home, "bin", "gateway"),
 		"--label", "test.label", "--repo-root", repo, "--environment", filepath.Join(repo, ".env.local"),
 		"--health-url-file", filepath.Join(home, "health.url"),
@@ -366,16 +367,76 @@ func TestPrepareDerivesPrivateBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := manager.prepared
-	if got.EffectiveUID != 501 || got.PlistPath != filepath.Join(home, "Library", "LaunchAgents", "test.label.plist") ||
+	if got.CandidateSHA256 != testHash || got.EffectiveUID != 501 || got.PlistPath != filepath.Join(home, "Library", "LaunchAgents", "test.label.plist") ||
 		got.WrapperPath != filepath.Join(repo, "scripts", "run-obsidian-tunnel.sh") ||
 		got.MCPWrapperPath != filepath.Join(repo, "scripts", "run-obsidian-mcp-stdio.sh") {
 		t.Fatalf("derived request = %+v", got)
 	}
 }
 
+func TestPrepareRequiresCanonicalCommitAndDependencyIdentity(t *testing.T) {
+	home := t.TempDir()
+	repo := filepath.Join(home, "repo")
+	valid := validPrepareArgs(home, repo)
+	for _, test := range []struct {
+		name   string
+		mutate func([]string) []string
+	}{
+		{name: "missing dependency", mutate: func(args []string) []string {
+			for i := range args {
+				if args[i] == "--dependency-sha256" {
+					return append(args[:i], args[i+2:]...)
+				}
+			}
+			return args
+		}},
+		{name: "missing candidate digest", mutate: func(args []string) []string {
+			for i := range args {
+				if args[i] == "--candidate-sha256" {
+					return append(args[:i], args[i+2:]...)
+				}
+			}
+			return args
+		}},
+		{name: "short commit", mutate: func(args []string) []string {
+			for i := range args {
+				if args[i] == "--commit" {
+					args[i+1] = "0123456789abcdef"
+				}
+			}
+			return args
+		}},
+		{name: "uppercase dependency", mutate: func(args []string) []string {
+			for i := range args {
+				if args[i] == "--dependency-sha256" {
+					args[i+1] = strings.Repeat("A", 64)
+				}
+			}
+			return args
+		}},
+		{name: "uppercase candidate digest", mutate: func(args []string) []string {
+			for i := range args {
+				if args[i] == "--candidate-sha256" {
+					args[i+1] = strings.Repeat("A", 64)
+				}
+			}
+			return args
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			args := test.mutate(append([]string(nil), valid...))
+			if _, err := parsePrepare(args, dependencies{uid: 501, home: home}); err == nil {
+				t.Fatalf("parsePrepare accepted %s", test.name)
+			}
+		})
+	}
+}
+
 func validPrepareArgs(home, repo string) []string {
 	return []string{
 		"--commit", "0123456789abcdef0123456789abcdef01234567",
+		"--candidate-sha256", testHash,
+		"--dependency-sha256", testDependency,
 		"--candidate", filepath.Join(repo, "candidate"),
 		"--authority", filepath.Join(repo, "authority"),
 		"--target", filepath.Join(home, "bin", "gateway"),

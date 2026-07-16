@@ -26,6 +26,7 @@ const (
 	CodeSymlinkDenied Code = "symlink_denied"
 	CodeNotFound      Code = "not_found"
 	CodeNotDirectory  Code = "not_directory"
+	CodeNotFile       Code = "not_file"
 	CodeLimitExceeded Code = "limit_exceeded"
 	CodeCanceled      Code = "canceled"
 	CodeInputTooLarge Code = "input_too_large"
@@ -59,18 +60,23 @@ const (
 )
 
 type Vault struct {
-	root      string
-	testHooks *vaultTestHooks
-	activity  *ActivityCounter
+	root                   string
+	opaqueBindingAuthority opaqueBindingAuthority
+	testHooks              *vaultTestHooks
+	activity               *ActivityCounter
 }
 
 // vaultTestHooks are instance-local deterministic race seams. They are
 // intentionally unavailable outside this package and nil in production.
 type vaultTestHooks struct {
 	beforeOpenSegment  func(depth int)
+	beforeOpenFile     func()
+	afterFileRead      func()
 	beforeListScan     func()
 	afterListBatch     func(filesScanned uint64)
 	afterEntryBaseline func()
+	afterWalkFile      func(filesVisited uint64)
+	beforeWalkDescend  func(rel string)
 }
 
 type Resolved struct {
@@ -106,11 +112,24 @@ func NewVaultWithActivity(root string, activity *ActivityCounter) (*Vault, error
 	if err != nil || !info.IsDir() {
 		return nil, &Error{Code: CodeNotDirectory}
 	}
-	return &Vault{root: clean, activity: activity}, nil
+	vault := &Vault{root: clean, activity: activity}
+	authority, err := deriveOpaqueBindingAuthority(clean)
+	if err != nil {
+		return nil, err
+	}
+	vault.opaqueBindingAuthority = authority
+	return vault, nil
 }
 
 func (v *Vault) Root() string {
 	return v.root
+}
+
+// NormalizePath returns the bounded vault-relative request identity used by
+// callers to bind stateless cursors before a source is reopened. It performs
+// no filesystem access and does not reveal a host path.
+func NormalizePath(base, input string) (string, error) {
+	return normalizeRel(base, input)
 }
 
 func normalizeRel(base, input string) (string, error) {

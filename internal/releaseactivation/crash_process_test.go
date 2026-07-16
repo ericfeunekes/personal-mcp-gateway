@@ -526,7 +526,8 @@ func newCrashFixture(t *testing.T, previous bool) *crashFixture {
 		ControllerSource: controller,
 		EffectiveUID:     os.Geteuid(),
 		Request: PrepareRequest{
-			Commit: "0123456789abcdef", CandidatePath: write("candidate", "synthetic candidate gateway", 0o700),
+			Commit: strings.Repeat("1", 40), DependencySHA256: strings.Repeat("9", 64),
+			CandidatePath: write("candidate", "synthetic candidate gateway", 0o700),
 			AuthorityPath: controller, TargetPath: target, EffectiveUID: os.Geteuid(),
 			LaunchAgentLabel: "local.test.release-crash", PlistPath: write("launch.plist", "plist", 0o600),
 			WrapperPath: write("wrapper", "wrapper", 0o700), MCPWrapperPath: write("mcp-wrapper", "mcp wrapper", 0o700),
@@ -535,6 +536,11 @@ func newCrashFixture(t *testing.T, previous bool) *crashFixture {
 			HealthURLFile:   healthURLFile, ReadyTimeoutSeconds: 10, ReadyPollMilliseconds: 100,
 		},
 	}
+	candidateSHA256, err := HashRegular(fixture.Request.CandidatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.Request.CandidateSHA256 = candidateSHA256
 	fixture.configPath = filepath.Join(root, "fixture.json")
 	data, err := json.Marshal(fixture)
 	if err != nil {

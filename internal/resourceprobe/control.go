@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +32,7 @@ type Controller struct {
 	ack          *os.File
 	activity     *fsx.ActivityCounter
 	runtimeGC    func()
+	freeOSMemory func()
 	readMemStats func(*runtime.MemStats)
 	close        sync.Once
 }
@@ -110,15 +112,16 @@ func requirePipe(fd int) error {
 // New is the deterministic package-test constructor. Production uses
 // FromEnvironment so the controller cannot exist without inherited pipes.
 func New(command, ack *os.File, activity *fsx.ActivityCounter) *Controller {
-	return newController(command, ack, activity, runtime.GC, runtime.ReadMemStats)
+	return newController(command, ack, activity, runtime.GC, debug.FreeOSMemory, runtime.ReadMemStats)
 }
 
-func newController(command, ack *os.File, activity *fsx.ActivityCounter, runtimeGC func(), readMemStats func(*runtime.MemStats)) *Controller {
+func newController(command, ack *os.File, activity *fsx.ActivityCounter, runtimeGC, freeOSMemory func(), readMemStats func(*runtime.MemStats)) *Controller {
 	return &Controller{
 		command:      command,
 		ack:          ack,
 		activity:     activity,
 		runtimeGC:    runtimeGC,
+		freeOSMemory: freeOSMemory,
 		readMemStats: readMemStats,
 	}
 }
@@ -131,10 +134,11 @@ func (c *Controller) Activity() *fsx.ActivityCounter {
 }
 
 // Run serves exact gc and snapshot commands. The gc acknowledgement includes
-// only aggregate runtime memory values read after blocking runtime.GC returns,
-// so one validated reply is causal evidence for both operations.
+// only aggregate runtime memory values read after blocking runtime.GC and
+// debug.FreeOSMemory return, so one validated reply is causal evidence that
+// both heap collection and best-effort page release completed.
 func (c *Controller) Run(ctx context.Context) error {
-	if c == nil || c.command == nil || c.ack == nil || c.activity == nil || c.runtimeGC == nil || c.readMemStats == nil {
+	if c == nil || c.command == nil || c.ack == nil || c.activity == nil || c.runtimeGC == nil || c.freeOSMemory == nil || c.readMemStats == nil {
 		return errors.New("resource probe is not configured")
 	}
 	closed := make(chan struct{})
@@ -163,6 +167,7 @@ func (c *Controller) Run(ctx context.Context) error {
 		switch line {
 		case "gc\n":
 			c.runtimeGC()
+			c.freeOSMemory()
 			var memory runtime.MemStats
 			c.readMemStats(&memory)
 			if _, err := fmt.Fprintf(c.ack, "gc %d %d %d %d %d\n",

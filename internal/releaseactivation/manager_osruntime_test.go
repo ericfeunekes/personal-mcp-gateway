@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -31,8 +32,13 @@ func TestManagerPrepareRejectsPostObserveArtifactRaceWithOSRuntime(t *testing.T)
 				return os.WriteFile(mutatedPath, []byte("changed-after-os-observe"), 0o755)
 			}}
 			manager := &Manager{Store: store, Runtime: runtime, ControllerPath: authority}
+			candidateSHA256, err := HashRegular(candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
 			request := PrepareRequest{
-				Commit: "0123456789abcdef", CandidatePath: candidate, AuthorityPath: authority, TargetPath: target,
+				Commit: strings.Repeat("1", 40), CandidateSHA256: candidateSHA256, DependencySHA256: strings.Repeat("9", 64),
+				CandidatePath: candidate, AuthorityPath: authority, TargetPath: target,
 				EffectiveUID: os.Geteuid(), LaunchAgentLabel: "com.example.os-runtime-race",
 				PlistPath: plist, WrapperPath: wrapper, MCPWrapperPath: mcpWrapper,
 				StdoutPath: filepath.Join(root, "logs", "stdout.log"), StderrPath: filepath.Join(root, "logs", "stderr.log"),

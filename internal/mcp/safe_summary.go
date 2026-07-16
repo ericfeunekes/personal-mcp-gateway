@@ -35,6 +35,8 @@ const (
 	BoolScopeComplete
 	BoolTooLarge
 	BoolUnknownKeyTruncated
+	BoolRegex
+	BoolCaseSensitive
 )
 
 const (
@@ -46,6 +48,16 @@ const (
 	CounterLimit
 	CounterUnknownKeyCount
 	CounterUnknownKeyTooLarge
+	CounterRequestCount
+	CounterItemCount
+	CounterItemErrorCount
+	CounterMatchCount
+	CounterRemainingCount
+	CounterSourceEntriesValidated
+	CounterPatternBytes
+	CounterMaxFiles
+	CounterMaxBytes
+	CounterContextLines
 )
 
 const (
@@ -55,6 +67,7 @@ const (
 	EnumContinuation
 	EnumConsistency
 	EnumErrorCode
+	EnumSelectorKind
 )
 
 const (
@@ -91,6 +104,19 @@ const (
 	ValueNumber
 	ValueArray
 	ValueObject
+	ValueFileLimit
+	ValueByteLimit
+	ValueContent
+	ValueHeading
+	ValueBlock
+	ValueFrontmatter
+	ValueOutline
+	ValueUnsupportedFile
+	ValueInvalidUTF8
+	ValueInvalidSelector
+	ValueSelectorNotFound
+	ValueSelectorAmbiguous
+	ValueInvalidRegex
 )
 
 const (
@@ -376,22 +402,22 @@ func (b *SafeSummaryBuilder) resultErrorCode() (string, bool) {
 }
 
 func boolMetricName(v BoolMetric) (string, bool) {
-	names := map[BoolMetric]string{BoolPresent: "present", BoolOK: "ok", BoolExists: "exists", BoolIsError: "is_error", BoolTruncated: "truncated", BoolResultComplete: "result_complete", BoolScopeComplete: "scope_complete", BoolTooLarge: "too_large", BoolUnknownKeyTruncated: "unknown_key_truncated"}
+	names := map[BoolMetric]string{BoolPresent: "present", BoolOK: "ok", BoolExists: "exists", BoolIsError: "is_error", BoolTruncated: "truncated", BoolResultComplete: "result_complete", BoolScopeComplete: "scope_complete", BoolTooLarge: "too_large", BoolUnknownKeyTruncated: "unknown_key_truncated", BoolRegex: "regex", BoolCaseSensitive: "case_sensitive"}
 	s, ok := names[v]
 	return s, ok
 }
 func counterMetricName(v CounterMetric) (string, bool) {
-	names := map[CounterMetric]string{CounterRawBytes: "raw_bytes", CounterEntryCount: "entry_count", CounterFilesScanned: "files_scanned", CounterBytesScanned: "bytes_scanned", CounterResponseBytes: "response_bytes", CounterLimit: "limit", CounterUnknownKeyCount: "unknown_key_count", CounterUnknownKeyTooLarge: "unknown_key_too_large_count"}
+	names := map[CounterMetric]string{CounterRawBytes: "raw_bytes", CounterEntryCount: "entry_count", CounterFilesScanned: "files_scanned", CounterBytesScanned: "bytes_scanned", CounterResponseBytes: "response_bytes", CounterLimit: "limit", CounterUnknownKeyCount: "unknown_key_count", CounterUnknownKeyTooLarge: "unknown_key_too_large_count", CounterRequestCount: "request_count", CounterItemCount: "item_count", CounterItemErrorCount: "item_error_count", CounterMatchCount: "match_count", CounterRemainingCount: "remaining_count", CounterSourceEntriesValidated: "source_entries_validated", CounterPatternBytes: "pattern_bytes", CounterMaxFiles: "max_files", CounterMaxBytes: "max_bytes", CounterContextLines: "context_lines"}
 	s, ok := names[v]
 	return s, ok
 }
 func enumMetricName(v EnumMetric) (string, bool) {
-	names := map[EnumMetric]string{EnumShape: "shape", EnumResultType: "result_type", EnumStoppedBy: "stopped_by", EnumContinuation: "continuation", EnumConsistency: "consistency", EnumErrorCode: "error_code"}
+	names := map[EnumMetric]string{EnumShape: "shape", EnumResultType: "result_type", EnumStoppedBy: "stopped_by", EnumContinuation: "continuation", EnumConsistency: "consistency", EnumErrorCode: "error_code", EnumSelectorKind: "selector_kind"}
 	s, ok := names[v]
 	return s, ok
 }
 func enumValueName(v EnumValue) (string, bool) {
-	names := map[EnumValue]string{ValueInvalidJSON: "invalid_json", ValueFile: "file", ValueDirectory: "directory", ValueSymlink: "symlink", ValueOther: "other", ValueScope: "scope", ValueResultLimit: "result_limit", ValueResponseLimit: "response_limit", ValueTimeout: "timeout", ValueCanceled: "canceled", ValueSourceChange: "source_change", ValueError: "error", ValueComplete: "complete", ValueCursor: "cursor", ValueRestart: "restart", ValueStable: "stable", ValueBestEffort: "best_effort", ValuePathDenied: "path_denied", ValueSymlinkDenied: "symlink_denied", ValueNotFound: "not_found", ValueNotDirectory: "not_directory", ValueLimitExceeded: "limit_exceeded", ValueInputTooLarge: "input_too_large", ValueCursorInvalid: "cursor_invalid", ValueCursorMismatch: "cursor_mismatch", ValueCursorStale: "cursor_stale", ValueResponseTooLarge: "response_too_large", ValueNull: "null", ValueString: "string", ValueBoolean: "boolean", ValueNumber: "number", ValueArray: "array", ValueObject: "object"}
+	names := map[EnumValue]string{ValueInvalidJSON: "invalid_json", ValueFile: "file", ValueDirectory: "directory", ValueSymlink: "symlink", ValueOther: "other", ValueScope: "scope", ValueResultLimit: "result_limit", ValueResponseLimit: "response_limit", ValueTimeout: "timeout", ValueCanceled: "canceled", ValueSourceChange: "source_change", ValueError: "error", ValueComplete: "complete", ValueCursor: "cursor", ValueRestart: "restart", ValueStable: "stable", ValueBestEffort: "best_effort", ValuePathDenied: "path_denied", ValueSymlinkDenied: "symlink_denied", ValueNotFound: "not_found", ValueNotDirectory: "not_directory", ValueLimitExceeded: "limit_exceeded", ValueInputTooLarge: "input_too_large", ValueCursorInvalid: "cursor_invalid", ValueCursorMismatch: "cursor_mismatch", ValueCursorStale: "cursor_stale", ValueResponseTooLarge: "response_too_large", ValueNull: "null", ValueString: "string", ValueBoolean: "boolean", ValueNumber: "number", ValueArray: "array", ValueObject: "object", ValueFileLimit: "file_limit", ValueByteLimit: "byte_limit", ValueContent: "content", ValueHeading: "heading", ValueBlock: "block", ValueFrontmatter: "frontmatter", ValueOutline: "outline", ValueUnsupportedFile: "unsupported_file", ValueInvalidUTF8: "invalid_utf8", ValueInvalidSelector: "invalid_selector", ValueSelectorNotFound: "selector_not_found", ValueSelectorAmbiguous: "selector_ambiguous", ValueInvalidRegex: "invalid_regex"}
 	s, ok := names[v]
 	return s, ok
 }
@@ -399,7 +425,7 @@ func enumValueName(v EnumValue) (string, bool) {
 func boolMetricAllowed(section SummarySection, metric BoolMetric) bool {
 	switch section {
 	case SectionArguments:
-		return metric == BoolPresent || metric == BoolTooLarge || metric == BoolUnknownKeyTruncated
+		return metric == BoolPresent || metric == BoolTooLarge || metric == BoolUnknownKeyTruncated || metric == BoolRegex || metric == BoolCaseSensitive
 	case SectionResult:
 		return metric == BoolPresent || metric == BoolOK || metric == BoolExists || metric == BoolIsError ||
 			metric == BoolTruncated || metric == BoolResultComplete || metric == BoolScopeComplete
@@ -411,9 +437,11 @@ func boolMetricAllowed(section SummarySection, metric BoolMetric) bool {
 func counterMetricAllowed(section SummarySection, metric CounterMetric) bool {
 	switch section {
 	case SectionArguments:
-		return metric == CounterRawBytes || metric == CounterLimit || metric == CounterUnknownKeyCount || metric == CounterUnknownKeyTooLarge
+		return metric == CounterRawBytes || metric == CounterLimit || metric == CounterUnknownKeyCount || metric == CounterUnknownKeyTooLarge ||
+			metric == CounterRequestCount || metric == CounterPatternBytes || metric == CounterMaxFiles || metric == CounterMaxBytes || metric == CounterContextLines
 	case SectionResult:
-		return metric == CounterEntryCount || metric == CounterFilesScanned || metric == CounterBytesScanned || metric == CounterResponseBytes
+		return metric == CounterEntryCount || metric == CounterFilesScanned || metric == CounterBytesScanned || metric == CounterResponseBytes ||
+			metric == CounterItemCount || metric == CounterItemErrorCount || metric == CounterMatchCount || metric == CounterRemainingCount || metric == CounterSourceEntriesValidated
 	default:
 		return false
 	}
@@ -422,7 +450,7 @@ func counterMetricAllowed(section SummarySection, metric CounterMetric) bool {
 func enumMetricAllowed(section SummarySection, metric EnumMetric) bool {
 	switch section {
 	case SectionArguments:
-		return metric == EnumShape
+		return metric == EnumShape || metric == EnumSelectorKind
 	case SectionResult:
 		return metric == EnumResultType || metric == EnumStoppedBy || metric == EnumContinuation ||
 			metric == EnumConsistency || metric == EnumErrorCode
@@ -440,7 +468,7 @@ func enumValueAllowed(metric EnumMetric, value EnumValue) bool {
 		return value == ValueFile || value == ValueDirectory || value == ValueSymlink || value == ValueOther
 	case EnumStoppedBy:
 		return value == ValueScope || value == ValueResultLimit || value == ValueResponseLimit || value == ValueTimeout ||
-			value == ValueCanceled || value == ValueSourceChange || value == ValueError
+			value == ValueCanceled || value == ValueSourceChange || value == ValueError || value == ValueFileLimit || value == ValueByteLimit
 	case EnumContinuation:
 		return value == ValueComplete || value == ValueCursor || value == ValueRestart
 	case EnumConsistency:
@@ -449,7 +477,10 @@ func enumValueAllowed(metric EnumMetric, value EnumValue) bool {
 		return value == ValuePathDenied || value == ValueSymlinkDenied || value == ValueNotFound || value == ValueNotDirectory ||
 			value == ValueLimitExceeded || value == ValueInputTooLarge || value == ValueTimeout || value == ValueCanceled ||
 			value == ValueSourceChange || value == ValueCursorInvalid || value == ValueCursorMismatch || value == ValueCursorStale ||
-			value == ValueResponseTooLarge
+			value == ValueResponseTooLarge || value == ValueUnsupportedFile || value == ValueInvalidUTF8 || value == ValueInvalidSelector ||
+			value == ValueSelectorNotFound || value == ValueSelectorAmbiguous || value == ValueInvalidRegex
+	case EnumSelectorKind:
+		return value == ValueContent || value == ValueHeading || value == ValueBlock || value == ValueFrontmatter || value == ValueOutline
 	default:
 		return false
 	}

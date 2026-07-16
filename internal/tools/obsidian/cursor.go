@@ -13,10 +13,12 @@ import (
 )
 
 const (
-	cursorFormatV1      = 1
+	cursorFormatV2      = 2
 	maxCursorToolBytes  = 64
 	maxCursorFieldBytes = 4096
 )
+
+const cursorSealDomain = "personal-mcp-gateway/obsidian-cursor-envelope/v2"
 
 const (
 	CursorInvalidCode  = "cursor_invalid"
@@ -33,26 +35,43 @@ var (
 // CursorQueryHash binds a cursor to one normalized public query.
 type CursorQueryHash [sha256.Size]byte
 
-// DecodedCursor is the validated, self-contained cursor payload. Position is
-// still untrusted and must be checked against the current canonical listing.
+// DecodedCursor is the authenticated, self-contained cursor payload. Source,
+// query, and canonical-boundary membership still require live revalidation.
 type DecodedCursor struct {
 	Tool     string
 	Query    CursorQueryHash
 	Source   fsx.SourceFingerprint
 	Position fsx.Position
+	State    json.RawMessage
 }
 
 type cursorEnvelope struct {
-	Version  int            `json:"version"`
-	Tool     string         `json:"tool"`
-	Query    string         `json:"query"`
-	Source   string         `json:"source"`
-	Position cursorPosition `json:"position"`
+	Version  int             `json:"version"`
+	Tool     string          `json:"tool"`
+	Query    string          `json:"query"`
+	Source   string          `json:"source"`
+	Position cursorPosition  `json:"position"`
+	State    json.RawMessage `json:"state,omitempty"`
+	Seal     string          `json:"seal"`
+}
+
+type cursorEnvelopeFields struct {
+	Version  int             `json:"version"`
+	Tool     string          `json:"tool"`
+	Query    string          `json:"query"`
+	Source   string          `json:"source"`
+	Position cursorPosition  `json:"position"`
+	State    json.RawMessage `json:"state,omitempty"`
 }
 
 type cursorPosition struct {
 	NFC    string `json:"nfc"`
 	Stored string `json:"stored"`
+}
+
+type cursorSealer interface {
+	BindOpaque(string, []byte) fsx.OpaqueBinding
+	VerifyOpaque(string, []byte, fsx.OpaqueBinding) bool
 }
 
 // LSQueryHash hashes the canonical directory identity, effective limit, and
@@ -73,6 +92,26 @@ func LSQueryHash(canonicalDirectory string, effectiveLimit int) CursorQueryHash 
 	return out
 }
 
+// RetrievalQueryHash binds a normalized typed query to one tool and response
+// contract. Callers must normalize caller path identity and apply defaults
+// before calling it; canonical source identity remains independently bound by
+// opaque fingerprints, and cursor payloads never retain the query itself.
+func RetrievalQueryHash(tool string, normalized any) (CursorQueryHash, error) {
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		return CursorQueryHash{}, err
+	}
+	h := sha256.New()
+	writeHashField(h, []byte(tool))
+	writeHashField(h, encoded)
+	var number [8]byte
+	binary.BigEndian.PutUint64(number[:], uint64(ResponseContractV1))
+	writeHashField(h, number[:])
+	var out CursorQueryHash
+	copy(out[:], h.Sum(nil))
+	return out, nil
+}
+
 func writeHashField(w io.Writer, value []byte) {
 	var size [8]byte
 	binary.BigEndian.PutUint64(size[:], uint64(len(value)))
@@ -80,9 +119,9 @@ func writeHashField(w io.Writer, value []byte) {
 	_, _ = w.Write(value)
 }
 
-// EncodeCursor returns a raw, unpadded base64url cursor. It deliberately does
-// not authenticate the payload; all fields are revalidated on continuation.
-func EncodeCursor(tool string, query CursorQueryHash, source fsx.SourceFingerprint, position fsx.Position) (string, error) {
+// EncodeCursor returns a sealed raw, unpadded base64url cursor. Live source and
+// boundary checks still run on continuation after authenticity is established.
+func EncodeCursor(sealer cursorSealer, tool string, query CursorQueryHash, source fsx.SourceFingerprint, position fsx.Position) (string, error) {
 	if !validCursorString(tool, maxCursorToolBytes) ||
 		!validCursorString(position.NFC, maxCursorFieldBytes) ||
 		!validCursorString(position.Stored, maxCursorFieldBytes) {
@@ -90,7 +129,7 @@ func EncodeCursor(tool string, query CursorQueryHash, source fsx.SourceFingerpri
 	}
 
 	envelope := cursorEnvelope{
-		Version: cursorFormatV1,
+		Version: cursorFormatV2,
 		Tool:    tool,
 		Query:   encodeDigest(query[:]),
 		Source:  encodeDigest(source[:]),
@@ -99,19 +138,59 @@ func EncodeCursor(tool string, query CursorQueryHash, source fsx.SourceFingerpri
 			Stored: position.Stored,
 		},
 	}
-	decoded, err := json.Marshal(envelope)
-	if err != nil || len(decoded) > MaxCursorBytes {
+	return encodeSealedCursorEnvelope(sealer, envelope)
+}
+
+// EncodeCursorState uses the same strict sealed cursor envelope for bounded
+// retrieval-specific state. The typed state must contain only positions,
+// digests, counters, and compact observations—not request or content values.
+func EncodeCursorState(sealer cursorSealer, tool string, query CursorQueryHash, state any) (string, error) {
+	if !validCursorString(tool, maxCursorToolBytes) || state == nil {
 		return "", ErrCursorInvalid
 	}
-	if base64.RawURLEncoding.EncodedLen(len(decoded)) > MaxCursorBytes {
+	encodedState, err := json.Marshal(state)
+	if err != nil || len(encodedState) == 0 || string(encodedState) == "null" {
+		return "", ErrCursorInvalid
+	}
+	return encodeSealedCursorEnvelope(sealer, cursorEnvelope{
+		Version: cursorFormatV2,
+		Tool:    tool,
+		Query:   encodeDigest(query[:]),
+		State:   encodedState,
+	})
+}
+
+func encodeSealedCursorEnvelope(sealer cursorSealer, envelope cursorEnvelope) (string, error) {
+	if sealer == nil {
+		return "", ErrCursorInvalid
+	}
+	fields, err := json.Marshal(envelope.fields())
+	if err != nil {
+		return "", ErrCursorInvalid
+	}
+	seal := sealer.BindOpaque(cursorSealDomain, fields)
+	if seal == (fsx.OpaqueBinding{}) {
+		return "", ErrCursorInvalid
+	}
+	envelope.Seal = encodeDigest(seal[:])
+	decoded, err := json.Marshal(envelope)
+	if err != nil || len(decoded) > MaxCursorBytes || base64.RawURLEncoding.EncodedLen(len(decoded)) > MaxCursorBytes {
 		return "", ErrCursorInvalid
 	}
 	return base64.RawURLEncoding.EncodeToString(decoded), nil
 }
 
-// DecodeCursor performs structural validation only. Query, source, and the
-// untrusted position are validated by ValidateCursor at the operation boundary.
-func DecodeCursor(encoded string) (DecodedCursor, error) {
+func (envelope cursorEnvelope) fields() cursorEnvelopeFields {
+	return cursorEnvelopeFields{
+		Version: envelope.Version, Tool: envelope.Tool, Query: envelope.Query,
+		Source: envelope.Source, Position: envelope.Position, State: envelope.State,
+	}
+}
+
+// DecodeCursor validates the canonical v2 shape and root-bound seal before
+// returning any derived cursor state. Query, source, and membership checks
+// remain operation-boundary responsibilities.
+func DecodeCursor(sealer cursorSealer, encoded string) (DecodedCursor, error) {
 	if encoded == "" || len(encoded) > MaxCursorBytes || !validRawBase64URL(encoded) {
 		return DecodedCursor{}, ErrCursorInvalid
 	}
@@ -136,10 +215,21 @@ func DecodeCursor(encoded string) (DecodedCursor, error) {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return DecodedCursor{}, ErrCursorInvalid
 	}
-	if envelope.Version != cursorFormatV1 ||
-		!validCursorString(envelope.Tool, maxCursorToolBytes) ||
-		!validCursorString(envelope.Position.NFC, maxCursorFieldBytes) ||
-		!validCursorString(envelope.Position.Stored, maxCursorFieldBytes) {
+	canonical, err := json.Marshal(envelope)
+	if err != nil || !bytes.Equal(decoded, canonical) {
+		return DecodedCursor{}, ErrCursorInvalid
+	}
+	if envelope.Version != cursorFormatV2 || !validCursorString(envelope.Tool, maxCursorToolBytes) || sealer == nil {
+		return DecodedCursor{}, ErrCursorInvalid
+	}
+	sealBytes, err := decodeDigest(envelope.Seal)
+	if err != nil {
+		return DecodedCursor{}, ErrCursorInvalid
+	}
+	var seal fsx.OpaqueBinding
+	copy(seal[:], sealBytes)
+	fields, err := json.Marshal(envelope.fields())
+	if err != nil || !sealer.VerifyOpaque(cursorSealDomain, fields, seal) {
 		return DecodedCursor{}, ErrCursorInvalid
 	}
 
@@ -147,13 +237,23 @@ func DecodeCursor(encoded string) (DecodedCursor, error) {
 	if err != nil {
 		return DecodedCursor{}, ErrCursorInvalid
 	}
+	var query CursorQueryHash
+	copy(query[:], queryBytes)
+	if len(envelope.State) > 0 {
+		if envelope.Source != "" || envelope.Position.NFC != "" || envelope.Position.Stored != "" ||
+			!json.Valid(envelope.State) || string(envelope.State) == "null" {
+			return DecodedCursor{}, ErrCursorInvalid
+		}
+		return DecodedCursor{Tool: envelope.Tool, Query: query, State: append(json.RawMessage(nil), envelope.State...)}, nil
+	}
+	if !validCursorString(envelope.Position.NFC, maxCursorFieldBytes) ||
+		!validCursorString(envelope.Position.Stored, maxCursorFieldBytes) {
+		return DecodedCursor{}, ErrCursorInvalid
+	}
 	sourceBytes, err := decodeDigest(envelope.Source)
 	if err != nil {
 		return DecodedCursor{}, ErrCursorInvalid
 	}
-
-	var query CursorQueryHash
-	copy(query[:], queryBytes)
 	var source fsx.SourceFingerprint
 	copy(source[:], sourceBytes)
 	return DecodedCursor{
@@ -165,6 +265,33 @@ func DecodeCursor(encoded string) (DecodedCursor, error) {
 			Stored: envelope.Position.Stored,
 		},
 	}, nil
+}
+
+// DecodeCursorState validates the shared envelope, tool, and normalized query,
+// then strictly decodes the tool-owned bounded state.
+func DecodeCursorState[T any](sealer cursorSealer, encoded, expectedTool string, expectedQuery CursorQueryHash) (T, error) {
+	var zero T
+	decoded, err := DecodeCursor(sealer, encoded)
+	if err != nil {
+		return zero, ErrCursorInvalid
+	}
+	if decoded.Tool != expectedTool || decoded.Query != expectedQuery {
+		return zero, ErrCursorMismatch
+	}
+	if len(decoded.State) == 0 {
+		return zero, ErrCursorInvalid
+	}
+	decoder := json.NewDecoder(bytes.NewReader(decoded.State))
+	decoder.DisallowUnknownFields()
+	var state T
+	if err := decoder.Decode(&state); err != nil {
+		return zero, ErrCursorInvalid
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return zero, ErrCursorInvalid
+	}
+	return state, nil
 }
 
 func validRawBase64URL(value string) bool {
@@ -182,13 +309,16 @@ func validRawBase64URL(value string) bool {
 // ValidateCursor maps structural failures, query changes, and source changes
 // to distinct stable public errors. Confinement and boundary-existence checks
 // remain mandatory after this function returns the untrusted position.
-func ValidateCursor(encoded, expectedTool string, expectedQuery CursorQueryHash, expectedSource fsx.SourceFingerprint) (fsx.Position, error) {
-	decoded, err := DecodeCursor(encoded)
+func ValidateCursor(sealer cursorSealer, encoded, expectedTool string, expectedQuery CursorQueryHash, expectedSource fsx.SourceFingerprint) (fsx.Position, error) {
+	decoded, err := DecodeCursor(sealer, encoded)
 	if err != nil {
 		return fsx.Position{}, ErrCursorInvalid
 	}
 	if decoded.Tool != expectedTool || decoded.Query != expectedQuery {
 		return fsx.Position{}, ErrCursorMismatch
+	}
+	if len(decoded.State) != 0 {
+		return fsx.Position{}, ErrCursorInvalid
 	}
 	if decoded.Source != expectedSource {
 		return fsx.Position{}, ErrCursorStale

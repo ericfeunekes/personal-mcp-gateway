@@ -5,6 +5,7 @@ go 1.26.1
 require (
 	github.com/google/jsonschema-go v0.4.3
 	github.com/modelcontextprotocol/go-sdk v1.6.1
+	github.com/yuin/goldmark v1.8.2
 )
 
 require (
