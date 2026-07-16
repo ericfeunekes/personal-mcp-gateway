@@ -92,6 +92,7 @@ func runWithDependencies(ctx context.Context, args []string, stdout, stderr io.W
 }
 
 func productionDependencies() (dependencies, error) {
+	_ = os.Unsetenv("RELEASE_ACTIVATION_SELECTED_SOURCE")
 	executable, err := os.Executable()
 	if err != nil {
 		return dependencies{}, err
@@ -106,14 +107,7 @@ func productionDependencies() (dependencies, error) {
 	if err != nil || !filepath.IsAbs(account.HomeDir) {
 		return dependencies{}, errors.New("effective user lookup failed")
 	}
-	selectedSource := os.Getenv("RELEASE_ACTIVATION_SELECTED_SOURCE")
-	_ = os.Unsetenv("RELEASE_ACTIVATION_SELECTED_SOURCE")
-	var store *releaseactivation.Store
-	if filepath.Base(selectedSource) == "authority" && filepath.Base(filepath.Dir(selectedSource)) == "active" {
-		store, err = releaseactivation.NewStoreAt(filepath.Dir(filepath.Dir(selectedSource)), uid)
-	} else {
-		store, err = releaseactivation.NewStore()
-	}
+	store, err := releaseactivation.NewStore()
 	if err != nil {
 		return dependencies{}, err
 	}

@@ -27,7 +27,21 @@ help:
 
 test:
 	@mkdir -p "$(GOCACHE)"
-	@env GOCACHE="$(GOCACHE)" "$(GO)" test -count=1 ./...
+	@set -euo pipefail; \
+	module_path="$$(env GOCACHE="$(GOCACHE)" "$(GO)" list -m)"; \
+	package_list="$$(env GOCACHE="$(GOCACHE)" "$(GO)" list ./...)"; \
+	ordinary_packages=(); \
+	while IFS= read -r package; do \
+	  case "$$package" in \
+	    "$$module_path/cmd/gateway-smoke"|"$$module_path/scripts") ;; \
+	    *) ordinary_packages+=("$$package") ;; \
+	  esac; \
+	done <<< "$$package_list"; \
+	if (( $${#ordinary_packages[@]} > 0 )); then \
+	  env GOCACHE="$(GOCACHE)" "$(GO)" test -count=1 "$${ordinary_packages[@]}"; \
+	fi; \
+	env GOCACHE="$(GOCACHE)" "$(GO)" test -count=1 ./cmd/gateway-smoke; \
+	env GOCACHE="$(GOCACHE)" "$(GO)" test -count=1 ./scripts
 
 build:
 	@mkdir -p "$(BUILD_DIR)" "$(GOCACHE)"

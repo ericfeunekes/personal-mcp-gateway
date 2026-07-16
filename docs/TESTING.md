@@ -33,14 +33,19 @@ Canonical test command:
 make test
 ```
 
-The target runs `go test -count=1 ./...` so a release gate executes the process
-and boundary tests rather than reusing prior successful test results.
+The target discovers every Go package, runs ordinary packages together so Go
+can retain package-level concurrency, and then runs `./cmd/gateway-smoke` and
+`./scripts` as separate sequential stages. Every stage uses `go test -count=1`,
+so the release gate executes the process and boundary tests rather than reusing
+prior successful results. The isolated stages prevent the performance/resource
+smoke and release watchdog suites from competing with heavyweight packages or
+with each other while their production thresholds remain unchanged.
 
 When running inside a restricted agent sandbox that cannot write the default Go
 build cache, keep the build cache repo-local:
 
 ```bash
-GOCACHE=$(pwd)/.gocache go test -count=1 ./...
+GOCACHE=$(pwd)/.gocache make test
 ```
 
 The canonical suite includes the existing gateway proof below. The pending

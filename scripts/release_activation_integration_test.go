@@ -15,11 +15,37 @@ import (
 )
 
 // These are realistic-local composition tests, not actual LaunchAgent tests:
-// the shell dispatcher, production CLI, Manager, Store, OSRuntime, child-process
-// capture, and loopback HTTP probes are real; only launchctl and the supervised
-// process that publishes its loopback URL are deterministic local fakes.
+// the shell dispatcher, controller command logic, Manager, Store, OSRuntime,
+// child-process capture, and loopback HTTP probes are real. A test-binary-only
+// seam supplies the synthetic Store instead of exercising production passwd
+// lookup; launchctl and the supervised process that publishes its loopback URL
+// are deterministic local fakes.
 func TestReleaseActivationRealisticLocalComposition(t *testing.T) {
 	controller := buildRealReleaseController(t)
+
+	t.Run("current candidate active authority lookalike uses canonical clear slot", func(t *testing.T) {
+		fixture := newCompositionFixture(t, controller)
+		defer fixture.server.Close()
+		lookalike := filepath.Join(t.TempDir(), "active", "authority")
+		controllerBytes, err := os.ReadFile(controller)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(lookalike), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(lookalike, controllerBytes, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		fixture.extraEnv = append(fixture.extraEnv, "RELEASE_ACTIVATION_CANDIDATE="+lookalike)
+
+		stdout, stderr, exit := fixture.dispatch(t, "restart", "--repo-root", fixture.repo, "--label", "com.example.realistic-local", "--health-url-file", fixture.healthFile)
+		assertCompositionResult(t, stdout, stderr, exit, "state=clear action=restart\n", "", 0)
+		fixture.assertClear(t)
+		if _, err := os.Lstat(filepath.Join(filepath.Dir(filepath.Dir(lookalike)), "lock")); !os.IsNotExist(err) {
+			t.Fatalf("lookalike path was used as a release state root: %v", err)
+		}
+	})
 
 	t.Run("prepared resume pending accept and rollback", func(t *testing.T) {
 		fixture := newCompositionFixture(t, controller)
@@ -201,6 +227,7 @@ esac
 `)
 	fixture.extraEnv = []string{
 		"PASSWD_HOME=" + home,
+		"PERSONAL_MCP_GATEWAY_RELEASE_CONTROLLER_TEST_PASSWD_HOME=" + home,
 		"LAUNCHCTL_STATE=" + fixture.launchState,
 		"WRAPPER_PATH=" + fixture.wrapper,
 		"HEALTH_FILE=" + fixture.healthFile,
@@ -301,7 +328,7 @@ func buildRealReleaseController(t *testing.T) string {
 	t.Helper()
 	root := repoRoot(t)
 	output := filepath.Join(t.TempDir(), "release-activation")
-	command := exec.Command("go", "build", "-o", output, "./cmd/release-activation")
+	command := exec.Command("go", "test", "-c", "-o", output, "./cmd/release-activation")
 	command.Dir = root
 	cache := os.Getenv("GOCACHE")
 	if cache == "" {

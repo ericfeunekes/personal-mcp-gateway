@@ -15,10 +15,73 @@ import (
 )
 
 const (
-	testID         = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	testHash       = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
-	testDependency = "9999999999999999999999999999999999999999999999999999999999999999"
+	testID            = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	testHash          = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	testDependency    = "9999999999999999999999999999999999999999999999999999999999999999"
+	testPasswdHomeEnv = "PERSONAL_MCP_GATEWAY_RELEASE_CONTROLLER_TEST_PASSWD_HOME"
 )
+
+func TestMain(m *testing.M) {
+	home := os.Getenv(testPasswdHomeEnv)
+	if home == "" {
+		os.Exit(m.Run())
+	}
+	_ = os.Unsetenv(testPasswdHomeEnv)
+	_ = os.Unsetenv("CONTROL_PLANE_API_KEY")
+	_ = os.Unsetenv("OPENAI_API_KEY")
+	store, err := releaseactivation.NewStoreAt(filepath.Join(home, "Library", "Application Support", "personal-mcp-gateway", "release", "obsidian"), os.Geteuid())
+	if err != nil {
+		writeFailure(os.Stderr, releaseactivation.SanitizedError(err))
+		os.Exit(1)
+	}
+	deps, err := testControllerDependencies(store, os.Geteuid(), filepath.Clean(home))
+	if err != nil {
+		writeFailure(os.Stderr, releaseactivation.SanitizedError(err))
+		os.Exit(1)
+	}
+	os.Exit(runWithDependencies(context.Background(), os.Args[1:], os.Stdout, os.Stderr, deps))
+}
+
+func testControllerDependencies(store *releaseactivation.Store, uid int, home string) (dependencies, error) {
+	_ = os.Unsetenv("RELEASE_ACTIVATION_SELECTED_SOURCE")
+	executable, err := os.Executable()
+	if err != nil {
+		return dependencies{}, err
+	}
+	executable = filepath.Clean(executable)
+	controllerSHA256, err := releaseactivation.HashRegular(executable)
+	if err != nil {
+		return dependencies{}, err
+	}
+	runtime := releaseactivation.NewOSRuntime()
+	manager := &releaseactivation.Manager{Store: store, Runtime: runtime, ControllerPath: executable, ControllerSHA256: controllerSHA256}
+	return dependencies{manager: manager, uid: uid, home: home}, nil
+}
+
+func TestProductionDependenciesCannotRelocateReleaseStore(t *testing.T) {
+	expected, err := releaseactivation.NewStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostileHome := t.TempDir()
+	t.Setenv("HOME", hostileHome)
+	t.Setenv("RELEASE_ACTIVATION_SELECTED_SOURCE", filepath.Join(hostileHome, "active", "authority"))
+
+	deps, err := productionDependencies()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, ok := deps.manager.(*releaseactivation.Manager)
+	if !ok {
+		t.Fatalf("manager type = %T", deps.manager)
+	}
+	if manager.Store.Root() != expected.Root() {
+		t.Fatalf("store root = %q, want passwd-derived %q", manager.Store.Root(), expected.Root())
+	}
+	if _, exists := os.LookupEnv("RELEASE_ACTIVATION_SELECTED_SOURCE"); exists {
+		t.Fatal("selected source remained visible after dependency construction")
+	}
+}
 
 type fakeManager struct {
 	manifest       *releaseactivation.Manifest
