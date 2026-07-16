@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"golang.org/x/sys/unix"
 
 	"personal-mcp-gateway/internal/fsx"
 	"personal-mcp-gateway/internal/limits"
@@ -43,6 +44,31 @@ type contextFileReader struct {
 	ctx   context.Context
 	file  *fsx.File
 	bytes uint64
+}
+
+func loadMappedMarkdownSource(reader *contextFileReader, observedSize int64) (*MarkdownSource, func(), error) {
+	if reader == nil || reader.file == nil {
+		return nil, nil, errors.New("markdown source reader is unavailable")
+	}
+	if observedSize < 0 || observedSize > MaxMarkdownSourceBytes {
+		return nil, nil, ErrMarkdownInputTooLarge
+	}
+	mapped, err := unix.Mmap(-1, 0, int(observedSize)+1, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_ANON|unix.MAP_PRIVATE)
+	if err != nil {
+		return nil, nil, err
+	}
+	release := func() { _ = unix.Munmap(mapped) }
+	n, err := io.ReadFull(reader, mapped)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		release()
+		return nil, nil, err
+	}
+	source, err := NewMarkdownSource(mapped[:n])
+	if err != nil {
+		release()
+		return nil, nil, err
+	}
+	return source, release, nil
 }
 
 // readPageMeta is the private orchestration evidence read_many needs without
@@ -144,7 +170,7 @@ func (t *Tools) readPageCore(ctx context.Context, input ReadInput, meta *readPag
 	}
 
 	reader := &contextFileReader{ctx: ctx, file: file}
-	source, err := LoadMarkdownSourceSized(reader, resolved.Size)
+	source, releaseSource, err := loadMappedMarkdownSource(reader, resolved.Size)
 	work.BytesScanned = reader.bytes
 	if err != nil {
 		if revalidateErr := file.Revalidate(ctx); revalidateErr != nil {
@@ -152,6 +178,7 @@ func (t *Tools) readPageCore(ctx context.Context, input ReadInput, meta *readPag
 		}
 		return readErrorResult(err, work)
 	}
+	defer releaseSource()
 	if err := file.Revalidate(ctx); err != nil {
 		return readErrorResult(err, work)
 	}
@@ -208,7 +235,7 @@ func (t *Tools) continueOutline(ctx context.Context, file *fsx.File, selector So
 		return readErrorResult(ErrCursorInvalid, work)
 	}
 	reader := &contextFileReader{ctx: ctx, file: file}
-	source, err := LoadMarkdownSourceSized(reader, file.Resolved().Size)
+	source, releaseSource, err := loadMappedMarkdownSource(reader, file.Resolved().Size)
 	work.BytesScanned = reader.bytes
 	if err != nil {
 		if revalidateErr := file.Revalidate(ctx); revalidateErr != nil {
@@ -216,6 +243,7 @@ func (t *Tools) continueOutline(ctx context.Context, file *fsx.File, selector So
 		}
 		return readErrorResult(err, work)
 	}
+	defer releaseSource()
 	if err := file.Revalidate(ctx); err != nil {
 		return readErrorResult(err, work)
 	}
