@@ -62,6 +62,9 @@ then performs these gates in order:
    cold processes, three exact 100-call batches with blocking-GC heap and
    stabilized RSS/FD checks, lifetime high-water validation, and a 60-second
    idle window with no tool or vault activity.
+   Each report's stdout is captured through a 1 MiB bound plus one-byte
+   overflow sentinel. The capture bound does not become a process file-size
+   limit on Go compiler, linker, runtime, or other private artifacts.
 6. Confirm the candidate did not change during the smoke, then recheck that
    `HEAD` is unchanged and the working tree is still clean.
 7. Copy and hash the already-built release controller, the candidate, and the

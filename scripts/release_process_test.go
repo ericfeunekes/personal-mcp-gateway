@@ -376,6 +376,21 @@ func TestLocalReleaseInstallsExactCandidate(t *testing.T) {
 	}
 }
 
+func TestLocalReleaseBoundsReportsWithoutLimitingPrivateGoArtifacts(t *testing.T) {
+	harness := newLocalReleaseHarness(t, releaseOptions{previous: true, largePrivateSmokeArtifact: true})
+	stdout, stderr, exit := harness.runChannels()
+	if exit != 0 || stderr != "" || !strings.HasPrefix(stdout, "state=pending id=release-0001") {
+		t.Fatalf("release exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+	info, err := os.Stat(filepath.Join(harness.repo, "private-smoke-artifact"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 4<<20 {
+		t.Fatalf("private smoke artifact size = %d, want %d", info.Size(), 4<<20)
+	}
+}
+
 func TestLocalReleasePinsDefaultHealthMarkerOutsideCallerTMPDIR(t *testing.T) {
 	harness := newLocalReleaseHarness(t, releaseOptions{previous: true})
 	callerTMP := filepath.Join(harness.repo, "caller-tmp")
@@ -1144,6 +1159,7 @@ type releaseOptions struct {
 	mutateDependencyDuringSmoke bool
 	malformedReport             bool
 	crossReportDrift            bool
+	largePrivateSmokeArtifact   bool
 }
 
 type localReleaseHarness struct {
@@ -1267,6 +1283,9 @@ has_argument() {
 }
 [[ "${1:-}" == run && "${2:-}" == ./cmd/gateway-smoke ]] || { printf 'unexpected smoke args\n'; exit 7; }
 shift 2
+	if [[ "${LARGE_PRIVATE_SMOKE_ARTIFACT:-0}" == 1 ]]; then
+	  /usr/bin/head -c $((4 * 1024 * 1024)) /dev/zero >"$PRIVATE_SMOKE_ARTIFACT"
+	fi
 	smoke_candidate="$(argument --gateway-bin "$@")"
 	[[ "$smoke_candidate" != "$EXPECTED_CANDIDATE" && -f "$smoke_candidate" && ! -L "$smoke_candidate" && -x "$smoke_candidate" ]] || exit 7
 	[[ "$(stat -f %Lp "$smoke_candidate")" == 700 && "$(stat -f %Lp "$(dirname "$smoke_candidate")")" == 700 ]] || exit 7
@@ -1447,6 +1466,8 @@ exec "$REAL_INSTALL" "$@"
 		"MUTATE_DEPENDENCY="+boolString(options.mutateDependencyDuringSmoke),
 		"MALFORMED_REPORT="+boolString(options.malformedReport),
 		"CROSS_REPORT_DRIFT="+boolString(options.crossReportDrift),
+		"LARGE_PRIVATE_SMOKE_ARTIFACT="+boolString(options.largePrivateSmokeArtifact),
+		"PRIVATE_SMOKE_ARTIFACT="+filepath.Join(repo, "private-smoke-artifact"),
 		"CHANGE_COMMIT_ON_RECHECK="+boolString(options.changeCommitOnRecheck),
 		"FAIL_SECOND_PREFLIGHT="+boolString(options.failSecondPreflight),
 		"REVPARSE_COUNT="+filepath.Join(repo, "revparse-count"),

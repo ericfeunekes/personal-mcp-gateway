@@ -8,6 +8,8 @@ env_file="$repo_root/.env.local"
 make_command="${MAKE:-make}"
 go_command="${GO:-go}"
 uid="$(id -u)"
+readonly report_limit=1048576
+readonly report_capture_limit=$((report_limit + 1))
 
 fail() {
   printf 'error=%s message=%s\n' "$1" "$2" >&2
@@ -19,6 +21,13 @@ dependency_digest() {
   go_mod_hash="$(shasum -a 256 "$repo_root/go.mod" 2>/dev/null | awk '{print $1}')" || return 1
   go_sum_hash="$(shasum -a 256 "$repo_root/go.sum" 2>/dev/null | awk '{print $1}')" || return 1
   printf 'go.mod=%s\ngo.sum=%s\n' "$go_mod_hash" "$go_sum_hash" | shasum -a 256 | awk '{print $1}'
+}
+
+capture_report() {
+  local output="$1"
+  shift
+  env GOCACHE="${GOCACHE:-$repo_root/.gocache}" "$@" 2>/dev/null |
+    /usr/bin/head -c "$report_capture_limit" >"$output"
 }
 
 report_dir=""
@@ -140,34 +149,34 @@ performance_report="$report_dir/performance.json"
 resource_report="$report_dir/resource.json"
 cd "$repo_root" 2>/dev/null || fail release_config 'release configuration is invalid'
 
-if ! (ulimit -f 2048; env GOCACHE="${GOCACHE:-$repo_root/.gocache}" "$go_command" run ./cmd/gateway-smoke \
+if ! capture_report "$functional_report" "$go_command" run ./cmd/gateway-smoke \
   --gateway-bin "$smoke_candidate" --obsidian-root "$OBSIDIAN_ROOT" \
   --repo-root "$repo_root" --candidate-commit "$commit" \
   --candidate-sha256 "$candidate_hash" --dependency-sha256 "$dependency_hash" \
-  --report-json >"$functional_report" 2>/dev/null); then
+  --report-json; then
   fail release_smoke_failed 'release candidate smoke failed'
 fi
-if [[ ! -s "$functional_report" || "$(wc -c <"$functional_report")" -gt 1048576 ]]; then
+if [[ ! -s "$functional_report" || "$(wc -c <"$functional_report")" -gt "$report_limit" ]]; then
   fail release_smoke_failed 'release candidate smoke report is invalid'
 fi
-if ! (ulimit -f 2048; env GOCACHE="${GOCACHE:-$repo_root/.gocache}" "$go_command" run ./cmd/gateway-smoke \
+if ! capture_report "$performance_report" "$go_command" run ./cmd/gateway-smoke \
   --gateway-bin "$smoke_candidate" --obsidian-root "$OBSIDIAN_ROOT" \
   --repo-root "$repo_root" --candidate-commit "$commit" \
   --candidate-sha256 "$candidate_hash" --dependency-sha256 "$dependency_hash" \
-  --performance-json >"$performance_report" 2>/dev/null); then
+  --performance-json; then
   fail release_smoke_failed 'release candidate performance smoke failed'
 fi
-if [[ ! -s "$performance_report" || "$(wc -c <"$performance_report")" -gt 1048576 ]]; then
+if [[ ! -s "$performance_report" || "$(wc -c <"$performance_report")" -gt "$report_limit" ]]; then
   fail release_smoke_failed 'release candidate performance report is invalid'
 fi
-if ! (ulimit -f 2048; env GOCACHE="${GOCACHE:-$repo_root/.gocache}" "$go_command" run ./cmd/gateway-smoke \
+if ! capture_report "$resource_report" "$go_command" run ./cmd/gateway-smoke \
   --gateway-bin "$smoke_candidate" --obsidian-root "$OBSIDIAN_ROOT" \
   --repo-root "$repo_root" --candidate-commit "$commit" \
   --candidate-sha256 "$candidate_hash" --dependency-sha256 "$dependency_hash" \
-  --resource-json >"$resource_report" 2>/dev/null); then
+  --resource-json; then
   fail release_smoke_failed 'release candidate resource smoke failed'
 fi
-if [[ ! -s "$resource_report" || "$(wc -c <"$resource_report")" -gt 1048576 ]]; then
+if [[ ! -s "$resource_report" || "$(wc -c <"$resource_report")" -gt "$report_limit" ]]; then
   fail release_smoke_failed 'release candidate resource report is invalid'
 fi
 
