@@ -200,6 +200,9 @@ func (s *MarkdownSource) selectHeading(selector SourceSelector) (SourceSelection
 }
 
 func (s *MarkdownSource) selectBlock(selector SourceSelector) (SourceSelection, error) {
+	if selection, ok := s.selectLargeTopLevelSingleLineBlock(selector); ok {
+		return selection, nil
+	}
 	structure := s.markdownStructure()
 	var found *blockLocator
 	for i := range structure.blocks {
@@ -216,6 +219,106 @@ func (s *MarkdownSource) selectBlock(selector SourceSelector) (SourceSelection, 
 		return SourceSelection{}, ErrSourceUnitNotFound
 	}
 	return s.contentSelection(selector, found.start, found.end), nil
+}
+
+const structuralFastPathMinLines = 4096
+
+// selectLargeTopLevelSingleLineBlock avoids constructing an irrelevant
+// high-density AST when the requested block is provably one plain top-level
+// source line. Conservative shape checks fall back to the Goldmark adapter for
+// containers, code/HTML, setext ambiguity, multiline paragraphs, and duplicate
+// raw candidates.
+func (s *MarkdownSource) selectLargeTopLevelSingleLineBlock(selector SourceSelector) (SourceSelection, bool) {
+	if len(s.lines) < structuralFastPathMinLines {
+		return SourceSelection{}, false
+	}
+	frontmatterEnd, _ := s.frontmatterEnd()
+	candidate := -1
+	for index := range s.lines {
+		line := s.lines[index]
+		if line.Start < frontmatterEnd {
+			continue
+		}
+		id, ok := trailingBlockID(s.source[line.Start:line.ContentEnd])
+		if !ok || id != selector.BlockID {
+			continue
+		}
+		if candidate >= 0 {
+			return SourceSelection{}, false
+		}
+		candidate = index
+	}
+	if candidate < 0 || !plainTopLevelLine(s.lineContent(candidate)) {
+		return SourceSelection{}, false
+	}
+	if candidate > 0 && len(bytes.TrimSpace(s.lineContent(candidate-1))) != 0 {
+		return SourceSelection{}, false
+	}
+	if candidate+1 < len(s.lines) {
+		next := s.lineContent(candidate + 1)
+		if len(bytes.TrimSpace(next)) != 0 && !definiteParagraphInterrupt(next) {
+			return SourceSelection{}, false
+		}
+	}
+	line := s.lines[candidate]
+	return s.contentSelection(selector, line.Start, line.End), true
+}
+
+func plainTopLevelLine(line []byte) bool {
+	indent := 0
+	for indent < len(line) && line[indent] == ' ' && indent < 4 {
+		indent++
+	}
+	if indent > 3 || (indent < len(line) && line[indent] == '\t') {
+		return false
+	}
+	line = line[indent:]
+	if len(line) == 0 {
+		return false
+	}
+	switch line[0] {
+	case '#', '>', '`', '~', '<':
+		return false
+	case '-', '+', '*':
+		return len(line) < 2 || (line[1] != ' ' && line[1] != '\t')
+	default:
+		return !orderedListMarker(line)
+	}
+}
+
+func definiteParagraphInterrupt(line []byte) bool {
+	indent := 0
+	for indent < len(line) && line[indent] == ' ' && indent < 4 {
+		indent++
+	}
+	if indent > 3 || indent == len(line) || line[indent] == '\t' {
+		return false
+	}
+	line = line[indent:]
+	switch line[0] {
+	case '#':
+		return len(line) > 1 && (line[1] == ' ' || line[1] == '\t')
+	case '>', '`', '~':
+		return true
+	case '-', '+', '*':
+		return len(line) > 2 && (line[1] == ' ' || line[1] == '\t') && len(bytes.TrimSpace(line[2:])) > 0
+	default:
+		return orderedListInterrupt(line)
+	}
+}
+
+func orderedListInterrupt(line []byte) bool {
+	return len(line) > 3 && line[0] == '1' && (line[1] == '.' || line[1] == ')') &&
+		(line[2] == ' ' || line[2] == '\t') && len(bytes.TrimSpace(line[3:])) > 0
+}
+
+func orderedListMarker(line []byte) bool {
+	index := 0
+	for index < len(line) && index < 9 && line[index] >= '0' && line[index] <= '9' {
+		index++
+	}
+	return index > 0 && index < len(line)-1 && (line[index] == '.' || line[index] == ')') &&
+		(line[index+1] == ' ' || line[index+1] == '\t')
 }
 
 func (s *MarkdownSource) selectOutline(selector SourceSelector) SourceSelection {

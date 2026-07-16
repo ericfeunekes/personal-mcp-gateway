@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -269,6 +270,41 @@ func TestStructuralParsingAtAcceptedComplexityCeilings(t *testing.T) {
 			t.Fatalf("outline = %#v, want non-nil empty slice", selection.Outline)
 		}
 	})
+}
+
+func TestLargeSingleLineBlockAvoidsIrrelevantDenseTailWithoutChangingBoundary(t *testing.T) {
+	raw := []byte("dense ^dense\n" + strings.Repeat("- x\n", MaxMarkdownSourceLines-1))
+	source, err := NewMarkdownSource(raw)
+	if err != nil {
+		t.Fatalf("NewMarkdownSource: %v", err)
+	}
+	selection, err := source.Select(SourceSelector{Kind: SourceSelectorBlock, BlockID: "dense"})
+	if err != nil {
+		t.Fatalf("block: %v", err)
+	}
+	if got, want := string(selection.Content), "dense ^dense\n"; got != want {
+		t.Fatalf("content = %q, want %q", got, want)
+	}
+}
+
+func TestLargeSingleLineBlockFastPathFallsBackForSetextAndDuplicates(t *testing.T) {
+	padding := strings.Repeat("\n", structuralFastPathMinLines)
+	for name, markdown := range map[string]string{
+		"setext":                "title ^same\n---\n" + padding,
+		"ordered non-interrupt": "title ^same\n2. continuation\n" + padding,
+		"duplicate":             "first ^same\n\nsecond ^same\n" + padding,
+	} {
+		t.Run(name, func(t *testing.T) {
+			source := mustMarkdownSource(t, markdown)
+			_, err := source.Select(SourceSelector{Kind: SourceSelectorBlock, BlockID: "same"})
+			if name != "duplicate" && !errors.Is(err, ErrSourceUnitNotFound) {
+				t.Fatalf("%s error = %v, want not found", name, err)
+			}
+			if name == "duplicate" && !errors.Is(err, ErrSourceUnitAmbiguous) {
+				t.Fatalf("duplicate error = %v, want ambiguous", err)
+			}
+		})
+	}
 }
 
 func TestStructuralParserSupportsConcurrentSources(t *testing.T) {
