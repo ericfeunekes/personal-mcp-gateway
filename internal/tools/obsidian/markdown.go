@@ -1,6 +1,7 @@
 package obsidian
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"sort"
@@ -107,7 +108,14 @@ func (s *MarkdownSource) PhysicalLines() []PhysicalLine {
 }
 
 func indexPhysicalLines(source []byte, maximum int) ([]PhysicalLine, bool) {
-	lines := make([]PhysicalLine, 0, min(len(source)/32+1, maximum))
+	lineCount := bytes.Count(source, []byte{'\n'})
+	if len(source) > 0 && source[len(source)-1] != '\n' {
+		lineCount++
+	}
+	if lineCount > maximum {
+		return nil, false
+	}
+	lines := make([]PhysicalLine, 0, lineCount)
 	start := 0
 	for i, b := range source {
 		if b != '\n' {
@@ -118,16 +126,10 @@ func indexPhysicalLines(source []byte, maximum int) ([]PhysicalLine, bool) {
 			contentEnd--
 		}
 		lines = append(lines, PhysicalLine{Start: start, ContentEnd: contentEnd, End: i + 1})
-		if len(lines) > maximum {
-			return nil, false
-		}
 		start = i + 1
 	}
 	if start < len(source) {
 		lines = append(lines, PhysicalLine{Start: start, ContentEnd: len(source), End: len(source)})
-		if len(lines) > maximum {
-			return nil, false
-		}
 	}
 	return lines, true
 }
