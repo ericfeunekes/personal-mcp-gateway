@@ -97,14 +97,20 @@ func productionDependencies() (dependencies, error) {
 		return dependencies{}, err
 	}
 	executable = filepath.Clean(executable)
+	controllerSHA256, err := releaseactivation.HashRegular(executable)
+	if err != nil {
+		return dependencies{}, err
+	}
 	uid := os.Geteuid()
 	account, err := user.LookupId(strconv.Itoa(uid))
 	if err != nil || !filepath.IsAbs(account.HomeDir) {
 		return dependencies{}, errors.New("effective user lookup failed")
 	}
+	selectedSource := os.Getenv("RELEASE_ACTIVATION_SELECTED_SOURCE")
+	_ = os.Unsetenv("RELEASE_ACTIVATION_SELECTED_SOURCE")
 	var store *releaseactivation.Store
-	if filepath.Base(executable) == "authority" && filepath.Base(filepath.Dir(executable)) == "active" {
-		store, err = releaseactivation.NewStoreAt(filepath.Dir(filepath.Dir(executable)), uid)
+	if filepath.Base(selectedSource) == "authority" && filepath.Base(filepath.Dir(selectedSource)) == "active" {
+		store, err = releaseactivation.NewStoreAt(filepath.Dir(filepath.Dir(selectedSource)), uid)
 	} else {
 		store, err = releaseactivation.NewStore()
 	}
@@ -112,7 +118,7 @@ func productionDependencies() (dependencies, error) {
 		return dependencies{}, err
 	}
 	runtime := releaseactivation.NewOSRuntime()
-	manager := &releaseactivation.Manager{Store: store, Runtime: runtime, ControllerPath: executable}
+	manager := &releaseactivation.Manager{Store: store, Runtime: runtime, ControllerPath: executable, ControllerSHA256: controllerSHA256}
 	return dependencies{manager: manager, uid: uid, home: filepath.Clean(account.HomeDir)}, nil
 }
 
@@ -235,6 +241,7 @@ func parsePrepare(args []string, deps dependencies) (releaseactivation.PrepareRe
 	var repoRoot string
 	set.StringVar(&request.Commit, "commit", "", "")
 	set.StringVar(&request.CandidateSHA256, "candidate-sha256", "", "")
+	set.StringVar(&request.AuthoritySHA256, "authority-sha256", "", "")
 	set.StringVar(&request.DependencySHA256, "dependency-sha256", "", "")
 	set.StringVar(&request.CandidatePath, "candidate", "", "")
 	set.StringVar(&request.AuthorityPath, "authority", "", "")
@@ -248,11 +255,12 @@ func parsePrepare(args []string, deps dependencies) (releaseactivation.PrepareRe
 	if err := set.Parse(args); err != nil || set.NArg() != 0 {
 		return request, &usageError{}
 	}
-	if !allNonempty(request.Commit, request.CandidateSHA256, request.DependencySHA256, request.CandidatePath, request.AuthorityPath, request.TargetPath,
+	if !allNonempty(request.Commit, request.CandidateSHA256, request.AuthoritySHA256, request.DependencySHA256, request.CandidatePath, request.AuthorityPath, request.TargetPath,
 		request.LaunchAgentLabel, repoRoot, request.EnvironmentPath, request.HealthURLFile) {
 		return request, &usageError{}
 	}
 	if !validGitOID(request.Commit) || len(request.CandidateSHA256) != 64 || !validGitOID(request.CandidateSHA256) ||
+		len(request.AuthoritySHA256) != 64 || !validGitOID(request.AuthoritySHA256) ||
 		len(request.DependencySHA256) != 64 || !validGitOID(request.DependencySHA256) {
 		return request, &usageError{}
 	}

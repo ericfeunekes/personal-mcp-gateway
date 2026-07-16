@@ -10,9 +10,10 @@ import (
 // is the executable handling the current request; every active operation binds
 // it to the immutable authority recorded by the transaction.
 type Manager struct {
-	Store          *Store
-	Runtime        Runtime
-	ControllerPath string
+	Store            *Store
+	Runtime          Runtime
+	ControllerPath   string
+	ControllerSHA256 string
 }
 
 // PrepareRequest contains resolved, non-secret release bindings. Manager owns
@@ -23,6 +24,7 @@ type Manager struct {
 type PrepareRequest struct {
 	Commit                string
 	CandidateSHA256       string
+	AuthoritySHA256       string
 	DependencySHA256      string
 	CandidatePath         string
 	AuthorityPath         string
@@ -80,8 +82,11 @@ func (m *Manager) Prepare(ctx context.Context, request PrepareRequest) (*Manifes
 	if request.EffectiveUID != m.Store.effectiveUID || !ValidLaunchAgentLabel(request.LaunchAgentLabel) {
 		return nil, lifecycleError(ErrorStateMalformed)
 	}
-	if !validCommit(request.Commit) || !validSHA256(request.CandidateSHA256) || !validSHA256(request.DependencySHA256) {
+	if !validCommit(request.Commit) || !validSHA256(request.CandidateSHA256) || !validSHA256(request.AuthoritySHA256) || !validSHA256(request.DependencySHA256) {
 		return nil, lifecycleError(ErrorStateMalformed)
+	}
+	if m.ControllerSHA256 != request.AuthoritySHA256 {
+		return nil, lifecycleError(ErrorAuthorityMismatch)
 	}
 	sources := ArtifactSources{Candidate: request.CandidatePath, Authority: request.AuthorityPath}
 	previousPresent, err := pathExists(request.TargetPath)
@@ -110,6 +115,9 @@ func (m *Manager) Prepare(ctx context.Context, request PrepareRequest) (*Manifes
 	if err != nil {
 		return nil, err
 	}
+	if authorityHash != request.AuthoritySHA256 {
+		return nil, lifecycleError(ErrorAuthorityMismatch)
+	}
 	plistHash, err := HashRegular(request.PlistPath)
 	if err != nil {
 		return nil, err
@@ -137,7 +145,7 @@ func (m *Manager) Prepare(ctx context.Context, request PrepareRequest) (*Manifes
 		Version: ManifestVersion, State: StatePrepared, ID: id, Commit: request.Commit,
 		DependencySHA256: request.DependencySHA256,
 		CandidateFile:    candidateFileName, CandidateSHA256: candidateHash,
-		AuthorityFile: authorityFileName, AuthoritySHA256: authorityHash,
+		AuthorityFile: authorityFileName, AuthoritySHA256: request.AuthoritySHA256,
 		PreviousPresent: previousPresent, PreviousSHA256: previousHash,
 		TargetPath: request.TargetPath, EffectiveUID: request.EffectiveUID,
 		LaunchAgentLabel: request.LaunchAgentLabel,
@@ -179,7 +187,7 @@ func (m *Manager) Prepare(ctx context.Context, request PrepareRequest) (*Manifes
 	// Store.Prepare compares the source bytes with the Manager-selected hashes
 	// before publishing. Keep this defensive check at the ownership boundary so
 	// a future store implementation cannot silently weaken that contract.
-	if prepared.CandidateSHA256 != candidateHash || prepared.AuthoritySHA256 != authorityHash ||
+	if prepared.CandidateSHA256 != candidateHash || prepared.AuthoritySHA256 != request.AuthoritySHA256 ||
 		prepared.PreviousSHA256 != previousHash {
 		return nil, lifecycleError(ErrorArtifactMismatch)
 	}
@@ -454,8 +462,11 @@ func (m *Manager) resumeRollback(ctx context.Context, manifest Manifest, observe
 }
 
 func (m *Manager) validateCurrentAuthority(manifest Manifest) error {
+	if m.ControllerSHA256 != manifest.AuthoritySHA256 {
+		return lifecycleError(ErrorAuthorityMismatch)
+	}
 	controllerHash, err := hashRuntimeFile(m.ControllerPath, true)
-	if err != nil || controllerHash != manifest.AuthoritySHA256 {
+	if err != nil || controllerHash != m.ControllerSHA256 {
 		return lifecycleError(ErrorAuthorityMismatch)
 	}
 	return nil
@@ -484,7 +495,7 @@ func (m *Manager) artifacts() RuntimeArtifacts {
 }
 
 func (m *Manager) acquire() (*LockedStore, error) {
-	if m == nil || m.Store == nil || m.Runtime == nil || m.ControllerPath == "" {
+	if m == nil || m.Store == nil || m.Runtime == nil || m.ControllerPath == "" || !validSHA256(m.ControllerSHA256) {
 		return nil, lifecycleError(ErrorStateMalformed)
 	}
 	locked, err := m.Store.Acquire()

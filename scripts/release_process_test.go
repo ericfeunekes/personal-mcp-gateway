@@ -674,6 +674,28 @@ func TestLocalReleasePinsOneSnapshotAcrossOriginalReplaceAndRestore(t *testing.T
 	}
 }
 
+func TestLocalReleasePinsExecutingControllerAcrossOriginalReplaceAndRestore(t *testing.T) {
+	harness := newLocalReleaseHarness(t, releaseOptions{previous: true, replaceRestoreController: true})
+	stdout, stderr, exit := harness.runChannels()
+	if exit != 0 || stderr != "" || !strings.HasPrefix(stdout, "state=pending id=release-0001") {
+		t.Fatalf("replace-and-restore controller release exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+	values := readKeyValueFile(t, harness.controllerRaceRecord)
+	if values["self"] == harness.controller || values["self"] == "" || values["authority"] != values["self"] {
+		t.Fatalf("controller authority was not the executing snapshot: %#v", values)
+	}
+	if values["self_hash"] != mustHash(t, harness.controllerSource) || values["selected_hash_during_swap"] != mustHash(t, harness.controllerReplacement) {
+		t.Fatalf("controller replace/restore retargeted Prepare: %#v", values)
+	}
+	if mustHash(t, harness.controller) != mustHash(t, harness.controllerSource) ||
+		mustHash(t, filepath.Join(releaseActiveDir(harness.repo), "authority")) != mustHash(t, harness.controllerSource) {
+		t.Fatal("release did not restore and pin controller A")
+	}
+	if _, err := os.Lstat(values["self"]); !os.IsNotExist(err) {
+		t.Fatalf("executing controller snapshot survived release: %v", err)
+	}
+}
+
 func TestLocalReleaseRejectsCandidateChangedAfterReportValidation(t *testing.T) {
 	harness := newLocalReleaseHarness(t, releaseOptions{previous: true, mutateCandidateAfterReports: true})
 	stdout, stderr, exit := harness.runChannels()
@@ -1114,6 +1136,7 @@ type releaseOptions struct {
 	mutateCandidateDuringSmoke  bool
 	mutateCandidateAfterReports bool
 	replaceRestoreCandidate     bool
+	replaceRestoreController    bool
 	changeCommitOnRecheck       bool
 	failSecondPreflight         bool
 	corruptStage                bool
@@ -1124,14 +1147,18 @@ type releaseOptions struct {
 }
 
 type localReleaseHarness struct {
-	t                    *testing.T
-	repo                 string
-	target               string
-	vault                string
-	logFile              string
-	verifyCount          string
-	smokeCandidateRecord string
-	env                  []string
+	t                     *testing.T
+	repo                  string
+	target                string
+	vault                 string
+	logFile               string
+	verifyCount           string
+	smokeCandidateRecord  string
+	controllerRaceRecord  string
+	controller            string
+	controllerSource      string
+	controllerReplacement string
+	env                   []string
 }
 
 func runLocalRelease(t *testing.T, options releaseOptions) (repo, target, logFile, verifyCount string, output []byte, runErr error) {
@@ -1180,6 +1207,9 @@ func newLocalReleaseHarness(t *testing.T, options releaseOptions) *localReleaseH
 	home := installFakePasswdTools(t, repo, binDir)
 	controllerSource := filepath.Join(repo, "fake-release-controller")
 	writeExecutable(t, controllerSource, fakeReleaseController)
+	controllerReplacement := filepath.Join(repo, "fake-release-controller-b")
+	writeExecutable(t, controllerReplacement, "#!/bin/sh\nprintf '%s\\n' controller-b\n")
+	controllerRaceRecord := filepath.Join(repo, "controller-race-record")
 	verifyScript := `#!/bin/sh
 count=0
 if [ -f "$VERIFY_COUNT" ]; then count=$(cat "$VERIFY_COUNT"); fi
@@ -1413,6 +1443,7 @@ exec "$REAL_INSTALL" "$@"
 		"MUTATE_CANDIDATE="+boolString(options.mutateCandidateDuringSmoke),
 		"MUTATE_CANDIDATE_AFTER_REPORTS="+boolString(options.mutateCandidateAfterReports),
 		"REPLACE_RESTORE_CANDIDATE="+boolString(options.replaceRestoreCandidate),
+		"REPLACE_RESTORE_CONTROLLER="+boolString(options.replaceRestoreController),
 		"MUTATE_DEPENDENCY="+boolString(options.mutateDependencyDuringSmoke),
 		"MALFORMED_REPORT="+boolString(options.malformedReport),
 		"CROSS_REPORT_DRIFT="+boolString(options.crossReportDrift),
@@ -1428,6 +1459,8 @@ exec "$REAL_INSTALL" "$@"
 		"EXPECTED_CANDIDATE="+expectedCandidate,
 		"EXPECTED_VAULT="+vault,
 		"FAKE_CONTROLLER_SOURCE="+controllerSource,
+		"CONTROLLER_REPLACEMENT="+controllerReplacement,
+		"CONTROLLER_RACE_RECORD="+controllerRaceRecord,
 		"PASSWD_HOME="+home,
 		"TEST_REPO="+repo,
 		"MAKE=make",
@@ -1435,7 +1468,8 @@ exec "$REAL_INSTALL" "$@"
 		"TUNNEL_HEALTH_URL_FILE="+filepath.Join(repo, "health.url"),
 	)
 	return &localReleaseHarness{t: t, repo: repo, target: target, vault: vault, logFile: logFile, verifyCount: verifyCount,
-		smokeCandidateRecord: filepath.Join(repo, "smoke-candidate-path"), env: env}
+		smokeCandidateRecord: filepath.Join(repo, "smoke-candidate-path"), controllerRaceRecord: controllerRaceRecord,
+		controller: controller, controllerSource: controllerSource, controllerReplacement: controllerReplacement, env: env}
 }
 
 func (h *localReleaseHarness) run(extra ...string) ([]byte, error) {
@@ -1569,11 +1603,11 @@ guide_active() {
 if [[ "${1:-status}" == release ]]; then
   if [[ ! -d "$active" ]]; then
     "$0" prepare "${@:2}" >/dev/null
-    exec "$active/authority" resume
+    exec "$TEST_REPO/scripts/release-activation.sh" resume
   fi
   case "$(cat "$active/state")" in
     prepared)
-      exec "$active/authority" resume
+      exec "$TEST_REPO/scripts/release-activation.sh" resume
       ;;
     pending|accepting|rolling_back)
       guide_active
@@ -1590,6 +1624,18 @@ case "${1:-status}" in
     actual_candidate_sha256="$(shasum -a 256 "$candidate" | awk '{print $1}')"
     [[ "$actual_candidate_sha256" == "$candidate_sha256" ]] || error_line artifact_mismatch 'release artifact does not match'
     authority="$(argument --authority "$@")"
+	    authority_sha256="$(argument --authority-sha256 "$@")"
+	    if [[ "${REPLACE_RESTORE_CONTROLLER:-0}" == 1 ]]; then
+	      cp "$CONTROLLER_REPLACEMENT" "$RELEASE_ACTIVATION_SELECTED_SOURCE"
+	      chmod 755 "$RELEASE_ACTIVATION_SELECTED_SOURCE"
+	      printf 'self=%s\nauthority=%s\nself_hash=%s\nselected_hash_during_swap=%s\n' \
+	        "$0" "$authority" "$(shasum -a 256 "$0" | awk '{print $1}')" \
+	        "$(shasum -a 256 "$RELEASE_ACTIVATION_SELECTED_SOURCE" | awk '{print $1}')" >"$CONTROLLER_RACE_RECORD"
+	      cp "$FAKE_CONTROLLER_SOURCE" "$RELEASE_ACTIVATION_SELECTED_SOURCE"
+	      chmod 755 "$RELEASE_ACTIVATION_SELECTED_SOURCE"
+	    fi
+	    [[ "$(shasum -a 256 "$0" | awk '{print $1}')" == "$authority_sha256" ]] || error_line authority_mismatch 'release controller identity does not match'
+	    [[ "$(shasum -a 256 "$authority" | awk '{print $1}')" == "$authority_sha256" ]] || error_line authority_mismatch 'release controller identity does not match'
 	    target="$(argument --target "$@")"
 	    commit="$(argument --commit "$@")"
 	    dependency_sha256="$(argument --dependency-sha256 "$@")"

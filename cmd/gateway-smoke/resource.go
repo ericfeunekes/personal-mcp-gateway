@@ -42,6 +42,7 @@ const (
 	resourceIdleDuration              = 60 * time.Second
 	resourceControlTime               = 5 * time.Second
 	resourceAckMaxBytes               = 128
+	resourceGrepZeroWidthPattern      = "a*"
 )
 
 type resourceReport struct {
@@ -1376,7 +1377,7 @@ func probeResourceBoundaries(ctx context.Context, session *sdk.ClientSession, fi
 	if err := add(obsidian.ToolGrep, sample); err != nil {
 		return resourceBoundaryReport{}, err
 	}
-	_, report.GrepExactZeroWidthErrorCode, sample, err = grepCall(fixture.grepZeroWidth, "^", true, 0, obsidian.ResponseTooLargeCode)
+	_, report.GrepExactZeroWidthErrorCode, sample, err = grepCall(fixture.grepZeroWidth, resourceGrepZeroWidthPattern, true, 0, obsidian.ResponseTooLargeCode)
 	if err != nil {
 		return resourceBoundaryReport{}, err
 	}

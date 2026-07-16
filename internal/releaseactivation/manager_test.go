@@ -53,6 +53,8 @@ func TestManagerPrepareRequiresFullCommitAndDependencyIdentity(t *testing.T) {
 		{name: "uppercase commit", mutate: func(request *PrepareRequest) { request.Commit = strings.Repeat("A", 40) }},
 		{name: "missing candidate digest", mutate: func(request *PrepareRequest) { request.CandidateSHA256 = "" }},
 		{name: "uppercase candidate digest", mutate: func(request *PrepareRequest) { request.CandidateSHA256 = strings.Repeat("A", 64) }},
+		{name: "missing authority digest", mutate: func(request *PrepareRequest) { request.AuthoritySHA256 = "" }},
+		{name: "uppercase authority digest", mutate: func(request *PrepareRequest) { request.AuthoritySHA256 = strings.Repeat("A", 64) }},
 		{name: "missing dependency", mutate: func(request *PrepareRequest) { request.DependencySHA256 = "" }},
 		{name: "uppercase dependency", mutate: func(request *PrepareRequest) { request.DependencySHA256 = strings.Repeat("A", 64) }},
 	} {
@@ -85,6 +87,75 @@ func TestManagerPrepareRejectsCandidateOutsideValidatedReportTuple(t *testing.T)
 	}
 	if active, inspectErr := manager.Store.Inspect(); inspectErr != nil || active != nil {
 		t.Fatalf("candidate mismatch published state: %#v, %v", active, inspectErr)
+	}
+}
+
+func TestManagerPrepareBindsExecutingControllerToExpectedAuthority(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(t *testing.T, manager *Manager, request *PrepareRequest)
+	}{
+		{name: "executing self differs", mutate: func(_ *testing.T, manager *Manager, _ *PrepareRequest) {
+			manager.ControllerSHA256 = strings.Repeat("a", 64)
+		}},
+		{name: "authority source differs", mutate: func(t *testing.T, _ *Manager, request *PrepareRequest) {
+			replacement := filepath.Join(t.TempDir(), "replacement-controller")
+			if err := os.WriteFile(replacement, []byte("replacement-controller"), 0o500); err != nil {
+				t.Fatal(err)
+			}
+			request.AuthorityPath = replacement
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manager, runtime, request := newManagerFixture(t, true)
+			test.mutate(t, manager, &request)
+			prepared, err := manager.Prepare(context.Background(), request)
+			if got := SanitizedError(err); prepared != nil || got == nil || got.Code != ErrorAuthorityMismatch {
+				t.Fatalf("Prepare = %#v, %v; want authority_mismatch", prepared, err)
+			}
+			if len(runtime.calls) != 0 {
+				t.Fatalf("authority mismatch reached runtime: %v", runtime.calls)
+			}
+			if active, inspectErr := manager.Store.Inspect(); inspectErr != nil || active != nil {
+				t.Fatalf("authority mismatch published state: %#v, %v", active, inspectErr)
+			}
+		})
+	}
+}
+
+func TestManagerActiveOperationsRequireExecutingSelfDigest(t *testing.T) {
+	for _, operation := range []string{"status", "resume", "accept", "rollback"} {
+		t.Run(operation, func(t *testing.T) {
+			manager, runtime, request := newManagerFixture(t, true)
+			prepared, err := manager.Prepare(context.Background(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runtime.calls = nil
+			manager.ControllerSHA256 = strings.Repeat("a", 64)
+
+			var active *Manifest
+			switch operation {
+			case "status":
+				active, err = manager.Status(context.Background())
+			case "resume":
+				active, err = manager.Resume(context.Background(), prepared.ID)
+			case "accept":
+				active, err = manager.Accept(context.Background(), prepared.ID)
+			case "rollback":
+				active, err = manager.Rollback(context.Background(), prepared.ID)
+			}
+			if got := SanitizedError(err); active == nil || active.ID != prepared.ID || got == nil || got.Code != ErrorAuthorityMismatch {
+				t.Fatalf("%s = %#v, %v; want retained authority_mismatch", operation, active, err)
+			}
+			if len(runtime.calls) != 0 {
+				t.Fatalf("%s authority mismatch emitted effects: %v", operation, runtime.calls)
+			}
+			stored, inspectErr := manager.Store.Inspect()
+			if inspectErr != nil || stored == nil || stored.ID != prepared.ID || stored.State != StatePrepared {
+				t.Fatalf("stored after %s = %#v, %v", operation, stored, inspectErr)
+			}
+		})
 	}
 }
 
@@ -731,14 +802,18 @@ func newManagerFixture(t *testing.T, previous bool) (*Manager, *fakeManagerRunti
 			t.Fatal(err)
 		}
 	}
-	manager := &Manager{Store: store, Runtime: runtime, ControllerPath: authority}
+	authoritySHA256, err := HashRegular(authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{Store: store, Runtime: runtime, ControllerPath: authority, ControllerSHA256: authoritySHA256}
 	candidatePath := write("candidate", "candidate", 0o700)
 	candidateSHA256, err := HashRegular(candidatePath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := PrepareRequest{
-		Commit: strings.Repeat("1", 40), CandidateSHA256: candidateSHA256, DependencySHA256: strings.Repeat("9", 64),
+		Commit: strings.Repeat("1", 40), CandidateSHA256: candidateSHA256, AuthoritySHA256: authoritySHA256, DependencySHA256: strings.Repeat("9", 64),
 		CandidatePath: candidatePath, AuthorityPath: authority,
 		TargetPath: target, EffectiveUID: 501, LaunchAgentLabel: "local.test.gateway",
 		PlistPath: write("launch.plist", "plist", 0o600), WrapperPath: write("wrapper", "wrapper", 0o700),

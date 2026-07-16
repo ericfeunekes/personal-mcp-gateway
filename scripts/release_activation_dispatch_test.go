@@ -62,6 +62,105 @@ func TestReleaseActivationDispatcherExecsPinnedResume(t *testing.T) {
 	}
 }
 
+func TestReleaseActivationDispatcherExecutesPrivateReadOnlySnapshotAndRewritesAuthority(t *testing.T) {
+	repo, binDir, _ := newDispatcherRepo(t)
+	controller := filepath.Join(repo, "controller")
+	record := filepath.Join(repo, "snapshot-record")
+	writeExecutable(t, controller, `#!/bin/bash
+set -euo pipefail
+authority=""
+while (( $# > 0 )); do
+  if [[ "$1" == --authority && $# -gt 1 ]]; then authority="$2"; shift 2; continue; fi
+  if [[ "$1" == --authority=* ]]; then authority="${1#--authority=}"; fi
+  shift
+done
+printf 'self=%s\nauthority=%s\nsource=%s\nself_mode=%s\nparent_mode=%s\n' \
+  "$0" "$authority" "$RELEASE_ACTIVATION_SELECTED_SOURCE" \
+  "$(/usr/bin/stat -f %Lp "$0")" "$(/usr/bin/stat -f %Lp "$(dirname "$0")")" >"$SNAPSHOT_RECORD"
+printf '%s\n' state=prepared
+`)
+	stdout, stderr, exit := runDispatcherEnv(t, repo, binDir, []string{
+		"RELEASE_ACTIVATION_CANDIDATE=" + controller,
+		"SNAPSHOT_RECORD=" + record,
+	}, "release", "--authority", controller, "--authority-sha256", strings.Repeat("a", 64))
+	if exit != 0 || stdout != "state=prepared\n" || stderr != "" {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+	values := readKeyValueFile(t, record)
+	if values["self"] == controller || values["self"] == "" || values["authority"] != values["self"] {
+		t.Fatalf("snapshot authority binding = %#v, original=%q", values, controller)
+	}
+	if values["source"] != controller || values["self_mode"] != "500" || values["parent_mode"] != "700" {
+		t.Fatalf("snapshot provenance/modes = %#v", values)
+	}
+	if _, err := os.Lstat(values["self"]); !os.IsNotExist(err) {
+		t.Fatalf("controller snapshot was not cleaned up: %v", err)
+	}
+}
+
+func TestReleaseActivationDispatcherCurrentAndActiveReplaceRestoreCannotRetargetSnapshot(t *testing.T) {
+	for _, activeSelection := range []bool{false, true} {
+		name := "current"
+		if activeSelection {
+			name = "active"
+		}
+		t.Run(name, func(t *testing.T) {
+			repo, binDir, home := newDispatcherRepo(t)
+			original := filepath.Join(repo, "controller")
+			if activeSelection {
+				original = filepath.Join(home, "Library", "Application Support", "personal-mcp-gateway", "release", "obsidian", "active", "authority")
+			}
+			restore := filepath.Join(repo, "controller-a")
+			replacement := filepath.Join(repo, "controller-b")
+			record := filepath.Join(repo, "replace-restore-record")
+			controllerA := `#!/bin/bash
+set -euo pipefail
+authority="$0"
+while (( $# > 0 )); do
+  if [[ "$1" == --authority && $# -gt 1 ]]; then authority="$2"; shift 2; continue; fi
+  shift
+done
+/bin/cp "$REPLACEMENT" "$RELEASE_ACTIVATION_SELECTED_SOURCE"
+/bin/chmod 755 "$RELEASE_ACTIVATION_SELECTED_SOURCE"
+printf 'self=%s\nauthority=%s\nself_hash=%s\nselected_hash_during_swap=%s\n' \
+  "$0" "$authority" "$(/usr/bin/shasum -a 256 "$0" | /usr/bin/awk '{print $1}')" \
+  "$(/usr/bin/shasum -a 256 "$RELEASE_ACTIVATION_SELECTED_SOURCE" | /usr/bin/awk '{print $1}')" >"$SNAPSHOT_RECORD"
+/bin/cp "$RESTORE" "$RELEASE_ACTIVATION_SELECTED_SOURCE"
+/bin/chmod 755 "$RELEASE_ACTIVATION_SELECTED_SOURCE"
+printf '%s\n' controller-a
+`
+			writeExecutable(t, restore, controllerA)
+			writeExecutable(t, original, controllerA)
+			writeExecutable(t, replacement, "#!/bin/sh\nprintf '%s\\n' controller-b\n")
+			extra := []string{"REPLACEMENT=" + replacement, "RESTORE=" + restore, "SNAPSHOT_RECORD=" + record}
+			if !activeSelection {
+				extra = append(extra, "RELEASE_ACTIVATION_CANDIDATE="+original)
+			}
+			args := []string{"status"}
+			if !activeSelection {
+				args = []string{"release", "--authority", original, "--authority-sha256", mustHash(t, restore)}
+			}
+			stdout, stderr, exit := runDispatcherEnv(t, repo, binDir, extra, args...)
+			if exit != 0 || stdout != "controller-a\n" || stderr != "" {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+			}
+			values := readKeyValueFile(t, record)
+			if values["self"] == original || values["self"] == "" {
+				t.Fatalf("executed mutable selected path: %#v", values)
+			}
+			if !activeSelection && values["authority"] != values["self"] {
+				t.Fatalf("authority was not rewritten to executing snapshot: %#v", values)
+			}
+			if values["self_hash"] != mustHash(t, restore) || values["selected_hash_during_swap"] != mustHash(t, replacement) {
+				t.Fatalf("replace/restore retargeted snapshot: %#v", values)
+			}
+			if mustHash(t, original) != mustHash(t, restore) {
+				t.Fatal("selected controller was not restored")
+			}
+		})
+	}
+}
+
 func TestReleaseActivationDispatcherFailsWithLiteralOnMalformedActive(t *testing.T) {
 	repo, binDir, home := newDispatcherRepo(t)
 	active := filepath.Join(home, "Library", "Application Support", "personal-mcp-gateway", "release", "obsidian", "active")
@@ -265,6 +364,23 @@ func TestReleaseActivationDispatcherRetriesAuthorityMismatchOnlyOnce(t *testing.
 func runDispatcher(t *testing.T, repo, binDir string, args ...string) (stdout, stderr string, exit int) {
 	t.Helper()
 	return runDispatcherEnv(t, repo, binDir, nil, args...)
+}
+
+func readKeyValueFile(t *testing.T, path string) map[string]string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := make(map[string]string)
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			t.Fatalf("malformed key/value line %q", line)
+		}
+		values[key] = value
+	}
+	return values
 }
 
 func runDispatcherEnv(t *testing.T, repo, binDir string, extraEnv []string, args ...string) (stdout, stderr string, exit int) {

@@ -358,7 +358,7 @@ func TestPrepareDerivesPrivateBinding(t *testing.T) {
 	home := t.TempDir()
 	repo := filepath.Join(home, "repo")
 	args := []string{
-		"prepare", "--commit", strings.Repeat("a", 40), "--candidate-sha256", testHash, "--dependency-sha256", testDependency, "--candidate", filepath.Join(repo, "candidate"),
+		"prepare", "--commit", strings.Repeat("a", 40), "--candidate-sha256", testHash, "--authority-sha256", testHash, "--dependency-sha256", testDependency, "--candidate", filepath.Join(repo, "candidate"),
 		"--authority", filepath.Join(repo, "authority"), "--target", filepath.Join(home, "bin", "gateway"),
 		"--label", "test.label", "--repo-root", repo, "--environment", filepath.Join(repo, ".env.local"),
 		"--health-url-file", filepath.Join(home, "health.url"),
@@ -367,7 +367,7 @@ func TestPrepareDerivesPrivateBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := manager.prepared
-	if got.CandidateSHA256 != testHash || got.EffectiveUID != 501 || got.PlistPath != filepath.Join(home, "Library", "LaunchAgents", "test.label.plist") ||
+	if got.CandidateSHA256 != testHash || got.AuthoritySHA256 != testHash || got.EffectiveUID != 501 || got.PlistPath != filepath.Join(home, "Library", "LaunchAgents", "test.label.plist") ||
 		got.WrapperPath != filepath.Join(repo, "scripts", "run-obsidian-tunnel.sh") ||
 		got.MCPWrapperPath != filepath.Join(repo, "scripts", "run-obsidian-mcp-stdio.sh") {
 		t.Fatalf("derived request = %+v", got)
@@ -398,6 +398,14 @@ func TestPrepareRequiresCanonicalCommitAndDependencyIdentity(t *testing.T) {
 			}
 			return args
 		}},
+		{name: "missing authority digest", mutate: func(args []string) []string {
+			for i := range args {
+				if args[i] == "--authority-sha256" {
+					return append(args[:i], args[i+2:]...)
+				}
+			}
+			return args
+		}},
 		{name: "short commit", mutate: func(args []string) []string {
 			for i := range args {
 				if args[i] == "--commit" {
@@ -422,6 +430,14 @@ func TestPrepareRequiresCanonicalCommitAndDependencyIdentity(t *testing.T) {
 			}
 			return args
 		}},
+		{name: "uppercase authority digest", mutate: func(args []string) []string {
+			for i := range args {
+				if args[i] == "--authority-sha256" {
+					args[i+1] = strings.Repeat("A", 64)
+				}
+			}
+			return args
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			args := test.mutate(append([]string(nil), valid...))
@@ -436,6 +452,7 @@ func validPrepareArgs(home, repo string) []string {
 	return []string{
 		"--commit", "0123456789abcdef0123456789abcdef01234567",
 		"--candidate-sha256", testHash,
+		"--authority-sha256", testHash,
 		"--dependency-sha256", testDependency,
 		"--candidate", filepath.Join(repo, "candidate"),
 		"--authority", filepath.Join(repo, "authority"),

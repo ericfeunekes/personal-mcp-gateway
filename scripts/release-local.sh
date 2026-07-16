@@ -123,6 +123,7 @@ if [[ -e "$GATEWAY_BIN" && "$candidate" -ef "$GATEWAY_BIN" ]]; then
 fi
 
 candidate_hash="$(shasum -a 256 "$candidate" 2>/dev/null | awk '{print $1}')" || fail release_build_failed 'release build failed'
+controller_hash="$(shasum -a 256 "$controller" 2>/dev/null | awk '{print $1}')" || fail release_build_failed 'release build failed'
 dependency_hash="$(dependency_digest)" || fail release_build_failed 'release dependency identity failed'
 report_dir="$(mktemp -d "/tmp/personal-mcp-gateway-release-reports.XXXXXX")" || fail release_smoke_failed 'release report setup failed'
 chmod 700 "$report_dir" 2>/dev/null || fail release_smoke_failed 'release report setup failed'
@@ -189,6 +190,10 @@ current_dependency_hash="$(dependency_digest)" || fail release_changed 'release 
 if [[ "$current_dependency_hash" != "$dependency_hash" ]]; then
   fail release_changed 'release inputs changed during validation'
 fi
+current_controller_hash="$(shasum -a 256 "$controller" 2>/dev/null | awk '{print $1}')" || fail release_changed 'release inputs changed during validation'
+if [[ "$current_controller_hash" != "$controller_hash" ]]; then
+  fail release_changed 'release inputs changed during validation'
+fi
 if ! env GOCACHE="${GOCACHE:-$repo_root/.gocache}" "$go_command" run ./cmd/gateway-smoke \
   --gateway-bin "$smoke_candidate" --repo-root "$repo_root" \
   --candidate-commit "$commit" --candidate-sha256 "$candidate_hash" \
@@ -218,6 +223,7 @@ report_dir=""
 exec "$script_dir/release-activation.sh" release \
   --commit "$commit" \
   --candidate-sha256 "$candidate_hash" \
+  --authority-sha256 "$controller_hash" \
   --dependency-sha256 "$dependency_hash" \
   --candidate "$candidate" \
   --authority "$controller" \

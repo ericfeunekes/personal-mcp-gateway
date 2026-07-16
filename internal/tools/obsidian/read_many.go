@@ -58,6 +58,14 @@ type readManyCheckpoint struct {
 	items []ReadManyItem
 }
 
+type readManyAttemptProvenance uint8
+
+const (
+	readManyAttemptItemLimit readManyAttemptProvenance = iota
+	readManyAttemptAggregateLimit
+	readManyAttemptResponseLimit
+)
+
 func (t *Tools) ReadMany(ctx context.Context, _ *sdk.CallToolRequest, input ReadManyInput) (*sdk.CallToolResult, ReadManyOutput, error) {
 	toolCtx, cancel := context.WithTimeout(ctx, limits.ToolOperationTimeout)
 	defer cancel()
@@ -96,18 +104,23 @@ func (t *Tools) readManyPage(ctx context.Context, input ReadManyInput) (*sdk.Cal
 		}
 		remaining := aggregateMax - aggregateUsed
 		if remaining <= 0 {
-			return readManyPartialResult(t.vault, queryHash, checkpoints, work, CursorStopByteLimit, len(prepared))
+			return readManyPartialResult(t.vault, queryHash, checkpoints, work, CursorStopByteLimit, len(prepared), &fsx.Error{Code: fsx.CodeLimitExceeded})
 		}
 
 		index := state.NextIndex
 		request := prepared[index]
 		innerCursor, innerMax, hasInner := currentReadManyCursor(state)
-		attemptMax := min(request.effectiveMax, remaining)
+		attemptProvenance := readManyAttemptItemLimit
+		attemptMax := request.effectiveMax
+		if remaining < attemptMax {
+			attemptMax = remaining
+			attemptProvenance = readManyAttemptAggregateLimit
+		}
 		if request.maxBytesErr != nil {
 			attemptMax = request.request.MaxBytes
+			attemptProvenance = readManyAttemptItemLimit
 		}
 		if hasInner {
-			attemptMax = min(request.effectiveMax, remaining)
 			if attemptMax != innerMax {
 				rebased, rebaseErr := t.rebaseCurrentReadManyCursor(ctx, request, state.Observations[index], innerCursor, innerMax, attemptMax)
 				if rebaseErr != nil {
@@ -131,7 +144,6 @@ func (t *Tools) readManyPage(ctx context.Context, input ReadManyInput) (*sdk.Cal
 			readInput.Selector = &selector
 		}
 
-		adaptedForResponse := false
 		for {
 			_, readOut, meta, callErr := t.readPageWithMeta(ctx, readInput)
 			addReadManyWork(&work, readOut.Coverage)
@@ -142,12 +154,19 @@ func (t *Tools) readManyPage(ctx context.Context, input ReadManyInput) (*sdk.Cal
 			if callErr != nil {
 				return readManyErrorResult(callErr, items, work, index, len(prepared)-index)
 			}
+			if !readOut.OK && readOut.Error != nil && readOut.Error.Code == ResponseTooLargeCode {
+				return readManyPartialResult(t.vault, queryHash, checkpoints, work, CursorStopResponseLimit, len(prepared), ErrResponseTooLarge)
+			}
+			if !readOut.OK && readOut.Error != nil && readOut.Error.Code == string(fsx.CodeLimitExceeded) && request.maxBytesErr == nil {
+				switch attemptProvenance {
+				case readManyAttemptAggregateLimit:
+					return readManyPartialResult(t.vault, queryHash, checkpoints, work, CursorStopByteLimit, len(prepared), &fsx.Error{Code: fsx.CodeLimitExceeded})
+				case readManyAttemptResponseLimit:
+					return readManyPartialResult(t.vault, queryHash, checkpoints, work, CursorStopResponseLimit, len(prepared), ErrResponseTooLarge)
+				}
+			}
 			if !readOut.OK && !readManyItemLocal(readOut.Error) {
 				return readManyErrorResult(toolErrorAsError(readOut.Error), items, work, index, len(prepared)-index)
-			}
-			if !readOut.OK && readOut.Error != nil && readOut.Error.Code == string(fsx.CodeLimitExceeded) &&
-				request.maxBytesErr == nil && readInput.MaxBytes < request.effectiveMax {
-				return readManyErrorResult(&fsx.Error{Code: fsx.CodeLimitExceeded}, items, work, index, len(prepared)-index)
 			}
 
 			observation, observationErr := makeReadManyObservation(index, readOut, meta, readInput.MaxBytes)
@@ -158,7 +177,7 @@ func (t *Tools) readManyPage(ctx context.Context, input ReadManyInput) (*sdk.Cal
 			candidateItem := readManyItem(index, readOut)
 			candidateItems := appendReadManyItem(items, candidateItem)
 			candidateStop := readManyCandidateStop(readOut)
-			if adaptedForResponse && readOut.OK && readOut.Coverage.Continuation == CoverageContinuationCursor {
+			if attemptProvenance == readManyAttemptResponseLimit && readOut.OK && readOut.Coverage.Continuation == CoverageContinuationCursor {
 				candidateStop = CursorStopResponseLimit
 			}
 			candidateOut, fits, size, fitErr := buildReadManyCandidate(t.vault, queryHash, candidateState, candidateItems, work, len(prepared), candidateStop)
@@ -167,7 +186,7 @@ func (t *Tools) readManyPage(ctx context.Context, input ReadManyInput) (*sdk.Cal
 			}
 			if !fits {
 				if len(items) > 0 {
-					return readManyPartialResult(t.vault, queryHash, checkpoints, work, CursorStopResponseLimit, len(prepared))
+					return readManyPartialResult(t.vault, queryHash, checkpoints, work, CursorStopResponseLimit, len(prepared), ErrResponseTooLarge)
 				}
 				if !readOut.OK || meta.SelectedBytes <= 1 {
 					return readManyErrorResult(ErrResponseTooLarge, nil, work, index, len(prepared)-index)
@@ -184,7 +203,7 @@ func (t *Tools) readManyPage(ctx context.Context, input ReadManyInput) (*sdk.Cal
 					readInput.Cursor = rebased
 				}
 				readInput.MaxBytes = lower
-				adaptedForResponse = true
+				attemptProvenance = readManyAttemptResponseLimit
 				continue
 			}
 
@@ -197,7 +216,7 @@ func (t *Tools) readManyPage(ctx context.Context, input ReadManyInput) (*sdk.Cal
 				return successCallResult(), candidateOut, nil
 			}
 			if aggregateUsed >= aggregateMax && state.NextIndex < len(prepared) {
-				return readManyPartialResult(t.vault, queryHash, checkpoints, work, CursorStopByteLimit, len(prepared))
+				return readManyPartialResult(t.vault, queryHash, checkpoints, work, CursorStopByteLimit, len(prepared), &fsx.Error{Code: fsx.CodeLimitExceeded})
 			}
 			break
 		}
@@ -210,7 +229,7 @@ func (t *Tools) readManyPage(ctx context.Context, input ReadManyInput) (*sdk.Cal
 	if fits, _, fitErr := readManyOutputFits(out); fitErr != nil {
 		return readManyErrorResult(fitErr, nil, work, len(prepared), 0)
 	} else if !fits {
-		return readManyPartialResult(t.vault, queryHash, checkpoints, work, CursorStopResponseLimit, len(prepared))
+		return readManyPartialResult(t.vault, queryHash, checkpoints, work, CursorStopResponseLimit, len(prepared), ErrResponseTooLarge)
 	}
 	return successCallResult(), out, nil
 }
@@ -535,7 +554,7 @@ func readManyOutputFits(out ReadManyOutput) (bool, int, error) {
 	return structured && complete, size, err
 }
 
-func readManyPartialResult(sealer cursorSealer, query CursorQueryHash, checkpoints []readManyCheckpoint, work CoverageWork, stopped CursorStop, requestCount int) (*sdk.CallToolResult, ReadManyOutput, error) {
+func readManyPartialResult(sealer cursorSealer, query CursorQueryHash, checkpoints []readManyCheckpoint, work CoverageWork, stopped CursorStop, requestCount int, terminalErr error) (*sdk.CallToolResult, ReadManyOutput, error) {
 	for i := len(checkpoints) - 1; i >= 0; i-- {
 		checkpoint := checkpoints[i]
 		if len(checkpoint.items) == 0 {
@@ -553,7 +572,7 @@ func readManyPartialResult(sealer cursorSealer, query CursorQueryHash, checkpoin
 	if len(checkpoints) > 0 {
 		next = checkpoints[0].state.NextIndex
 	}
-	return readManyErrorResult(ErrResponseTooLarge, nil, work, next, requestCount-next)
+	return readManyErrorResult(terminalErr, nil, work, next, requestCount-next)
 }
 
 func lowerReadManyAttempt(current, selected, excess int) int {

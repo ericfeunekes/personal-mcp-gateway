@@ -7,6 +7,7 @@ current_controller="${RELEASE_ACTIVATION_CANDIDATE:-$repo_root/.build/release-ac
 readonly output_limit=65536
 readonly capture_limit=$((output_limit + 1))
 readonly controller_timeout_seconds=720
+readonly controller_artifact_limit=$((256 * 1024 * 1024))
 
 fail_literal() {
   printf '%s\n' 'error=authority_missing message=the release controller is unavailable' >&2
@@ -71,6 +72,7 @@ stdout_done="$channel_dir/stdout.done"
 stderr_done="$channel_dir/stderr.done"
 watchdog_pipe="$channel_dir/watchdog.pipe"
 watchdog_done="$channel_dir/watchdog.done"
+controller_snapshot="$channel_dir/controller"
 stdout_capture_pid=""
 stderr_capture_pid=""
 controller_pid=""
@@ -101,7 +103,7 @@ stop_capture_processes() {
 cleanup() {
   stop_controller_processes
   stop_capture_processes
-  /bin/rm -f -- "$stdout_file" "$stderr_file" "$stdout_pipe" "$stderr_pipe" "$stdout_done" "$stderr_done" "$watchdog_pipe" "$watchdog_done" 2>/dev/null || true
+  /bin/rm -f -- "$controller_snapshot" "$stdout_file" "$stderr_file" "$stdout_pipe" "$stderr_pipe" "$stdout_done" "$stderr_done" "$watchdog_pipe" "$watchdog_done" 2>/dev/null || true
   /bin/rmdir -- "$channel_dir" 2>/dev/null || true
 }
 trap cleanup EXIT HUP INT TERM
@@ -183,6 +185,56 @@ stop_controller_watchdog() {
   fi
 }
 
+snapshot_controller() {
+  /bin/rm -f -- "$controller_snapshot" 2>/dev/null || return 1
+  if [[ ! -f "$selected" || -L "$selected" || ! -x "$selected" ]]; then
+    return 1
+  fi
+  if ! (
+    ulimit -f $((controller_artifact_limit / 512))
+    /bin/cp -- "$selected" "$controller_snapshot"
+  ) >/dev/null 2>&1; then
+    /bin/rm -f -- "$controller_snapshot" 2>/dev/null || true
+    return 1
+  fi
+  if ! /bin/chmod 500 "$controller_snapshot" 2>/dev/null; then
+    /bin/rm -f -- "$controller_snapshot" 2>/dev/null || true
+    return 1
+  fi
+  if [[ ! -f "$controller_snapshot" || -L "$controller_snapshot" || ! -x "$controller_snapshot" ]]; then
+    /bin/rm -f -- "$controller_snapshot" 2>/dev/null || true
+    return 1
+  fi
+  local snapshot_size
+  snapshot_size="$(/usr/bin/wc -c <"$controller_snapshot" 2>/dev/null)" || return 1
+  if (( snapshot_size > controller_artifact_limit )); then
+    /bin/rm -f -- "$controller_snapshot" 2>/dev/null || true
+    return 1
+  fi
+}
+
+rewrite_authority_source() {
+  local index
+  attempt_args=("${child_args[@]}")
+  case "${attempt_args[0]:-}" in
+    prepare|release) ;;
+    *) return 0 ;;
+  esac
+  for (( index = 1; index < ${#attempt_args[@]}; index++ )); do
+    case "${attempt_args[$index]}" in
+      --authority)
+        if (( index + 1 < ${#attempt_args[@]} )); then
+          attempt_args[$((index + 1))]="$controller_snapshot"
+          index=$((index + 1))
+        fi
+        ;;
+      --authority=*)
+        attempt_args[$index]="--authority=$controller_snapshot"
+        ;;
+    esac
+  done
+}
+
 child_args=("$@")
 if [[ "$command" == "resume-if-active" ]]; then
   child_args=(release)
@@ -203,12 +255,16 @@ while (( attempt < 2 )); do
       ;;
   esac
 
+  if ! snapshot_controller; then
+    fail_literal
+  fi
+  rewrite_authority_source
   if ! start_capture_processes; then
     fail_literal
   fi
   child_status=0
   set -m
-  "$selected" "${child_args[@]}" >"$stdout_pipe" 2>"$stderr_pipe" &
+  RELEASE_ACTIVATION_SELECTED_SOURCE="$selected" "$controller_snapshot" "${attempt_args[@]}" >"$stdout_pipe" 2>"$stderr_pipe" &
   controller_pid=$!
   set +m
   if ! start_controller_watchdog "$controller_pid"; then

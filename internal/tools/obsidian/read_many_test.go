@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -366,6 +367,166 @@ func TestReadManyAdaptiveFitStaysWithinCompleteSDKEnvelope(t *testing.T) {
 	}
 }
 
+func TestReadManyAggregateResidualReturnsCheckpointAcrossUnicodeSelectorsWithoutReplay(t *testing.T) {
+	tests := []struct {
+		name        string
+		markdown    string
+		selector    *ReadSelector
+		wantContent string
+		wantOutline []OutlineEntry
+	}{
+		{name: "content", markdown: "βeta", selector: &ReadSelector{Kind: SelectorContent}, wantContent: "βeta"},
+		{name: "setext heading", markdown: "βeta\n====\nbody\n# Next\n", selector: &ReadSelector{Kind: SelectorHeading, Heading: "βeta"}, wantContent: "βeta\n====\nbody\n"},
+		{name: "block", markdown: "βeta ^proof\n", selector: &ReadSelector{Kind: SelectorBlock, BlockID: "proof"}, wantContent: "βeta ^proof\n"},
+		{
+			name: "outline", markdown: "# βeta\n## Child\n", selector: &ReadSelector{Kind: SelectorOutline},
+			wantOutline: []OutlineEntry{{Line: 1, Level: 1, Text: "βeta"}, {Line: 2, Level: 2, Text: "Child"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeReadFixture(t, root, "first.md", "123456789")
+			writeReadFixture(t, root, "selected.md", tt.markdown)
+			tools := newReadTools(t, root)
+			input := ReadManyInput{
+				Requests: []ReadRequest{
+					{Path: "first.md", MaxBytes: 9},
+					{Path: "selected.md", Selector: tt.selector, MaxBytes: 64},
+				},
+				MaxBytes: 10,
+			}
+
+			var content strings.Builder
+			var outline []OutlineEntry
+			completed := false
+			for page := 0; page < 10; page++ {
+				result, out, err := tools.ReadMany(context.Background(), nil, input)
+				if err != nil || result.IsError || !out.OK {
+					t.Fatalf("page %d result=%#v out=%#v err=%v", page, result, out, err)
+				}
+				if size, sizeErr := CompleteSDKResultBytes(result, out); sizeErr != nil || size > MaxSDKResultBytes {
+					t.Fatalf("page %d SDK size=%d err=%v", page, size, sizeErr)
+				}
+
+				if page == 0 {
+					if len(out.Items) != 1 || out.Items[0].Index != 0 || out.Items[0].Content == nil || *out.Items[0].Content != "123456789" ||
+						out.NextRequestIndex != 1 || out.RemainingRequestCount != 1 || out.Coverage.StoppedBy != string(CursorStopByteLimit) || out.Coverage.NextCursor == "" {
+						t.Fatalf("aggregate fallback = %#v", out)
+					}
+					state, decodeErr := DecodeCursorState[readManyCursorState](tools.vault, out.Coverage.NextCursor, ToolReadMany, mustReadManyQueryHash(t, input))
+					if decodeErr != nil || state.NextIndex != 1 || len(state.Observations) != 1 {
+						t.Fatalf("checkpoint state=%#v err=%v", state, decodeErr)
+					}
+				} else {
+					for _, item := range out.Items {
+						if item.Index != 1 || !item.OK {
+							t.Fatalf("page %d replayed or failed item: %#v", page, item)
+						}
+						if item.Content != nil {
+							content.WriteString(*item.Content)
+						}
+						if item.Outline != nil {
+							outline = append(outline, (*item.Outline)...)
+						}
+					}
+				}
+
+				if out.Coverage.Continuation == CoverageContinuationComplete {
+					completed = true
+					break
+				}
+				if out.Coverage.NextCursor == "" {
+					t.Fatalf("page %d missing cursor: %#v", page, out)
+				}
+				input.Cursor = out.Coverage.NextCursor
+			}
+			if !completed {
+				t.Fatal("selector did not complete")
+			}
+			if got := content.String(); got != tt.wantContent {
+				t.Fatalf("content = %q, want %q", got, tt.wantContent)
+			}
+			if !reflect.DeepEqual(outline, tt.wantOutline) {
+				t.Fatalf("outline = %#v, want %#v", outline, tt.wantOutline)
+			}
+		})
+	}
+}
+
+func TestReadManyResponseLimitUsesProgressAndTerminalErrorWithoutCheckpoint(t *testing.T) {
+	root := t.TempDir()
+	writeReadFixture(t, root, "first.md", "first")
+	tools := newReadTools(t, root)
+	selector := &ReadSelector{Kind: SelectorOutline}
+
+	// Find the largest indivisible Unicode outline entry that still fits a
+	// direct read response. The read_many wrapper is larger, so this fixture
+	// forces its response adaptation to a byte cap that cannot advance.
+	best := 0
+	for low, high := 1, MaxSDKResultBytes; low <= high; {
+		middle := low + (high-low)/2
+		writeReadFixture(t, root, "outline.md", "# "+strings.Repeat("β", middle)+"\n")
+		_, out, err := tools.Read(context.Background(), nil, ReadInput{Path: "outline.md", Selector: selector, MaxBytes: MaxReadBytes})
+		if err != nil {
+			t.Fatalf("direct read at %d runes: %v", middle, err)
+		}
+		if out.OK {
+			best = middle
+			low = middle + 1
+			continue
+		}
+		if out.Error == nil || out.Error.Code != ResponseTooLargeCode {
+			t.Fatalf("direct read at %d runes = %#v", middle, out)
+		}
+		high = middle - 1
+	}
+	if best == 0 || best == MaxSDKResultBytes {
+		t.Fatalf("could not locate direct response boundary: best=%d", best)
+	}
+
+	writeReadFixture(t, root, "outline.md", "# "+strings.Repeat("β", best)+"\n")
+	_, adapted, err := tools.ReadMany(context.Background(), nil, ReadManyInput{
+		Requests: []ReadRequest{{Path: "outline.md", Selector: selector, MaxBytes: MaxReadBytes}},
+		MaxBytes: MaxReadManyBytes,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertReadManyTopError(t, adapted, ResponseTooLargeCode)
+	if len(adapted.Items) != 0 || adapted.NextRequestIndex != 0 {
+		t.Fatalf("response-adapted terminal result = %#v", adapted)
+	}
+
+	writeReadFixture(t, root, "outline.md", "# "+strings.Repeat("β", best+1)+"\n")
+	input := ReadManyInput{
+		Requests: []ReadRequest{
+			{Path: "first.md", MaxBytes: 5},
+			{Path: "outline.md", Selector: selector, MaxBytes: MaxReadBytes},
+		},
+		MaxBytes: MaxReadManyBytes,
+	}
+	result, first, err := tools.ReadMany(context.Background(), nil, input)
+	if err != nil || result.IsError || !first.OK || len(first.Items) != 1 || first.Items[0].Index != 0 ||
+		first.NextRequestIndex != 1 || first.Coverage.StoppedBy != string(CursorStopResponseLimit) || first.Coverage.NextCursor == "" {
+		t.Fatalf("response progress fallback result=%#v out=%#v err=%v", result, first, err)
+	}
+	if size, sizeErr := CompleteSDKResultBytes(result, first); sizeErr != nil || size > MaxSDKResultBytes {
+		t.Fatalf("response fallback SDK size=%d err=%v", size, sizeErr)
+	}
+
+	input.Cursor = first.Coverage.NextCursor
+	_, resumed, err := tools.ReadMany(context.Background(), nil, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertReadManyTopError(t, resumed, ResponseTooLargeCode)
+	if len(resumed.Items) != 0 || resumed.NextRequestIndex != 1 {
+		t.Fatalf("resumed terminal result = %#v", resumed)
+	}
+}
+
 func TestReadManyDistinguishesAggregateFromPerItemNonAdvancingLimit(t *testing.T) {
 	root := t.TempDir()
 	writeReadFixture(t, root, "unicode.md", "βeta")
@@ -381,6 +542,24 @@ func TestReadManyDistinguishesAggregateFromPerItemNonAdvancingLimit(t *testing.T
 	})
 	if err != nil || !item.OK || len(item.Items) != 1 || item.Items[0].OK || item.Items[0].Error == nil || item.Items[0].Error.Code != string(fsx.CodeLimitExceeded) || item.Coverage.Continuation != CoverageContinuationComplete {
 		t.Fatalf("item-limited batch = %#v err=%v", item, err)
+	}
+
+	writeReadFixture(t, root, "nested.md", "aβ")
+	nestedInput := ReadManyInput{
+		Requests: []ReadRequest{{Path: "nested.md", MaxBytes: 10}}, MaxBytes: 1,
+	}
+	_, first, err := tools.ReadMany(context.Background(), nil, nestedInput)
+	if err != nil || !first.OK || len(first.Items) != 1 || first.Items[0].Content == nil || *first.Items[0].Content != "a" || first.Coverage.NextCursor == "" {
+		t.Fatalf("nested first page = %#v err=%v", first, err)
+	}
+	nestedInput.Cursor = first.Coverage.NextCursor
+	_, resumed, err := tools.ReadMany(context.Background(), nil, nestedInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertReadManyTopError(t, resumed, string(fsx.CodeLimitExceeded))
+	if len(resumed.Items) != 0 || resumed.NextRequestIndex != 0 {
+		t.Fatalf("nested no-checkpoint result = %#v", resumed)
 	}
 }
 

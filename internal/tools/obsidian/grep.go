@@ -445,13 +445,16 @@ func (g *grepRun) scanFile(ctx context.Context, entry fsx.WalkFile, partial *gre
 			pending = pending[1:]
 		}
 
-		var indexes [][]int
-		if line.large != nil {
-			indexes = g.re.FindAllIndex(line.large, -1)
-		} else {
-			indexes = g.re.FindAllStringIndex(line.text, -1)
+		if err := fitContextError(ctx); err != nil {
+			return fsx.WalkStop, err
 		}
-		if len(indexes) > 0 {
+		var firstIndex []int
+		if line.large != nil {
+			firstIndex = g.re.FindIndex(line.large)
+		} else {
+			firstIndex = g.re.FindStringIndex(line.text)
+		}
+		if len(firstIndex) > 0 {
 			if line.large != nil || grepRingHasLargeLine(before) {
 				return fsx.WalkStop, ErrResponseTooLarge
 			}
@@ -468,8 +471,8 @@ func (g *grepRun) scanFile(ctx context.Context, entry fsx.WalkFile, partial *gre
 				match: GrepMatch{
 					Path:        entry.Resolved.Rel,
 					Line:        line.number,
-					Column:      utf8.RuneCountInString(line.text[:indexes[0][0]]) + 1,
-					Occurrences: len(indexes),
+					Column:      utf8.RuneCountInString(line.text[:firstIndex[0]]) + 1,
+					Occurrences: 1,
 					Text:        line.text,
 					Before:      beforeContext,
 					After:       []GrepContextLine{},
@@ -522,8 +525,8 @@ func (g *grepRun) fullBoundaryAdvances(position fsx.Position) bool {
 }
 
 func (g *grepRun) emit(ctx context.Context, candidate pendingGrepMatch) (bool, error) {
-	if err := ctx.Err(); err != nil {
-		return false, grepContextError(err)
+	if err := fitContextError(ctx); err != nil {
+		return false, err
 	}
 	prospective := append(append([]GrepMatch(nil), g.matches...), candidate.match)
 	state := candidate.emission.state()
@@ -541,11 +544,19 @@ func (g *grepRun) emit(ctx context.Context, candidate pendingGrepMatch) (bool, e
 	}
 	out := GrepOutput{OK: true, Path: g.canonical, Matches: prospective, Truncated: true, Coverage: coverage}
 	if err := requireGrepOutputFits(out); err != nil {
-		if len(g.matches) == 0 {
-			return false, ErrResponseTooLarge
-		}
-		g.stop = &grepStop{reason: CursorStopResponseLimit, state: g.emissionStates[len(g.emissionStates)-1]}
-		return true, nil
+		return g.stopForUnfitGrepCandidate()
+	}
+	if err := fitContextError(ctx); err != nil {
+		return false, err
+	}
+	candidate.match.Occurrences = len(g.re.FindAllStringIndex(candidate.match.Text, -1))
+	if err := fitContextError(ctx); err != nil {
+		return false, err
+	}
+	prospective[len(prospective)-1] = candidate.match
+	out.Matches = prospective
+	if err := requireGrepOutputFits(out); err != nil {
+		return g.stopForUnfitGrepCandidate()
 	}
 	g.matches = prospective
 	g.emissionStates = append(g.emissionStates, state)
@@ -554,6 +565,14 @@ func (g *grepRun) emit(ctx context.Context, candidate pendingGrepMatch) (bool, e
 		return true, nil
 	}
 	return false, nil
+}
+
+func (g *grepRun) stopForUnfitGrepCandidate() (bool, error) {
+	if len(g.matches) == 0 {
+		return false, ErrResponseTooLarge
+	}
+	g.stop = &grepStop{reason: CursorStopResponseLimit, state: g.emissionStates[len(g.emissionStates)-1]}
+	return true, nil
 }
 
 func (g *grepRun) stopAction(err error) (fsx.WalkAction, error) {

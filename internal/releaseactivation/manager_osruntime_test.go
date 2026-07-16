@@ -31,13 +31,17 @@ func TestManagerPrepareRejectsPostObserveArtifactRaceWithOSRuntime(t *testing.T)
 				mutated = true
 				return os.WriteFile(mutatedPath, []byte("changed-after-os-observe"), 0o755)
 			}}
-			manager := &Manager{Store: store, Runtime: runtime, ControllerPath: authority}
+			authoritySHA256, err := HashRegular(authority)
+			if err != nil {
+				t.Fatal(err)
+			}
+			manager := &Manager{Store: store, Runtime: runtime, ControllerPath: authority, ControllerSHA256: authoritySHA256}
 			candidateSHA256, err := HashRegular(candidate)
 			if err != nil {
 				t.Fatal(err)
 			}
 			request := PrepareRequest{
-				Commit: strings.Repeat("1", 40), CandidateSHA256: candidateSHA256, DependencySHA256: strings.Repeat("9", 64),
+				Commit: strings.Repeat("1", 40), CandidateSHA256: candidateSHA256, AuthoritySHA256: authoritySHA256, DependencySHA256: strings.Repeat("9", 64),
 				CandidatePath: candidate, AuthorityPath: authority, TargetPath: target,
 				EffectiveUID: os.Geteuid(), LaunchAgentLabel: "com.example.os-runtime-race",
 				PlistPath: plist, WrapperPath: wrapper, MCPWrapperPath: mcpWrapper,

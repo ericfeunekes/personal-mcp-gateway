@@ -177,7 +177,7 @@ func runUpdateRaceHelper(args []string) error {
 		if err != nil {
 			return err
 		}
-		manager := &releaseactivation.Manager{Store: store, Runtime: updateRaceRuntime{}, ControllerPath: "test-update-controller"}
+		manager := &releaseactivation.Manager{Store: store, Runtime: updateRaceRuntime{}, ControllerPath: "test-update-controller", ControllerSHA256: strings.Repeat("a", 64)}
 		_, err = execute(context.Background(), []string{
 			"update-after-fetch", "--repo", args[3], "--expected-head", args[4], "--expected-remote-oid", args[5],
 		}, dependencies{
@@ -220,7 +220,11 @@ func runUpdateRaceHelper(args []string) error {
 		if err != nil {
 			return err
 		}
-		manager := &releaseactivation.Manager{Store: store, Runtime: prepareRaceRuntime{}, ControllerPath: args[4]}
+		authoritySHA256, err := releaseactivation.HashRegular(args[4])
+		if err != nil {
+			return err
+		}
+		manager := &releaseactivation.Manager{Store: store, Runtime: prepareRaceRuntime{}, ControllerPath: args[4], ControllerSHA256: authoritySHA256}
 		prepareArgs, deps, err := prepareRaceCLI(filepath.Dir(args[3]), uid, args[3], args[4], manager)
 		if err != nil {
 			return err
@@ -322,7 +326,11 @@ func prepareRaceCLI(root string, uid int, candidate, authority string, manager *
 	if err != nil {
 		return nil, dependencies{}, err
 	}
-	args := []string{"prepare", "--commit", strings.Repeat("b", 40), "--candidate-sha256", candidateSHA256, "--dependency-sha256", strings.Repeat("9", 64),
+	authoritySHA256, err := releaseactivation.HashRegular(authority)
+	if err != nil {
+		return nil, dependencies{}, err
+	}
+	args := []string{"prepare", "--commit", strings.Repeat("b", 40), "--candidate-sha256", candidateSHA256, "--authority-sha256", authoritySHA256, "--dependency-sha256", strings.Repeat("9", 64),
 		"--candidate", candidate, "--authority", authority,
 		"--target", filepath.Join(root, "target"), "--label", label, "--repo-root", repo,
 		"--environment", filepath.Join(root, "prepare.env"), "--health-url-file", filepath.Join(root, "health-url"),

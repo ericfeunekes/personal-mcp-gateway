@@ -541,6 +541,11 @@ func newCrashFixture(t *testing.T, previous bool) *crashFixture {
 		t.Fatal(err)
 	}
 	fixture.Request.CandidateSHA256 = candidateSHA256
+	authoritySHA256, err := HashRegular(fixture.Request.AuthorityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.Request.AuthoritySHA256 = authoritySHA256
 	fixture.configPath = filepath.Join(root, "fixture.json")
 	data, err := json.Marshal(fixture)
 	if err != nil {
@@ -561,7 +566,7 @@ func (f *crashFixture) manager(preparing bool) *Manager {
 	if preparing {
 		controller = f.ControllerSource
 	}
-	return &Manager{Store: store, Runtime: &crashRuntime{fixture: f}, ControllerPath: controller}
+	return &Manager{Store: store, Runtime: &crashRuntime{fixture: f}, ControllerPath: controller, ControllerSHA256: f.Request.AuthoritySHA256}
 }
 
 func (f *crashFixture) prepare(t *testing.T) *Manifest {
@@ -1019,7 +1024,7 @@ func runCrashHelper(args []string) error {
 	if args[1] == "prepare" {
 		controller = fixture.ControllerSource
 	}
-	manager := &Manager{Store: store, Runtime: runtime, ControllerPath: controller}
+	manager := &Manager{Store: store, Runtime: runtime, ControllerPath: controller, ControllerSHA256: fixture.Request.AuthoritySHA256}
 
 	if args[1] == "hold" {
 		locked, err := store.Acquire()

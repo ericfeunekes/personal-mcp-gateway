@@ -14,6 +14,9 @@ import (
 )
 
 func TestPhase2ResourceFixtureLocksExactComplexityBoundaries(t *testing.T) {
+	if resourceGrepZeroWidthPattern != "a*" {
+		t.Fatalf("zero-width boundary pattern = %q, want high-cardinality a*", resourceGrepZeroWidthPattern)
+	}
 	fixture, err := newResourceFixture()
 	if err != nil {
 		t.Fatal(err)
@@ -52,6 +55,13 @@ func TestPhase2ResourceFixtureLocksExactComplexityBoundaries(t *testing.T) {
 		fixture.boundary.grepInvalid,
 	} {
 		assertSize(path, obsidian.MaxGrepPhysicalLineBytes)
+	}
+	zeroWidthSource, err := os.ReadFile(filepath.Join(fixture.root, fixture.boundary.grepZeroWidth))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := bytes.Count(zeroWidthSource, []byte{'z'}); got < obsidian.MaxGrepPhysicalLineBytes-64 {
+		t.Fatalf("zero-width fixture z bytes = %d, want high-cardinality a* source", got)
 	}
 	assertSize(fixture.boundary.grepOver, obsidian.MaxGrepPhysicalLineBytes+1)
 	if !fixture.generated.InventoryComplete || !fixture.generated.InventoryReconciled ||
