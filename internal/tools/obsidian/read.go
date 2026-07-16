@@ -144,9 +144,12 @@ func (t *Tools) readPageCore(ctx context.Context, input ReadInput, meta *readPag
 	}
 
 	reader := &contextFileReader{ctx: ctx, file: file}
-	source, err := LoadMarkdownSource(reader)
+	source, err := LoadMarkdownSourceSized(reader, resolved.Size)
 	work.BytesScanned = reader.bytes
 	if err != nil {
+		if revalidateErr := file.Revalidate(ctx); revalidateErr != nil {
+			return readErrorResult(revalidateErr, work)
+		}
 		return readErrorResult(err, work)
 	}
 	if err := file.Revalidate(ctx); err != nil {
@@ -205,9 +208,12 @@ func (t *Tools) continueOutline(ctx context.Context, file *fsx.File, selector So
 		return readErrorResult(ErrCursorInvalid, work)
 	}
 	reader := &contextFileReader{ctx: ctx, file: file}
-	source, err := LoadMarkdownSource(reader)
+	source, err := LoadMarkdownSourceSized(reader, file.Resolved().Size)
 	work.BytesScanned = reader.bytes
 	if err != nil {
+		if revalidateErr := file.Revalidate(ctx); revalidateErr != nil {
+			return readErrorResult(revalidateErr, work)
+		}
 		return readErrorResult(err, work)
 	}
 	if err := file.Revalidate(ctx); err != nil {

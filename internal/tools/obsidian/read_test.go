@@ -245,6 +245,9 @@ func TestReadRejectsUnsupportedInvalidUTF8AndSourceComplexity(t *testing.T) {
 		if err != nil || !result.IsError || out.OK || out.Error == nil || out.Error.Code != test.code || out.Coverage.Continuation != CoverageContinuationRestart || out.Coverage.NextCursor != "" {
 			t.Fatalf("%s result=%#v out=%#v err=%v", test.path, result, out, err)
 		}
+		if test.path == "large.md" && out.Coverage.BytesScanned != 0 {
+			t.Fatalf("oversized file bytes_scanned = %d, want rejection before I/O", out.Coverage.BytesScanned)
+		}
 	}
 }
 

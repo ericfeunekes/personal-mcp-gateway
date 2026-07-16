@@ -45,6 +45,23 @@ func LoadMarkdownSource(r io.Reader) (*MarkdownSource, error) {
 	return NewMarkdownSource(source)
 }
 
+// LoadMarkdownSourceSized uses the descriptor-observed regular-file size to
+// reject an already oversized source without allocating or reading it and to
+// avoid io.ReadAll's geometric buffer growth for accepted near-limit files.
+// One sentinel byte still detects growth after the size observation; the
+// caller's descriptor revalidation owns the final source-change decision.
+func LoadMarkdownSourceSized(r io.Reader, observedSize int64) (*MarkdownSource, error) {
+	if observedSize < 0 || observedSize > MaxMarkdownSourceBytes {
+		return nil, ErrMarkdownInputTooLarge
+	}
+	source := make([]byte, int(observedSize)+1)
+	n, err := io.ReadFull(r, source)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return nil, err
+	}
+	return NewMarkdownSource(source[:n])
+}
+
 // NewMarkdownSource preflights an already loaded source. Limit errors take
 // precedence over UTF-8 errors so over-cap input is rejected before parsing or
 // text interpretation.

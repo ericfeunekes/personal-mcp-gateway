@@ -1276,6 +1276,12 @@ func drivePhase2SafeSummaryScenario(t *testing.T, root string, log *audit.Logger
 	if err := os.WriteFile(filepath.Join(root, secondPath), []byte(privatePattern+" recovery evidence\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	stableSourceTime := time.Unix(1_700_000_000, 123_456_789)
+	for _, relative := range []string{privatePath, secondPath} {
+		if err := os.Chtimes(filepath.Join(root, relative), stableSourceTime, stableSourceTime); err != nil {
+			t.Fatal(err)
+		}
+	}
 	cfg, err := config.Validate(config.Config{Mode: config.ModeStdio, ObsidianRoot: root, Telemetry: config.TelemetryStderr})
 	if err != nil {
 		t.Fatal(err)
@@ -1353,6 +1359,10 @@ func drivePhase2SafeSummaryScenario(t *testing.T, root string, log *audit.Logger
 		t.Fatalf("stale read seed = %#v", staleSeed)
 	}
 	if err := os.WriteFile(filepath.Join(root, privatePath), []byte(changedBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changedSourceTime := stableSourceTime.Add(time.Second)
+	if err := os.Chtimes(filepath.Join(root, privatePath), changedSourceTime, changedSourceTime); err != nil {
 		t.Fatal(err)
 	}
 	call(obsidian.ToolRead, map[string]any{"path": privatePath, "max_bytes": 8, "cursor": staleSeed.Coverage.NextCursor}, true, &obsidian.ReadOutput{})

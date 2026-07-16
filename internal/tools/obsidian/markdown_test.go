@@ -3,9 +3,21 @@ package obsidian
 import (
 	"bytes"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 )
+
+type countingReader struct {
+	reader io.Reader
+	bytes  int
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.bytes += n
+	return n, err
+}
 
 func TestMarkdownSourcePreflightBoundaries(t *testing.T) {
 	t.Run("exact byte ceiling", func(t *testing.T) {
@@ -53,6 +65,25 @@ func TestMarkdownSourcePreflightBoundaries(t *testing.T) {
 		_, err := LoadMarkdownSource(strings.NewReader(strings.Repeat("a", MaxMarkdownSourceBytes+1)))
 		if !errors.Is(err, ErrMarkdownInputTooLarge) {
 			t.Fatalf("error = %v, want ErrMarkdownInputTooLarge", err)
+		}
+	})
+
+	t.Run("sized load rejects observed over-cap input before reading", func(t *testing.T) {
+		reader := &countingReader{reader: strings.NewReader("not read")}
+		_, err := LoadMarkdownSourceSized(reader, MaxMarkdownSourceBytes+1)
+		if !errors.Is(err, ErrMarkdownInputTooLarge) || reader.bytes != 0 {
+			t.Fatalf("error = %v bytes = %d, want ErrMarkdownInputTooLarge before I/O", err, reader.bytes)
+		}
+	})
+
+	t.Run("sized load accepts exact size and reads one growth sentinel", func(t *testing.T) {
+		source, err := LoadMarkdownSourceSized(strings.NewReader("abc"), 3)
+		if err != nil || string(source.Bytes()) != "abc" {
+			t.Fatalf("source = %#v error = %v", source, err)
+		}
+		source, err = LoadMarkdownSourceSized(strings.NewReader("abcd-more"), 3)
+		if err != nil || string(source.Bytes()) != "abcd" {
+			t.Fatalf("growth sentinel source = %#v error = %v", source, err)
 		}
 	})
 }
