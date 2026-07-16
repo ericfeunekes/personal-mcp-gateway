@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"golang.org/x/sys/unix"
 
 	"personal-mcp-gateway/internal/fsx"
 	"personal-mcp-gateway/internal/limits"
@@ -63,6 +64,8 @@ type grepLine struct {
 	start  int64
 	end    int64
 	text   string
+	large  []byte
+	mapped *mappedGrepLine
 }
 
 type grepCheckpoint struct {
@@ -366,6 +369,7 @@ func (g *grepRun) scanFile(ctx context.Context, entry fsx.WalkFile, partial *gre
 	}
 	remaining := g.query.MaxBytes - g.pageBytes
 	reader := newGrepLineReader(file, entry.Resolved.Size, startOffset, startLine, remaining)
+	defer reader.close()
 	before := make([]grepLine, 0, g.query.ContextLines)
 	pending := make([]pendingGrepMatch, 0, g.query.ContextLines+1)
 	checkpoint := g.partialCheckpoint(entry.Position, fingerprint, startOffset, startLine, startOffset, startLine)
@@ -411,7 +415,11 @@ func (g *grepRun) scanFile(ctx context.Context, entry fsx.WalkFile, partial *gre
 		if readErr != nil {
 			return fsx.WalkStop, readErr
 		}
-		if !utf8.ValidString(line.text) {
+		if line.large != nil {
+			if !utf8.Valid(line.large) {
+				return fsx.WalkStop, errInvalidUTF8
+			}
+		} else if !utf8.ValidString(line.text) {
 			return fsx.WalkStop, errInvalidUTF8
 		}
 		if line.start < resumeOffset {
@@ -423,6 +431,9 @@ func (g *grepRun) scanFile(ctx context.Context, entry fsx.WalkFile, partial *gre
 		}
 		advanced = true
 
+		if line.large != nil && len(pending) > 0 {
+			return fsx.WalkStop, ErrResponseTooLarge
+		}
 		for i := range pending {
 			pending[i].match.After = append(pending[i].match.After, GrepContextLine{Line: line.number, Text: line.text})
 			pending[i].remaining--
@@ -434,8 +445,16 @@ func (g *grepRun) scanFile(ctx context.Context, entry fsx.WalkFile, partial *gre
 			pending = pending[1:]
 		}
 
-		indexes := g.re.FindAllStringIndex(line.text, -1)
+		var indexes [][]int
+		if line.large != nil {
+			indexes = g.re.FindAllIndex(line.large, -1)
+		} else {
+			indexes = g.re.FindAllStringIndex(line.text, -1)
+		}
 		if len(indexes) > 0 {
+			if line.large != nil || grepRingHasLargeLine(before) {
+				return fsx.WalkStop, ErrResponseTooLarge
+			}
 			beforeContext := make([]GrepContextLine, len(before))
 			for i := range before {
 				beforeContext[i] = GrepContextLine{Line: before[i].number, Text: before[i].text}
@@ -599,6 +618,70 @@ type grepLineReader struct {
 	pending    []byte
 	pendingPos int
 	newBytes   int64
+	mapped     []*mappedGrepLine
+}
+
+const grepHeapLineBytes = 64 * 1024
+
+type mappedGrepLine struct {
+	data     []byte
+	released bool
+}
+
+func (m *mappedGrepLine) release() {
+	if m == nil || m.released {
+		return
+	}
+	m.released = true
+	_ = unix.Munmap(m.data)
+}
+
+type grepLineBuffer struct {
+	heap   []byte
+	mapped *mappedGrepLine
+	length int
+}
+
+func newGrepLineBuffer() grepLineBuffer {
+	return grepLineBuffer{heap: make([]byte, 0, min(grepHeapLineBytes, 32*1024))}
+}
+
+func (b *grepLineBuffer) bytes() []byte {
+	if b.mapped != nil {
+		return b.mapped.data[:b.length]
+	}
+	return b.heap
+}
+
+func (r *grepLineReader) appendLine(buffer *grepLineBuffer, fragment []byte) error {
+	if buffer.mapped == nil && len(buffer.heap)+len(fragment) <= grepHeapLineBytes {
+		buffer.heap = append(buffer.heap, fragment...)
+		buffer.length = len(buffer.heap)
+		return nil
+	}
+	if buffer.mapped == nil {
+		mapped, err := unix.Mmap(-1, 0, MaxGrepPhysicalLineBytes+1, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_ANON|unix.MAP_PRIVATE)
+		if err != nil {
+			return err
+		}
+		buffer.mapped = &mappedGrepLine{data: mapped}
+		r.mapped = append(r.mapped, buffer.mapped)
+		copy(mapped, buffer.heap)
+		buffer.length = len(buffer.heap)
+		buffer.heap = nil
+	}
+	if buffer.length+len(fragment) > len(buffer.mapped.data) {
+		return errLineTooLarge
+	}
+	copy(buffer.mapped.data[buffer.length:], fragment)
+	buffer.length += len(fragment)
+	return nil
+}
+
+func (r *grepLineReader) close() {
+	for _, mapped := range r.mapped {
+		mapped.release()
+	}
 }
 
 func newGrepLineReader(file *fsx.File, size, offset int64, line int, remaining int64) *grepLineReader {
@@ -607,45 +690,55 @@ func newGrepLineReader(file *fsx.File, size, offset int64, line int, remaining i
 
 func (r *grepLineReader) next(ctx context.Context) (grepLine, error) {
 	start, lineNumber := r.offset, r.line
-	line := make([]byte, 0, min(MaxGrepPhysicalLineBytes, 32*1024))
+	line := newGrepLineBuffer()
 	for {
 		if r.pendingPos < len(r.pending) {
 			fragment := r.pending[r.pendingPos:]
 			if newline := bytes.IndexByte(fragment, '\n'); newline >= 0 {
 				newline++
-				line = append(line, fragment[:newline]...)
+				if err := r.appendLine(&line, fragment[:newline]); err != nil {
+					return grepLine{}, err
+				}
 				r.pendingPos += newline
 				r.offset += int64(newline)
-				if len(line) > MaxGrepPhysicalLineBytes {
+				if line.length > MaxGrepPhysicalLineBytes {
 					return grepLine{}, errLineTooLarge
 				}
-				text := line[:len(line)-1]
+				text := line.bytes()[:line.length-1]
 				if len(text) > 0 && text[len(text)-1] == '\r' {
 					text = text[:len(text)-1]
 				}
 				r.line++
+				if line.mapped != nil {
+					return grepLine{number: lineNumber, start: start, end: r.offset, large: text, mapped: line.mapped}, nil
+				}
 				return grepLine{number: lineNumber, start: start, end: r.offset, text: string(text)}, nil
 			}
-			line = append(line, fragment...)
+			if err := r.appendLine(&line, fragment); err != nil {
+				return grepLine{}, err
+			}
 			r.offset += int64(len(fragment))
 			r.pendingPos = len(r.pending)
-			if len(line) > MaxGrepPhysicalLineBytes {
+			if line.length > MaxGrepPhysicalLineBytes {
 				return grepLine{}, errLineTooLarge
 			}
 		}
 		if r.offset >= r.size {
-			if len(line) == 0 {
+			if line.length == 0 {
 				return grepLine{}, io.EOF
 			}
 			r.line++
-			return grepLine{number: lineNumber, start: start, end: r.offset, text: string(line)}, nil
+			if line.mapped != nil {
+				return grepLine{number: lineNumber, start: start, end: r.offset, large: line.bytes(), mapped: line.mapped}, nil
+			}
+			return grepLine{number: lineNumber, start: start, end: r.offset, text: string(line.heap)}, nil
 		}
 		if r.remaining <= 0 {
 			return grepLine{}, errLineBudget
 		}
 		// Never read more than the one-byte sentinel needed to prove that this
 		// physical line exceeds the fixed cap.
-		lineAllowance := int64(MaxGrepPhysicalLineBytes + 1 - len(line))
+		lineAllowance := int64(MaxGrepPhysicalLineBytes + 1 - line.length)
 		readSize := min(int64(32*1024), r.remaining, r.size-r.offset, lineAllowance)
 		buffer := make([]byte, int(readSize))
 		n, err := r.file.Read(ctx, buffer)
@@ -715,13 +808,24 @@ func writeGrepFrame(w io.Writer, value []byte) {
 
 func appendGrepRing(ring []grepLine, line grepLine, capacity int) []grepLine {
 	if capacity == 0 {
+		line.mapped.release()
 		return ring[:0]
 	}
 	if len(ring) == capacity {
+		ring[0].mapped.release()
 		copy(ring, ring[1:])
 		ring = ring[:capacity-1]
 	}
 	return append(ring, line)
+}
+
+func grepRingHasLargeLine(ring []grepLine) bool {
+	for _, line := range ring {
+		if line.large != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func grepResumeContext(before []grepLine, current grepLine, contextLines int) (int64, int) {
