@@ -154,7 +154,9 @@ type phase2ResourceSampler struct {
 
 func (s *phase2ResourceSampler) Sample(_ context.Context, _ int, _ bool) (processResourceSample, error) {
 	s.cpu++
-	return processResourceSample{rssBytes: 24 * 1024 * 1024, cpuMicros: s.cpu, fdCount: 7}, nil
+	// The fake sample must remain coherent with the independently observed
+	// child high-water; real RSS thresholds are exercised by the live sampler.
+	return processResourceSample{rssBytes: 8 * 1024 * 1024, cpuMicros: s.cpu, fdCount: 7}, nil
 }
 
 func TestPhase2ResourceGateRejectsBoundaryAndToolMixDrift(t *testing.T) {

@@ -1268,7 +1268,9 @@ func (s *fixedResourceSampler) Sample(_ context.Context, pid int, _ bool) (proce
 	}
 	s.pids[pid] = struct{}{}
 	s.cpu++
-	return processResourceSample{rssBytes: 24 * 1024 * 1024, cpuMicros: s.cpu, fdCount: 7}, nil
+	// Keep the deterministic sample below the real child high-water. This
+	// sampler tests aggregation/PID coverage, not host RSS measurement.
+	return processResourceSample{rssBytes: 8 * 1024 * 1024, cpuMicros: s.cpu, fdCount: 7}, nil
 }
 
 func (s *fixedResourceSampler) distinctPIDs() int {
