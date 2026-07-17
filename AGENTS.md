@@ -7,7 +7,7 @@ This project exposes personal data surfaces. Treat security boundaries as produc
 - Go gateway source belongs under `cmd/gateway/` and `internal/`.
 - Gateway architecture and boundaries live in `docs/ARCHITECTURE.md`.
 - Obsidian server behavior lives in `docs/obsidian.md`.
-- First implementation requirements live in `docs/requirements/obsidian-filesystem-tools.md`.
+- Obsidian tool-surface requirements live in `docs/requirements/obsidian-filesystem-tools.md`.
 - Open gaps are tracked in `docs/feature-gap-map.md`.
 
 ## Workflow

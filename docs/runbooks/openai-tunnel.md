@@ -102,9 +102,10 @@ The release fast path is:
 
 ```bash
 make release
-# Refresh server `obsidian` metadata, observe exactly current tools `ls` and
-# `resolve`, and have the model select two one-item shallow root `ls` pages by
-# continuing the first result's cursor with the same query.
+# Refresh server `obsidian` metadata; observe exactly `grep`, `ls`, `read`,
+# `read_many`, and `resolve` as read-only; and have a fresh model run select
+# `grep`, then `read_many`, then continue `read_many` with the same ordered
+# requests and aggregate budget plus the returned cursor.
 make release-accept RELEASE_ID=<full-id>
 ```
 
@@ -125,8 +126,9 @@ observation, selected tool/journey, sanitized release/hash identity, and outcome
 do not record prompts, note names/content, vault paths, credentials, or raw
 environment data.
 
-The current `resolve`/`ls` implementation has passed the merge suite, installed
-rollback drills, and a fresh authenticated two-page pending-to-accept journey.
+The accepted five-tool core-retrieval implementation has passed the merge
+suite, installed rollback drills, and a fresh authenticated
+`grep` -> `read_many` -> continued `read_many` pending-to-accept journey.
 The sanitized accepted record is maintained in `docs/TESTING.md`. Repeat the
 same boundaries after changing the advertised tools or release lifecycle; the
 historical evidence below proves only the original tunnel setup.
@@ -137,7 +139,7 @@ The stdio tunnel profile is the current live-smoke path because local tunnel
 `doctor` passed for stdio and the HTTP profile still needs OpenAI-compatible
 OAuth resource metadata before it should be used for ChatGPT connector proof.
 
-## Latest Local Proof
+## Historical Tunnel Setup And Phase 1 Proof
 
 On 2026-07-02, `scripts/run-obsidian-tunnel.sh` started the repo-local
 `obsidian-stdio` profile with a valid tunnel runtime key. Observed proof:
@@ -227,6 +229,7 @@ returned to `liveness=1` and `readiness=1`. At
 `2026-07-10T18:40:56.147842Z`, another Codex model-driven `resolve` call
 succeeded and produced a sanitized row under a third gateway run.
 
-The remaining surface-specific connector gap is a ChatGPT-web-prompted
-`resolve` call. The same installed app and tunnel path are proven from Codex,
-but that evidence should not be relabeled as ChatGPT-web proof.
+The current surface-specific connector gap is a five-tool-surface `resolve`
+call from both Codex and ChatGPT web. The installed app and tunnel path were
+proven from Codex on the historical two-tool surface, but that evidence should
+not be relabeled as current five-tool or ChatGPT-web proof.

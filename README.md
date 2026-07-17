@@ -32,15 +32,18 @@ Tool calls should be stateless. They may accept path-like arguments and an expli
 
 ## Current Implementation
 
-The first runnable Go slice is implemented:
+The accepted Obsidian core-retrieval slice implements:
 
 - `resolve`
 - shallow `ls`
+- bounded single-note `read`
+- aggregate-budgeted `read_many`
+- deterministic content `grep`
 - stdio mode
 - loopback HTTP mode with `/mcp`, `/healthz`, and `/readyz`
 - SQLite-backed structured telemetry for MCP calls, HTTP requests, and gateway lifecycle events
 - local request, argument, path, telemetry-event, and tool-operation budgets
-- explicit MCP impact annotations that advertise `resolve` and `ls` as read-only,
+- explicit MCP impact annotations that advertise all five tools as read-only,
   non-destructive, and closed-world; the implementation and vault confinement
   remain the enforcement boundary
 - `launchd` supervision with a measured idle footprint and automatic recovery
@@ -107,10 +110,16 @@ addresses. The `/mcp` request body is capped before SDK handling, and required
 telemetry degradation makes `/readyz` fail closed in HTTP mode. OpenAI Secure
 MCP Tunnel connectivity, ChatGPT app installation, and live `tools/list`
 metadata refresh are proven. A bounded model-driven ChatGPT `ls` call is also
-proven through sanitized local telemetry. Model-driven `resolve` is proven
-through Codex using the installed `Obsidian` app, including after automatic
-LaunchAgent recovery. A ChatGPT-web-specific `resolve` prompt remains a
-surface-parity proof gate.
+proven through sanitized local telemetry. The accepted five-tool surface also
+has a fresh ChatGPT model-selected `grep` -> `read_many` -> continued
+`read_many` journey with cursor-bound request/budget reuse and no retained note
+identity or content. Model-driven `resolve` was historically proven through
+Codex on the prior two-tool surface, including after automatic LaunchAgent
+recovery; current five-tool Codex and ChatGPT-web `resolve` calls remain
+surface-parity proof gates.
+Exact-candidate proof is deliberately split: synthetic fixtures cover retrieval
+semantics, current-vault probes cover broad `grep`, inventory, performance, and
+resources, and the authenticated journey covers live grouped retrieval.
 
 ## Operating Principles
 
@@ -124,10 +133,11 @@ surface-parity proof gate.
 
 ## Remaining Design And Proof Gaps
 
-- Tool compatibility: ChatGPT accepts the `obsidian` server and displays the
-  simple `ls` and `resolve` actions as read-only, and model-driven `ls`
-  execution is proven. Codex model-driven `resolve` is also proven through the
-  installed app; a ChatGPT-web-specific `resolve` invocation is not.
+- Tool compatibility: ChatGPT accepts the `obsidian` server and displays
+  exactly `resolve`, `ls`, `read`, `read_many`, and `grep` as read-only.
+  Representative `ls` and core-retrieval execution is proven. Codex
+  model-driven `resolve` is historical two-tool evidence; graph tools and
+  current five-tool Codex/ChatGPT-web `resolve` invocations remain unproven.
 - Auth mapping: how OpenAI connector identity maps to allowed MCP capabilities.
 - Deployment: the current `launchd` runtime has passed bounded idle-impact and
   automatic crash-recovery proof; a multi-day soak and sleep/wake cycle are not

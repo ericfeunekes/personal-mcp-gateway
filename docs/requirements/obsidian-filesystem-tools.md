@@ -18,7 +18,7 @@ The gateway remains a read-only adapter. The Obsidian vault is the source of tru
 
 ## Why The Surface Changes
 
-The current server implements `resolve` and shallow `ls`. Earlier planning named `read`, `grep`, `search`, and `stat`, but did not define their public grammar or graph behavior. Live agent-oriented exploration of workout, exercise, and health notes showed three distinct retrieval needs:
+The current accepted server implements `resolve`, shallow `ls`, bounded `read`, aggregate-budgeted `read_many`, and deterministic content `grep`. Earlier planning named `search` and `stat` without defining their public grammar or graph behavior. Live agent-oriented exploration of workout, exercise, and health notes showed three distinct retrieval needs:
 
 - content discovery works best as familiar `grep`;
 - graph-sparse corpora need bounded `read_many` after discovery;
@@ -57,14 +57,15 @@ Every encoded SDK `CallToolResult`, including text content plus structured conte
 
 This is the target vocabulary, not a requirement to advertise unfinished or disabled tools. `tools/list` contains only activated tools whose complete contract is implemented and proven. There are no placeholder tools that return "not enabled":
 
-- current activation: `resolve`, `ls`;
-- core retrieval activation: add `read`, `read_many`, `grep` together after their local proof passes;
+- current activation: `resolve`, `ls`, `read`, `read_many`, `grep`;
 - outbound graph activation: add `links`, `traverse` together after reference-resolution, traversal, and local performance proof passes;
 - inbound graph activation: add `backlinks`, `path_between` only after the full-vault gate below passes.
 
 Once activated, a tool is available by default; this requirement does not add a runtime feature flag or alternate contract.
 
-The currently advertised `resolve` and `ls` implementations satisfy the Phase 1 identity, continuation, response-budget, coverage, descriptor, telemetry, performance, process-resource, idle, authenticated model-journey, and exact release-acceptance contracts below. Later activation groups must repeat their own relevant local, resource, metadata-refresh, and model-selected proof before their tools are advertised.
+The currently advertised five-tool surface satisfies the Phase 1 identity/listing and Phase 2 core-retrieval continuation, response-budget, coverage, descriptor, telemetry, performance, process-resource, idle, authenticated model-journey, and exact release-acceptance contracts below. Later graph activation groups must repeat their own relevant local, resource, metadata-refresh, and model-selected proof before their tools are advertised.
+
+Phase 2 proof is layered rather than one all-purpose real-vault test: synthetic fixtures prove retrieval semantics, current-vault probes prove broad `grep`, inventory, performance, and resource behavior, and the authenticated model journey proves live grouped retrieval and continuation.
 
 ## Common Request And Result Contract
 
@@ -269,7 +270,7 @@ If this gate fails, the tools stay unadvertised and `GAP-OBS-007` remains open. 
 - `AC-OBS-002`: Every path, scope, cursor, link target, and resolved candidate remains confined to the configured vault; traversal, hidden paths, and symlink escapes are denied without leaking host paths. Proof: vault path-confinement cell with synthetic link, scope, cursor, traversal, and symlink fixtures.
 - `AC-OBS-003`: Reads, batches, scans, and graph operations enforce result, file, byte, node, edge, depth, response, and time budgets; cancellation stops work promptly. Proof: search/listing-limits cell with large fixture vaults and cancellation/timeout cases.
 - `AC-OBS-004`: No tool mutates the vault, including failure, timeout, cancellation, partial batch, and malformed-reference paths. Proof: read-only integration cell with before/after fixture-vault snapshots.
-- `AC-OBS-005`: ChatGPT/Codex can discover and select representative tools through OpenAI Secure MCP Tunnel. Model-driven journey proof covers `grep` → `read_many` → continued batch reading and `links` → `traverse` → continued traversal before the expanded surface is considered settled. Proof: live Obsidian tool-name/model-use cell.
+- `AC-OBS-005`: ChatGPT/Codex can discover and select representative tools through OpenAI Secure MCP Tunnel. Phase 2 proof covers `grep` → `read_many` → continued batch reading. A future outbound-graph activation must separately prove `links` → `traverse` → continued traversal before that expanded surface is considered settled. Proof: live Obsidian tool-name/model-use cell.
 - `AC-OBS-006`: Startup and idle behavior remain scan-free and quiet, and representative performance measurements record latency, files/bytes scanned, response size, CPU, memory, descriptors, and cancellation behavior. Proof: minimal-machine-impact cell.
 - `AC-OBS-007`: `grep` searches content with deterministic line evidence and does not silently rank filenames, perform semantic search, or expand graph neighbors. Proof: tool boundary and search-limit tests using the same corpus for grep and graph calls.
 - `AC-OBS-008`: `read` selectors return the requested bounded source unit with provenance, and `read_many` preserves input order, isolates item errors, and enforces aggregate caps. Proof: MCP boundary tests plus filesystem fixture tests for headings, duplicate headings, block IDs, frontmatter, outlines, UTF-8, binary files, truncation, and partial batch failure.
@@ -297,13 +298,11 @@ The scratch traversal prototype is non-authoritative and must not override this 
 
 ## Current Gaps
 
-- `GAP-OBS-001`: `read`, `read_many`, and `grep` are not implemented.
-- `GAP-OBS-002`: ChatGPT and Codex proof covers the current `ls`/`resolve` surface only; the expanded agent workflow is not proven live.
-- `GAP-OBS-003`: Root confinement, denial, read-only, cursor, and sanitized-error proof is complete for the Phase 1 `resolve`/`ls` surface; equivalent proof is not yet extended to content, batch, reference, and graph operations.
-- `GAP-OBS-004`: Full-vault grep, backlink, and path-discovery latency, scan work, response size, and freshness trade-offs are not measured. The bounded exercise/health/marathon spike is complete.
-- `GAP-OBS-005`: Existing tunnel/runtime proof remains valid, but live metadata refresh and representative model-selected calls must be repeated after the tool list expands.
+- `GAP-OBS-002`: The five-tool core-retrieval workflow is proven live through ChatGPT; outbound and inbound graph workflows are not yet proven.
+- `GAP-OBS-003`: Root confinement, denial, read-only, cursor, and sanitized-error proof is complete for the accepted five-tool core surface; equivalent proof is not yet extended to reference and graph operations.
+- `GAP-OBS-004`: Full-vault backlink and path-discovery latency, scan work, response size, and freshness trade-offs are not measured. The bounded exercise/health/marathon spike and activated grep measurements are complete.
 - `GAP-OBS-006`: `links`, the scoped request-local path catalog, and outbound `traverse` are not implemented.
 - `GAP-OBS-007`: The full-vault activation gate for live request-local `backlinks` and `path_between` has not been run or passed; the tools are neither implemented nor advertised.
-- `GAP-OBS-008`: Descriptor-owned safe telemetry summaries are complete for the Phase 1 `resolve`/`ls` surface; summaries for read, grep, batch, links, traversal, backlinks, and path discovery are not implemented.
-- `GAP-OBS-009`: Phase 1 `resolve`/`ls` summaries have local JSONL and SQLite proof, including accepted model-driven `ls` telemetry; summaries for newly activated retrieval and graph tools have not been proven.
+- `GAP-OBS-008`: Descriptor-owned safe telemetry summaries are complete for the accepted five-tool core surface; summaries for links, traversal, backlinks, and path discovery are not implemented.
+- `GAP-OBS-009`: The accepted five-tool summaries have local JSONL/SQLite proof plus live model-driven `ls`, `grep`, and continued `read_many` telemetry; graph-tool summaries have not been proven.
 - `GAP-OBS-010`: Live request-local `backlinks` and `path_between` are not implemented for pre-activation benchmark and proof.

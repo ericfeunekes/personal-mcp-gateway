@@ -153,13 +153,15 @@ The release proof contract is split into three current-state cells:
      go test -count=1 ./internal/releaseactivation \
      -run '^TestLiveFirstInstallLaunchAgent(Rollback|Helper)$'
    ```
-3. In the authenticated OpenAI surface, refresh metadata for server `obsidian`,
-   observe exactly the current read-only `ls` and `resolve` tools, and have the
-   model select two one-item shallow root `ls` pages by passing the first
-   result's cursor on the second call with the same query. Only then run exact-ID
-   acceptance and prove the candidate hash remains installed, ready, and the
-   transaction returns to `clear`. Later tool phases replace this prerequisite
-   journey with their own newly activated representative calls.
+3. In the authenticated OpenAI surface, refresh metadata for server `obsidian`
+   and observe exactly `grep`, `ls`, `read`, `read_many`, and `resolve`, all
+   read-only. In a fresh model run, require exactly `grep` -> `read_many` ->
+   continued `read_many`: both batch calls use the same three ordered requests
+   and `max_bytes=300`, the first omits a cursor, and only the continuation
+   supplies the returned cursor. Only then run exact-ID acceptance and prove the
+   candidate hash remains installed, ready, and the transaction returns to
+   `clear`. Later graph phases replace this prerequisite journey with their own
+   newly activated representative calls.
 
 Record sanitized release identity and hash prefixes, the authenticated surface,
 metadata observation, selected tool/journey, and terminal outcome. Do not record
@@ -168,7 +170,39 @@ or private manifest fields. The installed drills establish a representative
 activation transaction, not power-loss durability, sleep/wake recovery,
 multi-day soak behavior, every prompt formulation, or future-vault performance.
 
-### Current release-activation proof
+### Current accepted five-tool Phase 2 proof
+
+On 2026-07-17, implementation commit `d74fcd3ba1b1`, installed candidate hash
+prefix `2de6c5f23082`, and release prefix `725425303f84` passed `make test`, the
+exact-candidate functional v3, performance v3, resource v5, and cross-report
+gates, and the installed pending-release readiness checks. Authenticated Chrome
+Refresh then showed exactly `grep`, `ls`, `read`, `read_many`, and `resolve`, all
+read-only.
+
+A fresh ChatGPT run made exactly three calls: one `grep`, one first-page
+`read_many`, and one continued `read_many`. Sanitized telemetry recorded 20
+matches across six files before the discovery result limit. The first batch and
+continuation each supplied the same three ordered requests and a 300-byte
+aggregate budget; the first omitted a cursor and the second supplied one. Both
+batch calls completed successfully with stable consistency, and the continuation
+validated one prior source entry. Successful continuation under the unchanged
+request vector and budget proves cursor-bound query/budget reuse because either
+change is rejected as `cursor_mismatch`; the visible result also confirmed
+advancement without replay.
+
+Exact-ID acceptance returned the transaction to `clear`; the exact candidate
+hash remained installed, and the LaunchAgent and tunnel were live and ready.
+The current-vault report covered 7,257 Markdown files totaling approximately
+292 MiB. Current-vault p95 latency ranged from approximately 1.3 to 3.5 ms;
+synthetic `read` and `grep` p95 were 7.4 ms and 72.1 ms, and measured 10,000-file
+strata remained below 44 ms. Resource v5 recorded 8,884,224 bytes maximum
+high-water RSS growth, 2,371,584 bytes stabilized 30-second RSS growth, 185,240
+bytes heap growth, exact descriptor recovery after 312 calls, and zero CPU,
+tool-call, or vault-activity growth during the 60-second idle window. No prompt,
+pattern, note identity, path, content, cursor value, or cursor hash is retained
+in this record.
+
+### Historical release-activation proof
 
 On 2026-07-12, commit `82e036e8a778` completed the full normal/race merge proof
 and the real randomized first-install LaunchAgent rollback drill. The installed
@@ -193,7 +227,7 @@ exact rolled it back. Rollback restored `8f06b65b2bf7`, `clear`, live, and
 ready; authenticated Refresh removed `cursor`, restored the prior descriptions,
 and a brand-new model chat completed one successful old-contract `ls` call.
 
-The final current release used docs descendant `241df06d5ede`, release prefix
+The final Phase 1 release used docs descendant `241df06d5ede`, release prefix
 `557d434272a3`, and the same implementation hash prefix `232441cc6a34`.
 Authenticated Refresh issued a post-install `tools/list`; fresh management
 readback showed exactly `ls` and `resolve`, including the current `ls.cursor`
@@ -212,7 +246,7 @@ acceptance returned to `clear`; `232441cc6a34` remained installed, and the
 LaunchAgent and tunnel were live and ready. No prompt, note identity, cursor
 value/hash, vault path, or content is retained in this record.
 
-### Current accepted `resolve` / `ls` Phase 1 proof
+### Historical accepted `resolve` / `ls` Phase 1 proof
 
 On 2026-07-15, implementation commit `fa9e02983936`, final release descendant
 `241df06d5ede`, and installed candidate hash prefix `232441cc6a34` passed
@@ -299,7 +333,7 @@ global MCP config is modified. A valid temp-profile setup must prove:
 
 - `codex mcp list --json` shows the gateway as an enabled stdio MCP server;
 - `codex mcp get <name>` shows the expected repo-local command and synthetic fixture vault;
-- a non-interactive Codex run can discover and call `resolve` and `ls` from the configured `obsidian` MCP server;
+- a non-interactive Codex run can discover the exact five-tool surface and call representative current tools from the configured `obsidian` MCP server;
 - the configured temp SQLite telemetry database contains corresponding `tool.call` rows.
 
 If the non-interactive Codex run requires an external model call and that call is

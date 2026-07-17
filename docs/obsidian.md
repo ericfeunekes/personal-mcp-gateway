@@ -30,16 +30,19 @@ The MCP server name is the public integration boundary. Do not prefix tool names
 
 The target list is phased. `tools/list` advertises only fully implemented and proven tools, never disabled placeholders. `backlinks` and `path_between` remain absent until the numeric full-vault activation gate in the requirements passes.
 
-Implemented first-slice tools:
+Implemented and accepted core tools:
 
 - `resolve`: return canonical stored-spelling/NFC identity and metadata for explicit vault-relative `path` plus optional `base`, including successful `exists:false` results for missing paths.
 - `ls`: list one directory level in canonical order with hidden-entry filtering, symlink non-traversal, a maximum limit of 500 entries, stateless source/query-bound cursors, truthful coverage, and a 64 KiB SDK-result cap.
+- `read`: select bounded content, heading, block, frontmatter, or outline evidence from one canonical Markdown path with source-bound continuation.
+- `read_many`: preserve one to 20 ordered read requests under one aggregate byte budget, isolate item errors, and continue with a request-vector-bound cursor.
+- `grep`: search Markdown content in deterministic canonical-path order with bounded context, explicit work budgets, truthful coverage, and stateless continuation.
 
-The local implementation derives registration, schemas, backend-ready names, and safe telemetry from one descriptor authority. Filesystem access is fd-anchored per operation, pagination re-scans the complete shallow directory while retaining only `O(limit)` candidates, and JSONL/SQLite summaries cannot retain raw paths, entry names, cursor values, or content. Phase 1 proof now covers candidate smoke, current-vault and stratified performance, ten cold processes, repeated-call CPU/memory/descriptor bounds, a 60-second idle window, refreshed authenticated metadata, model-selected two-page cursor continuation, and exact-candidate release acceptance.
+The local implementation derives registration, schemas, backend-ready names, and safe telemetry from one descriptor authority. Filesystem access is fd-anchored per operation, pagination re-scans the complete shallow directory while retaining only bounded candidates or cursor state, and JSONL/SQLite summaries cannot retain raw paths, entry names, patterns, selectors, cursor values, or content. Phase 1 proof covers the original `resolve`/`ls` boundary. Phase 2 proof is intentionally layered: synthetic fixtures cover retrieval semantics; current-vault probes cover broad `grep`, inventory, performance, and resources; and the authenticated model journey covers live `grep` -> `read_many` -> continued `read_many`. Together with five-tool metadata and exact release acceptance, those layers prove the accepted core surface without claiming every retrieval selector was exercised against the real vault.
 
 The 64 KiB encoded SDK result limit is the absolute context envelope for every Obsidian tool. Phase 2 retrieval may accept source/content work budgets up to 256 KiB, but it must page any larger selected work beneath that envelope with caller-carried cursors. Single-note Markdown parsing is capped at 8 MiB and 50,000 physical source lines so source-unit selection remains memory-bounded without another agent-facing option. `grep` likewise rejects an examined physical line larger than 1 MiB instead of buffering unbounded line evidence. Retrieval uses one shared coverage grammar; `grep` favors useful early pages and reports incomplete scope rather than continuing an expensive scan only to strengthen a completeness claim.
 
-Not implemented yet: `read`, `read_many`, `grep`, `links`, `traverse`, `backlinks`, and `path_between`.
+Not implemented yet: `links`, `traverse`, `backlinks`, and `path_between`.
 
 ## Stateless Path Model
 
@@ -81,13 +84,11 @@ The detailed schemas, limits, resolution rules, acceptance criteria, and perform
 
 ## Current Gaps
 
-- `GAP-OBS-001`: `read`, `read_many`, and `grep` are not implemented.
-- `GAP-OBS-002`: ChatGPT and Codex proof covers the current `ls`/`resolve` surface only; the expanded agent workflow is not proven live.
-- `GAP-OBS-003`: Root confinement, denial, read-only, cursor, and sanitized-error proof is complete for the Phase 1 `resolve`/`ls` surface; equivalent proof is not yet extended to content, batch, reference, and graph operations.
-- `GAP-OBS-004`: Full-vault grep, backlink, and path-discovery latency, scan work, response size, and freshness trade-offs are not measured. The bounded exercise/health/marathon spike is complete.
-- `GAP-OBS-005`: Existing tunnel/runtime proof remains valid, but live metadata refresh and representative model-selected calls must be repeated after the tool list expands.
+- `GAP-OBS-002`: The five-tool core-retrieval workflow is proven live through ChatGPT; outbound and inbound graph workflows are not yet proven.
+- `GAP-OBS-003`: Root confinement, denial, read-only, cursor, and sanitized-error proof is complete for the accepted five-tool core surface; equivalent proof is not yet extended to reference and graph operations.
+- `GAP-OBS-004`: Full-vault backlink and path-discovery latency, scan work, response size, and freshness trade-offs are not measured. The bounded exercise/health/marathon spike and activated grep measurements are complete.
 - `GAP-OBS-006`: `links`, the scoped request-local path catalog, and outbound `traverse` are not implemented.
 - `GAP-OBS-007`: The full-vault activation gate for live request-local `backlinks` and `path_between` has not been run or passed; the tools are neither implemented nor advertised.
-- `GAP-OBS-008`: Descriptor-owned safe telemetry summaries are complete for the Phase 1 `resolve`/`ls` surface; summaries for read, grep, batch, links, traversal, backlinks, and path discovery are not implemented.
-- `GAP-OBS-009`: Phase 1 `resolve`/`ls` summaries have local JSONL and SQLite proof, including accepted model-driven `ls` telemetry; summaries for newly activated retrieval and graph tools have not been proven.
+- `GAP-OBS-008`: Descriptor-owned safe telemetry summaries are complete for the accepted five-tool core surface; summaries for links, traversal, backlinks, and path discovery are not implemented.
+- `GAP-OBS-009`: The accepted five-tool summaries have local JSONL/SQLite proof plus live model-driven `ls`, `grep`, and continued `read_many` telemetry; graph-tool summaries have not been proven.
 - `GAP-OBS-010`: Live request-local `backlinks` and `path_between` are not implemented for pre-activation benchmark and proof.

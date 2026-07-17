@@ -32,10 +32,13 @@ path is:
 
 1. Run `make release` and retain the printed full release ID.
 2. Complete the current tool phase's authenticated journey. For the accepted
-   `resolve`/`ls` phase, refresh metadata for server `obsidian`, observe exactly
-   those two read-only tools, and have the model select two one-item shallow
-   root `ls` pages by continuing with the first result's cursor. Later tool
-   phases replace this with their own newly activated representative journey.
+   five-tool core-retrieval phase, refresh metadata for server `obsidian`,
+   observe exactly `grep`, `ls`, `read`, `read_many`, and `resolve` as read-only,
+   and have a fresh model run select `grep`, then `read_many` over returned
+   canonical paths under a deliberately small aggregate budget, then continue
+   `read_many` with the same ordered requests and budget plus the returned
+   cursor. Later graph phases replace this with their own newly activated
+   representative journey.
 3. Run `make release-accept RELEASE_ID=<full-id>` after success, or
    `make release-rollback RELEASE_ID=<full-id>` after failure.
 
