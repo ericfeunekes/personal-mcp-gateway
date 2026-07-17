@@ -63,7 +63,7 @@ func TestPhase2ResourceFixtureLocksExactComplexityBoundaries(t *testing.T) {
 	if got := bytes.Count(zeroWidthSource, []byte{'z'}); got < obsidian.MaxGrepPhysicalLineBytes-64 {
 		t.Fatalf("zero-width fixture z bytes = %d, want high-cardinality a* source", got)
 	}
-	assertSize(fixture.boundary.grepOver, obsidian.MaxGrepPhysicalLineBytes+1)
+	assertSize(fixture.boundary.grepOver, obsidian.MaxGrepPhysicalLineBytes+32*1024+7)
 	if !fixture.generated.InventoryComplete || !fixture.generated.InventoryReconciled ||
 		fixture.generated.GeneratedMarkdownFiles != fixture.generated.InventoryMarkdownFiles ||
 		fixture.generated.GeneratedBytes != fixture.generated.InventoryBytes {
@@ -182,7 +182,9 @@ func TestPhase2ResourceGateRejectsBoundaryAndToolMixDrift(t *testing.T) {
 		{name: "boundary count", edit: func(r *resourceReport) { r.Boundaries.CallCount-- }},
 		{name: "dense decoy", edit: func(r *resourceReport) { r.Boundaries.Dense50000DecoyRejected = false }},
 		{name: "dense accepted", edit: func(r *resourceReport) { r.Boundaries.Dense50000BlockAccepted = false }},
-		{name: "matching code", edit: func(r *resourceReport) { r.Boundaries.GrepExactMatchingErrorCode = "input_too_large" }},
+		{name: "matching evidence", edit: func(r *resourceReport) { r.Boundaries.GrepExactMatchingAccepted = false }},
+		{name: "oversized literal evidence", edit: func(r *resourceReport) { r.Boundaries.GrepOver1MiBLiteralMatchAccepted = false }},
+		{name: "oversized regex cap", edit: func(r *resourceReport) { r.Boundaries.GrepOver1MiBRegexErrorCode = "" }},
 		{name: "invalid utf8 code", edit: func(r *resourceReport) { r.Boundaries.GrepExactInvalidUTF8ErrorCode = "input_too_large" }},
 		{name: "tool mix", edit: func(r *resourceReport) { r.Workload.ToolCalls.Read--; r.Workload.ToolCalls.Resolve++ }},
 		{name: "batch mix", edit: func(r *resourceReport) { r.Batches[0].ToolCalls.Grep-- }},
@@ -219,7 +221,7 @@ func passingPhase2ResourceGateReport() resourceReport {
 	report.Workload = resourceWorkloadReport{
 		BatchCount: resourceBatchCount, CallsPerBatch: resourceBatchCalls, CallsPerToolPerBatch: resourceCallsPerToolPerBatch,
 		MixedCallCount: resourceBatchCount * resourceBatchCalls, BoundaryCallCount: resourceBoundaryCalls, MeasuredCallCount: resourceMeasuredCalls,
-		ToolCalls:                    resourceToolCallCounts{Resolve: 60, LS: 60, Read: 65, ReadMany: 60, Grep: 67},
+		ToolCalls:                    resourceToolCallCounts{Resolve: 60, LS: 60, Read: 65, ReadMany: 60, Grep: 68},
 		MaxClientLatencyMicroseconds: 1, MaxSDKResultBytes: 1, MaxStructuredBytes: 1, MaxBytesScanned: 1,
 		EveryCallWithinTwoSeconds: true, EverySDKResultWithin64KiB: true,
 	}
@@ -227,10 +229,11 @@ func passingPhase2ResourceGateReport() resourceReport {
 		CallCount: resourceBoundaryCalls, BatchNumber: 1, RanAfterBaseline: true, RanBeforeBlockingGC: true,
 		Near8MiBStructuralAccepted: true, Dense50000DecoyRejected: true, Dense50000BlockAccepted: true,
 		Over8MiBErrorCode: "input_too_large", Over50000LinesErrorCode: "input_too_large",
-		GrepExactMatchingErrorCode: obsidian.ResponseTooLargeCode, GrepExactNonmatchingAccepted: true,
-		GrepExactContextErrorCode: obsidian.ResponseTooLargeCode, GrepExactUnicodeErrorCode: obsidian.ResponseTooLargeCode,
+		GrepExactMatchingAccepted: true, GrepExactNonmatchingAccepted: true,
+		GrepExactContextAccepted: true, GrepExactUnicodeAccepted: true,
 		GrepExactZeroWidthErrorCode: obsidian.ResponseTooLargeCode, GrepExactInvalidUTF8ErrorCode: obsidian.InvalidUTF8Code,
-		GrepOver1MiBErrorCode: "input_too_large", EveryCallWithinTwoSeconds: true, EverySDKResultWithin64KiB: true,
+		GrepOver1MiBLiteralMatchAccepted: true, GrepOver1MiBRegexErrorCode: "input_too_large",
+		EveryCallWithinTwoSeconds: true, EverySDKResultWithin64KiB: true,
 	}
 	for index := range report.Batches {
 		if index == 0 {

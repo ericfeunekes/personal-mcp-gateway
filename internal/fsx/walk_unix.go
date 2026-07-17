@@ -78,7 +78,7 @@ func (v *Vault) walkOpenedDirectory(ctx context.Context, dir *Directory, visit W
 	}
 	stats.DirectoriesScanned++
 
-	candidates, source, err := scanWalkDirectory(ctx, dir, true, stats)
+	candidates, identity, err := scanWalkDirectory(ctx, dir, stats)
 	if err != nil {
 		return false, err
 	}
@@ -126,12 +126,8 @@ func (v *Vault) walkOpenedDirectory(ctx context.Context, dir *Directory, visit W
 		}
 	}
 
-	verification, err := verifyWalkDirectory(ctx, dir, stats)
-	if err != nil {
+	if err := verifyWalkDirectory(ctx, dir, identity, candidates, stats); err != nil {
 		return false, err
-	}
-	if verification != source {
-		return false, &Error{Code: CodeSourceChanged}
 	}
 	return false, nil
 }
@@ -139,38 +135,37 @@ func (v *Vault) walkOpenedDirectory(ctx context.Context, dir *Directory, visit W
 // scanWalkDirectory performs the one canonical materialization scan for an
 // opened directory. The explicit raw-entry ceiling bounds hidden and skipped
 // entries as well as candidates retained for sorting.
-func scanWalkDirectory(ctx context.Context, dir *Directory, collect bool, stats *WalkStats) ([]walkCandidate, SourceFingerprint, error) {
+func scanWalkDirectory(ctx context.Context, dir *Directory, stats *WalkStats) ([]walkCandidate, directoryIdentity, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, SourceFingerprint{}, contextError(err)
+		return nil, directoryIdentity{}, contextError(err)
 	}
 	fd, err := dir.fd()
 	if err != nil {
-		return nil, SourceFingerprint{}, err
+		return nil, directoryIdentity{}, err
 	}
 	before, err := statDirectory(fd)
 	if err != nil {
-		return nil, SourceFingerprint{}, mapPathError(err)
+		return nil, directoryIdentity{}, mapPathError(err)
 	}
 
-	var membership membershipAccumulator
 	var candidates []walkCandidate
 	var entriesScanned int
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil, SourceFingerprint{}, contextError(err)
+			return nil, directoryIdentity{}, contextError(err)
 		}
 		entries, readErr := dir.file.ReadDir(walkReadBatchSize)
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
-			return nil, SourceFingerprint{}, mapReadDirError(readErr)
+			return nil, directoryIdentity{}, mapReadDirError(readErr)
 		}
 		for _, dirEntry := range entries {
 			entriesScanned++
 			stats.EntriesScanned++
 			if entriesScanned > walkDirectoryEntryLimit {
-				return nil, SourceFingerprint{}, &Error{Code: CodeInputTooLarge}
+				return nil, directoryIdentity{}, &Error{Code: CodeInputTooLarge}
 			}
 			if err := ctx.Err(); err != nil {
-				return nil, SourceFingerprint{}, contextError(err)
+				return nil, directoryIdentity{}, contextError(err)
 			}
 			name := dirEntry.Name()
 			if deniedSegment(name) {
@@ -178,13 +173,9 @@ func scanWalkDirectory(ctx context.Context, dir *Directory, collect bool, stats 
 			}
 			rel := joinRel(dir.resolved.Rel, name)
 			position := Position{NFC: norm.NFC.String(rel), Stored: rel}
-			membership.add(position)
-			if !collect {
-				continue
-			}
 			var baseline unix.Stat_t
 			if err := unix.Fstatat(fd, name, &baseline, unix.AT_SYMLINK_NOFOLLOW); err != nil {
-				return nil, SourceFingerprint{}, &Error{Code: CodeSourceChanged}
+				return nil, directoryIdentity{}, &Error{Code: CodeSourceChanged}
 			}
 			candidates = append(candidates, walkCandidate{
 				entry: Entry{
@@ -205,43 +196,77 @@ func scanWalkDirectory(ctx context.Context, dir *Directory, collect bool, stats 
 
 	after, err := statDirectory(fd)
 	if err != nil || before != after {
-		return nil, SourceFingerprint{}, &Error{Code: CodeSourceChanged}
+		return nil, directoryIdentity{}, &Error{Code: CodeSourceChanged}
 	}
-	if collect {
-		sort.Slice(candidates, func(i, j int) bool {
-			return comparePosition(walkOrderPosition(candidates[i].entry), walkOrderPosition(candidates[j].entry)) < 0
-		})
-		if len(candidates) > stats.PeakCandidatesRetained {
-			stats.PeakCandidatesRetained = len(candidates)
-		}
+	sort.Slice(candidates, func(i, j int) bool {
+		return comparePosition(walkOrderPosition(candidates[i].entry), walkOrderPosition(candidates[j].entry)) < 0
+	})
+	if len(candidates) > stats.PeakCandidatesRetained {
+		stats.PeakCandidatesRetained = len(candidates)
 	}
-	return candidates, sourceFingerprint(before, membership), nil
+	return candidates, before, nil
 }
 
-func verifyWalkDirectory(ctx context.Context, dir *Directory, stats *WalkStats) (SourceFingerprint, error) {
+func verifyWalkDirectory(ctx context.Context, dir *Directory, expectedIdentity directoryIdentity, candidates []walkCandidate, stats *WalkStats) error {
 	fd, err := dir.fd()
 	if err != nil {
-		return SourceFingerprint{}, err
+		return err
 	}
 	verifyFD, err := unix.Openat(fd, ".", directoryOpenFlags, 0)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return SourceFingerprint{}, contextError(ctxErr)
+			return contextError(ctxErr)
 		}
-		return SourceFingerprint{}, &Error{Code: CodeSourceChanged}
+		return &Error{Code: CodeSourceChanged}
 	}
 	file := os.NewFile(uintptr(verifyFD), "<vault-walk-verification>")
 	if file == nil {
 		_ = unix.Close(verifyFD)
-		return SourceFingerprint{}, &Error{Code: CodeSourceChanged}
+		return &Error{Code: CodeSourceChanged}
 	}
 	verificationDir := &Directory{file: file, resolved: dir.resolved}
 	defer verificationDir.Close()
-	_, source, err := scanWalkDirectory(ctx, verificationDir, false, stats)
-	if err == nil || IsCode(err, CodeCanceled) || IsCode(err, CodeTimeout) {
-		return source, err
+	identity, err := statDirectory(verifyFD)
+	if err != nil || identity != expectedIdentity {
+		return &Error{Code: CodeSourceChanged}
 	}
-	return SourceFingerprint{}, &Error{Code: CodeSourceChanged}
+	expected := make(map[string]struct{}, len(candidates))
+	for i := range candidates {
+		expected[candidates[i].entry.Name] = struct{}{}
+	}
+	entriesScanned := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return contextError(err)
+		}
+		entries, readErr := verificationDir.file.ReadDir(walkReadBatchSize)
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return &Error{Code: CodeSourceChanged}
+		}
+		for _, entry := range entries {
+			entriesScanned++
+			stats.EntriesScanned++
+			if entriesScanned > walkDirectoryEntryLimit {
+				return &Error{Code: CodeInputTooLarge}
+			}
+			name := entry.Name()
+			if deniedSegment(name) {
+				continue
+			}
+			if _, ok := expected[name]; !ok {
+				return &Error{Code: CodeSourceChanged}
+			}
+			delete(expected, name)
+		}
+		if errors.Is(readErr, io.EOF) || len(entries) == 0 {
+			break
+		}
+	}
+	after, err := statDirectory(verifyFD)
+	if err != nil || after != expectedIdentity || len(expected) != 0 {
+		return &Error{Code: CodeSourceChanged}
+	}
+	return nil
 }
 
 func (v *Vault) openWalkDirectory(ctx context.Context, parent *Directory, candidate *walkCandidate) (*Directory, error) {

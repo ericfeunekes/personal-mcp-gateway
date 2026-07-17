@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -25,13 +26,13 @@ import (
 )
 
 const (
-	resourceReportSchema              = "personal-mcp-gateway.resource.v5"
-	resourceReportVersion             = 5
+	resourceReportSchema              = "personal-mcp-gateway.resource.v6"
+	resourceReportVersion             = 6
 	resourceColdProcesses             = 10
 	resourceBatchCount                = 3
 	resourceBatchCalls                = 100
 	resourceCallsPerToolPerBatch      = 20
-	resourceBoundaryCalls             = 12
+	resourceBoundaryCalls             = 13
 	resourceMeasuredCalls             = resourceBatchCount*resourceBatchCalls + resourceBoundaryCalls
 	resourceHeapAllocGrowthLimitBytes = uint64(256 * 1024)
 	resourceRSSGrowthLimitBytes       = int64(8 * 1024 * 1024)
@@ -116,24 +117,25 @@ type resourceWorkloadReport struct {
 }
 
 type resourceBoundaryReport struct {
-	CallCount                     int    `json:"call_count"`
-	BatchNumber                   int    `json:"batch_number"`
-	RanAfterBaseline              bool   `json:"ran_after_baseline"`
-	RanBeforeBlockingGC           bool   `json:"ran_before_blocking_gc"`
-	Near8MiBStructuralAccepted    bool   `json:"near_8mib_structural_accepted"`
-	Dense50000DecoyRejected       bool   `json:"dense_50000_decoy_rejected"`
-	Dense50000BlockAccepted       bool   `json:"dense_50000_block_accepted"`
-	Over8MiBErrorCode             string `json:"over_8mib_error_code"`
-	Over50000LinesErrorCode       string `json:"over_50000_lines_error_code"`
-	GrepExactMatchingErrorCode    string `json:"grep_exact_matching_error_code"`
-	GrepExactNonmatchingAccepted  bool   `json:"grep_exact_nonmatching_accepted"`
-	GrepExactContextErrorCode     string `json:"grep_exact_context_error_code"`
-	GrepExactUnicodeErrorCode     string `json:"grep_exact_unicode_error_code"`
-	GrepExactZeroWidthErrorCode   string `json:"grep_exact_zero_width_error_code"`
-	GrepExactInvalidUTF8ErrorCode string `json:"grep_exact_invalid_utf8_error_code"`
-	GrepOver1MiBErrorCode         string `json:"grep_over_1mib_error_code"`
-	EveryCallWithinTwoSeconds     bool   `json:"every_call_within_two_seconds"`
-	EverySDKResultWithin64KiB     bool   `json:"every_sdk_result_within_64kib"`
+	CallCount                        int    `json:"call_count"`
+	BatchNumber                      int    `json:"batch_number"`
+	RanAfterBaseline                 bool   `json:"ran_after_baseline"`
+	RanBeforeBlockingGC              bool   `json:"ran_before_blocking_gc"`
+	Near8MiBStructuralAccepted       bool   `json:"near_8mib_structural_accepted"`
+	Dense50000DecoyRejected          bool   `json:"dense_50000_decoy_rejected"`
+	Dense50000BlockAccepted          bool   `json:"dense_50000_block_accepted"`
+	Over8MiBErrorCode                string `json:"over_8mib_error_code"`
+	Over50000LinesErrorCode          string `json:"over_50000_lines_error_code"`
+	GrepExactMatchingAccepted        bool   `json:"grep_exact_matching_accepted"`
+	GrepExactNonmatchingAccepted     bool   `json:"grep_exact_nonmatching_accepted"`
+	GrepExactContextAccepted         bool   `json:"grep_exact_context_accepted"`
+	GrepExactUnicodeAccepted         bool   `json:"grep_exact_unicode_accepted"`
+	GrepExactZeroWidthErrorCode      string `json:"grep_exact_zero_width_error_code"`
+	GrepExactInvalidUTF8ErrorCode    string `json:"grep_exact_invalid_utf8_error_code"`
+	GrepOver1MiBLiteralMatchAccepted bool   `json:"grep_over_1mib_literal_match_accepted"`
+	GrepOver1MiBRegexErrorCode       string `json:"grep_over_1mib_regex_error_code"`
+	EveryCallWithinTwoSeconds        bool   `json:"every_call_within_two_seconds"`
+	EverySDKResultWithin64KiB        bool   `json:"every_sdk_result_within_64kib"`
 }
 
 type coldResourceReport struct {
@@ -755,7 +757,8 @@ func newResourceFixture() (resourceFixture, error) {
 	if err != nil {
 		return resourceFixture{}, err
 	}
-	fixture.boundary.grepOver, err = write("grep-over.md", append(bytes.Repeat([]byte{'o'}, obsidian.MaxGrepPhysicalLineBytes), '\n'))
+	oversizedPrefix := bytes.Repeat([]byte{'o'}, obsidian.MaxGrepPhysicalLineBytes+32*1024-2)
+	fixture.boundary.grepOver, err = write("grep-over.md", append(oversizedPrefix, []byte("overover\n")...))
 	if err != nil {
 		return resourceFixture{}, err
 	}
@@ -1039,7 +1042,7 @@ func validResourceWorkload(report resourceWorkloadReport) bool {
 		LS:       resourceBatchCount * resourceCallsPerToolPerBatch,
 		Read:     resourceBatchCount*resourceCallsPerToolPerBatch + 5,
 		ReadMany: resourceBatchCount * resourceCallsPerToolPerBatch,
-		Grep:     resourceBatchCount*resourceCallsPerToolPerBatch + 7,
+		Grep:     resourceBatchCount*resourceCallsPerToolPerBatch + 8,
 	}
 	return report.BatchCount == resourceBatchCount && report.CallsPerBatch == resourceBatchCalls &&
 		report.CallsPerToolPerBatch == resourceCallsPerToolPerBatch &&
@@ -1054,10 +1057,11 @@ func validResourceBoundaries(report resourceBoundaryReport) bool {
 	return report.CallCount == resourceBoundaryCalls && report.BatchNumber == 1 && report.RanAfterBaseline && report.RanBeforeBlockingGC &&
 		report.Near8MiBStructuralAccepted && report.Dense50000DecoyRejected && report.Dense50000BlockAccepted &&
 		report.Over8MiBErrorCode == "input_too_large" && report.Over50000LinesErrorCode == "input_too_large" &&
-		report.GrepExactMatchingErrorCode == obsidian.ResponseTooLargeCode && report.GrepExactNonmatchingAccepted &&
-		report.GrepExactContextErrorCode == obsidian.ResponseTooLargeCode && report.GrepExactUnicodeErrorCode == obsidian.ResponseTooLargeCode &&
+		report.GrepExactMatchingAccepted && report.GrepExactNonmatchingAccepted &&
+		report.GrepExactContextAccepted && report.GrepExactUnicodeAccepted &&
 		report.GrepExactZeroWidthErrorCode == obsidian.ResponseTooLargeCode && report.GrepExactInvalidUTF8ErrorCode == obsidian.InvalidUTF8Code &&
-		report.GrepOver1MiBErrorCode == "input_too_large" && report.EveryCallWithinTwoSeconds && report.EverySDKResultWithin64KiB
+		report.GrepOver1MiBLiteralMatchAccepted && report.GrepOver1MiBRegexErrorCode == "input_too_large" &&
+		report.EveryCallWithinTwoSeconds && report.EverySDKResultWithin64KiB
 }
 
 func validMixedBatch(batch resourceBatchReport) bool {
@@ -1301,9 +1305,46 @@ func probeResourceBoundaries(ctx context.Context, session *sdk.ClientSession, fi
 			return true, "", sample, nil
 		}
 		if !isError || out.OK || out.Error == nil || out.Error.Code != wantError || out.Coverage.Continuation != "restart" {
-			return false, "", sample, errors.New("candidate resource grep rejection boundary failed")
+			actualCode := ""
+			if out.Error != nil {
+				actualCode = out.Error.Code
+			}
+			return false, "", sample, fmt.Errorf(
+				"candidate resource grep rejection boundary failed: path=%s regex=%t want=%s actual=%s is_error=%t ok=%t continuation=%s",
+				path, regex, wantError, actualCode, isError, out.OK, out.Coverage.Continuation,
+			)
 		}
 		return false, out.Error.Code, sample, nil
+	}
+	grepMatchCall := func(path, pattern string, contextLines, wantColumn, wantOccurrences int, wantBefore bool) (bool, resourceCallSample, error) {
+		out, sample, isError, err := callResourceCandidate[obsidian.GrepOutput](ctx, session, obsidian.ToolGrep, map[string]any{
+			"pattern": pattern, "path": path, "regex": false, "context_lines": contextLines, "limit": 1,
+		})
+		sample = coverageResourceCall(sample, out.Coverage)
+		if err != nil || isError || !out.OK || out.Error != nil || len(out.Matches) != 1 ||
+			out.Coverage.Continuation != "cursor" || out.Coverage.NextCursor == "" {
+			return false, sample, errors.New("candidate resource grep bounded-match boundary failed")
+		}
+		match := out.Matches[0]
+		textStartColumn := match.TextStartColumn
+		if textStartColumn == 0 {
+			textStartColumn = 1
+		}
+		relativeColumn := match.Column - textStartColumn
+		textRunes := []rune(match.Text)
+		patternRunes := []rune(pattern)
+		if match.Column != wantColumn || match.Occurrences != wantOccurrences || relativeColumn < 0 ||
+			relativeColumn+len(patternRunes) > len(textRunes) || string(textRunes[relativeColumn:relativeColumn+len(patternRunes)]) != pattern {
+			return false, sample, errors.New("candidate resource grep match position or occurrence evidence failed")
+		}
+		if wantBefore {
+			if len(match.Before) != 1 || !match.Before[0].TextTruncated || match.Before[0].TextStartColumn != 1 || match.Before[0].LineBytes <= int64(len(match.Before[0].Text)) {
+				return false, sample, errors.New("candidate resource grep bounded-context evidence failed")
+			}
+		} else if !match.TextTruncated || match.TextStartColumn < 1 || match.TextEndColumn < match.TextStartColumn || match.LineBytes <= int64(len(match.Text)) {
+			return false, sample, errors.New("candidate resource grep bounded-match evidence failed")
+		}
+		return true, sample, nil
 	}
 
 	near, sample, err := readSuccess(fixture.near8MiB, map[string]any{"kind": obsidian.SelectorHeading, "heading": "Boundary"})
@@ -1349,7 +1390,10 @@ func probeResourceBoundaries(ctx context.Context, session *sdk.ClientSession, fi
 		return resourceBoundaryReport{}, err
 	}
 
-	_, report.GrepExactMatchingErrorCode, sample, err = grepCall(fixture.grepMatching, "resource-boundary-match", false, 0, obsidian.ResponseTooLargeCode)
+	report.GrepExactMatchingAccepted, sample, err = grepMatchCall(
+		fixture.grepMatching, "resource-boundary-match", 0,
+		obsidian.MaxGrepPhysicalLineBytes-len("resource-boundary-match"), 1, false,
+	)
 	if err != nil {
 		return resourceBoundaryReport{}, err
 	}
@@ -1363,14 +1407,16 @@ func probeResourceBoundaries(ctx context.Context, session *sdk.ClientSession, fi
 	if err := add(obsidian.ToolGrep, sample); err != nil {
 		return resourceBoundaryReport{}, err
 	}
-	_, report.GrepExactContextErrorCode, sample, err = grepCall(fixture.grepContext, "resource-boundary-context-match", false, 1, obsidian.ResponseTooLargeCode)
+	report.GrepExactContextAccepted, sample, err = grepMatchCall(fixture.grepContext, "resource-boundary-context-match", 1, 1, 1, true)
 	if err != nil {
 		return resourceBoundaryReport{}, err
 	}
 	if err := add(obsidian.ToolGrep, sample); err != nil {
 		return resourceBoundaryReport{}, err
 	}
-	_, report.GrepExactUnicodeErrorCode, sample, err = grepCall(fixture.grepUnicode, "\u00e9", false, 0, obsidian.ResponseTooLargeCode)
+	report.GrepExactUnicodeAccepted, sample, err = grepMatchCall(
+		fixture.grepUnicode, "\u00e9", 0, obsidian.MaxGrepPhysicalLineBytes-len("\u00e9"), 1, false,
+	)
 	if err != nil {
 		return resourceBoundaryReport{}, err
 	}
@@ -1391,7 +1437,16 @@ func probeResourceBoundaries(ctx context.Context, session *sdk.ClientSession, fi
 	if err := add(obsidian.ToolGrep, sample); err != nil {
 		return resourceBoundaryReport{}, err
 	}
-	_, report.GrepOver1MiBErrorCode, sample, err = grepCall(fixture.grepOver, "over", false, 0, "input_too_large")
+	report.GrepOver1MiBLiteralMatchAccepted, sample, err = grepMatchCall(
+		fixture.grepOver, "over", 0, obsidian.MaxGrepPhysicalLineBytes+32*1024-1, 2, false,
+	)
+	if err != nil {
+		return resourceBoundaryReport{}, err
+	}
+	if err := add(obsidian.ToolGrep, sample); err != nil {
+		return resourceBoundaryReport{}, err
+	}
+	_, report.GrepOver1MiBRegexErrorCode, sample, err = grepCall(fixture.grepOver, "over", true, 0, "input_too_large")
 	if err != nil {
 		return resourceBoundaryReport{}, err
 	}

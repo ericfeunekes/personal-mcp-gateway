@@ -19,7 +19,7 @@ Proof must match the claim. This repo handles personal data, so green unit tests
 | MCP tool registration and schemas | Boundary tests around `internal/mcp` and server/tool registration | Adding or changing tools |
 | Vault path confinement | Filesystem adapter tests with temp fixture vaults, traversal cases, symlink escapes, and denied file patterns | Any filesystem behavior changes |
 | Read-only guarantee | Integration test with before/after fixture-vault snapshot | Any Obsidian tool change |
-| Search and listing limits | Large fixture tests with timeout, depth, byte, result, and cancellation assertions | Any traversal or search change |
+| Search and listing limits | Large fixture tests with timeout, depth, byte, result, cancellation, oversized-literal streaming, bounded-evidence, and regex-line-cap assertions | Any traversal or search change |
 | Structured telemetry | SQLite and JSONL proof matrix covering event families, sanitized identifiers, sink degradation, and no raw path leaks | Any audit or tool-call behavior change |
 | Local release transaction lifecycle | Executable state/event matrix plus process tests for locking, crash-boundary reconciliation, exact-hash accept/rollback, first-install unload, recovery-artifact retention, and installed-service pending-to-terminal journeys | Any change to release, update, rollback, acceptance, or supervised-runtime activation behavior |
 | Obsidian server tool names in ChatGPT | Live smoke test through OpenAI Secure MCP Tunnel | Before treating connector compatibility as settled |
@@ -54,6 +54,10 @@ treated as accepted:
 
 - config validation and loopback bind rejection tests;
 - root-confined filesystem adapter tests for traversal, absolute paths, hidden entries, symlink traversal, limits, cancellation, and read-only behavior;
+- grep boundary tests proving literal mode searches complete oversized physical
+  lines while returning explicit bounded UTF-8 evidence, continues to account
+  for byte budgets and invalid UTF-8 beyond the excerpt, and leaves regex mode's
+  1 MiB physical-line rejection intact;
 - SDK subprocess stdio tests through `cmd/gateway`;
 - process-level tests proving both production stdio/tunnel wrappers fail fast
   and do not print configured host paths when the vault root is unavailable;

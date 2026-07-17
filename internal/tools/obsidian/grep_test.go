@@ -154,6 +154,122 @@ func TestGrepAcceptsExactlyMaximumPhysicalLine(t *testing.T) {
 	}
 }
 
+func TestGrepLiteralStreamsOversizedLineAndReturnsBoundedEvidence(t *testing.T) {
+	root := t.TempDir()
+	literal := false
+	zero := 0
+	prefixBytes := MaxGrepPhysicalLineBytes + 32*1024 - 3
+	line := strings.Repeat("a", prefixBytes) + "TaRgEt tail target\n"
+	writeGrepFile(t, root, "note.md", line)
+	tools := grepTools(t, root)
+
+	_, out, err := tools.Grep(context.Background(), nil, GrepInput{
+		Pattern: "target", Path: "note.md", Regex: &literal, ContextLines: &zero,
+	})
+	if err != nil || !out.OK || len(out.Matches) != 1 || !out.Coverage.ScopeComplete {
+		t.Fatalf("out=%#v err=%v", out, err)
+	}
+	match := out.Matches[0]
+	if match.Column != prefixBytes+1 || match.Occurrences != 2 || !match.TextTruncated ||
+		match.TextStartColumn < 1 || match.TextEndColumn < match.TextStartColumn ||
+		match.LineBytes != int64(len(line)-1) || !strings.Contains(strings.ToLower(match.Text), "target") ||
+		len(match.Text) > grepEvidenceTextBytes {
+		t.Fatalf("match=%#v", match)
+	}
+	if out.Coverage.BytesScanned != uint64(len(line)) {
+		t.Fatalf("coverage=%#v", out.Coverage)
+	}
+}
+
+func TestGrepOversizedLiteralPreservesNonOverlappingMatchesAcrossChunks(t *testing.T) {
+	root := t.TempDir()
+	literal := false
+	zero := 0
+	prefixBytes := MaxGrepPhysicalLineBytes + 32*1024 - 2
+	line := strings.Repeat("z", prefixBytes) + "aaaa\n"
+	writeGrepFile(t, root, "note.md", line)
+	tools := grepTools(t, root)
+
+	_, out, err := tools.Grep(context.Background(), nil, GrepInput{
+		Pattern: "aa", Path: "note.md", Regex: &literal, CaseSensitive: true, ContextLines: &zero,
+	})
+	if err != nil || !out.OK || len(out.Matches) != 1 || out.Matches[0].Occurrences != 2 ||
+		out.Matches[0].Column != prefixBytes+1 {
+		t.Fatalf("out=%#v err=%v", out, err)
+	}
+}
+
+func TestGrepLiteralOversizedMissAndTruncatedContextRemainComplete(t *testing.T) {
+	root := t.TempDir()
+	literal := false
+	one := 1
+	oversized := strings.Repeat("z", MaxGrepPhysicalLineBytes+17) + "\n"
+	writeGrepFile(t, root, "note.md", oversized+"hit\n")
+	tools := grepTools(t, root)
+
+	_, out, err := tools.Grep(context.Background(), nil, GrepInput{
+		Pattern: "hit", Path: "note.md", Regex: &literal, CaseSensitive: true, ContextLines: &one,
+	})
+	if err != nil || !out.OK || len(out.Matches) != 1 || !out.Coverage.ScopeComplete {
+		t.Fatalf("out=%#v err=%v", out, err)
+	}
+	before := out.Matches[0].Before
+	if len(before) != 1 || !before[0].TextTruncated || before[0].TextStartColumn != 1 ||
+		before[0].LineBytes != int64(len(oversized)-1) || len(before[0].Text) > grepEvidenceTextBytes {
+		t.Fatalf("before=%#v", before)
+	}
+}
+
+func TestGrepMatchedOversizedLineUsesColumnOneExcerptAsLaterContext(t *testing.T) {
+	root := t.TempDir()
+	literal := false
+	one := 1
+	oversized := strings.Repeat("z", MaxGrepPhysicalLineBytes+17) + " hit\n"
+	writeGrepFile(t, root, "note.md", oversized+"hit again\n")
+	tools := grepTools(t, root)
+
+	_, out, err := tools.Grep(context.Background(), nil, GrepInput{
+		Pattern: "hit", Path: "note.md", Regex: &literal, CaseSensitive: true, ContextLines: &one,
+	})
+	if err != nil || !out.OK || len(out.Matches) != 2 {
+		t.Fatalf("out=%#v err=%v", out, err)
+	}
+	matchEvidence := out.Matches[0]
+	contextEvidence := out.Matches[1].Before
+	if !matchEvidence.TextTruncated || matchEvidence.TextStartColumn <= 1 || len(contextEvidence) != 1 ||
+		!contextEvidence[0].TextTruncated || contextEvidence[0].TextStartColumn != 1 ||
+		!strings.HasPrefix(contextEvidence[0].Text, "zzzz") || strings.Contains(contextEvidence[0].Text, "hit") {
+		t.Fatalf("match=%#v context=%#v", matchEvidence, contextEvidence)
+	}
+}
+
+func TestGrepLiteralOversizedLinePreservesUTF8AndByteBudgetErrors(t *testing.T) {
+	root := t.TempDir()
+	literal := false
+	invalid := append([]byte(strings.Repeat("a", MaxGrepPhysicalLineBytes+8)), 0xff, '\n')
+	if err := os.WriteFile(filepath.Join(root, "invalid.md"), invalid, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeGrepFile(t, root, "budget.md", strings.Repeat("a", MaxGrepPhysicalLineBytes+64)+"\n")
+	tools := grepTools(t, root)
+
+	result, invalidOut, err := tools.Grep(context.Background(), nil, GrepInput{
+		Pattern: "missing", Path: "invalid.md", Regex: &literal, CaseSensitive: true,
+	})
+	if err != nil || result == nil || !result.IsError || invalidOut.Error == nil || invalidOut.Error.Code != InvalidUTF8Code {
+		t.Fatalf("result=%#v out=%#v err=%v", result, invalidOut, err)
+	}
+
+	budget := int64(MaxGrepPhysicalLineBytes + 16)
+	result, budgetOut, err := tools.Grep(context.Background(), nil, GrepInput{
+		Pattern: "missing", Path: "budget.md", Regex: &literal, CaseSensitive: true, MaxBytes: budget,
+	})
+	if err != nil || result == nil || !result.IsError || budgetOut.Error == nil ||
+		budgetOut.Error.Code != string(fsx.CodeLimitExceeded) || budgetOut.Coverage.BytesScanned != uint64(budget) {
+		t.Fatalf("result=%#v out=%#v err=%v", result, budgetOut, err)
+	}
+}
+
 func TestGrepHighCardinalityOversizedEvidenceAvoidsPerMatchAllocation(t *testing.T) {
 	tests := []struct {
 		name         string

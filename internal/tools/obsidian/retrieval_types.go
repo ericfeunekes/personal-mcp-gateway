@@ -110,7 +110,7 @@ type GrepInput struct {
 	Base          string `json:"base,omitempty" jsonschema:"optional vault-relative base used only to resolve path"`
 	Regex         *bool  `json:"regex,omitempty" jsonschema:"true for Go RE2 syntax and false for a literal; defaults to true"`
 	CaseSensitive bool   `json:"case_sensitive,omitempty" jsonschema:"case-sensitive matching when true; defaults to false"`
-	ContextLines  *int   `json:"context_lines,omitempty" jsonschema:"complete source lines before and after each match, 0 through 3; defaults to 1"`
+	ContextLines  *int   `json:"context_lines,omitempty" jsonschema:"bounded source-line evidence before and after each match, 0 through 3; defaults to 1"`
 	Limit         int    `json:"limit,omitempty" jsonschema:"matching-line result limit, 1 through 200; defaults to 50"`
 	MaxFiles      int    `json:"max_files,omitempty" jsonschema:"Markdown files opened for new content work, 1 through 50000; defaults to 10000"`
 	MaxBytes      int64  `json:"max_bytes,omitempty" jsonschema:"source bytes read for new content work, 1 through 1073741824; defaults to 268435456"`
@@ -118,19 +118,27 @@ type GrepInput struct {
 }
 
 type GrepContextLine struct {
-	Line int    `json:"line"`
-	Text string `json:"text"`
+	Line            int    `json:"line"`
+	Text            string `json:"text"`
+	TextTruncated   bool   `json:"text_truncated,omitempty"`
+	TextStartColumn int    `json:"text_start_column,omitempty"`
+	TextEndColumn   int    `json:"text_end_column,omitempty"`
+	LineBytes       int64  `json:"line_bytes,omitempty"`
 }
 
 type GrepMatch struct {
-	Path        string            `json:"path"`
-	Line        int               `json:"line"`
-	Column      int               `json:"column"`
-	Occurrences int               `json:"occurrences"`
-	Text        string            `json:"text"`
-	Before      []GrepContextLine `json:"before"`
-	After       []GrepContextLine `json:"after"`
-	Fingerprint string            `json:"fingerprint"`
+	Path            string            `json:"path"`
+	Line            int               `json:"line"`
+	Column          int               `json:"column"`
+	Occurrences     int               `json:"occurrences"`
+	Text            string            `json:"text"`
+	TextTruncated   bool              `json:"text_truncated,omitempty"`
+	TextStartColumn int               `json:"text_start_column,omitempty"`
+	TextEndColumn   int               `json:"text_end_column,omitempty"`
+	LineBytes       int64             `json:"line_bytes,omitempty"`
+	Before          []GrepContextLine `json:"before"`
+	After           []GrepContextLine `json:"after"`
+	Fingerprint     string            `json:"fingerprint"`
 }
 
 type GrepOutput struct {

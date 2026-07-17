@@ -47,7 +47,7 @@ func grepInputSchema() map[string]any {
 		"base":           stringSchema("optional vault-relative base used only to resolve path"),
 		"regex":          withDefault(map[string]any{"type": "boolean", "description": "true for Go RE2 syntax and false for a literal"}, true),
 		"case_sensitive": withDefault(map[string]any{"type": "boolean", "description": "case-sensitive matching when true"}, false),
-		"context_lines":  integerSchema("complete source lines before and after each match", 0, MaxGrepContextLines, DefaultGrepContextLines),
+		"context_lines":  integerSchema("bounded source-line evidence before and after each match", 0, MaxGrepContextLines, DefaultGrepContextLines),
 		"limit":          integerSchema("matching-line result limit", 1, MaxGrepLimit, DefaultGrepLimit),
 		"max_files":      integerSchema("Markdown files opened for new content work", 1, MaxGrepMaxFiles, DefaultGrepMaxFiles),
 		"max_bytes":      integerSchema("source bytes read for new content work", 1, MaxGrepMaxBytes, DefaultGrepMaxBytes),
