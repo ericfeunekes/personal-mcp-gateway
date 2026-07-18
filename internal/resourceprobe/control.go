@@ -31,6 +31,7 @@ type Controller struct {
 	command      *os.File
 	ack          *os.File
 	activity     *fsx.ActivityCounter
+	grepActivity *fsx.SchedulerActivity
 	runtimeGC    func()
 	freeOSMemory func()
 	readMemStats func(*runtime.MemStats)
@@ -112,14 +113,15 @@ func requirePipe(fd int) error {
 // New is the deterministic package-test constructor. Production uses
 // FromEnvironment so the controller cannot exist without inherited pipes.
 func New(command, ack *os.File, activity *fsx.ActivityCounter) *Controller {
-	return newController(command, ack, activity, runtime.GC, debug.FreeOSMemory, runtime.ReadMemStats)
+	return newController(command, ack, activity, &fsx.SchedulerActivity{}, runtime.GC, debug.FreeOSMemory, runtime.ReadMemStats)
 }
 
-func newController(command, ack *os.File, activity *fsx.ActivityCounter, runtimeGC, freeOSMemory func(), readMemStats func(*runtime.MemStats)) *Controller {
+func newController(command, ack *os.File, activity *fsx.ActivityCounter, grepActivity *fsx.SchedulerActivity, runtimeGC, freeOSMemory func(), readMemStats func(*runtime.MemStats)) *Controller {
 	return &Controller{
 		command:      command,
 		ack:          ack,
 		activity:     activity,
+		grepActivity: grepActivity,
 		runtimeGC:    runtimeGC,
 		freeOSMemory: freeOSMemory,
 		readMemStats: readMemStats,
@@ -133,12 +135,21 @@ func (c *Controller) Activity() *fsx.ActivityCounter {
 	return c.activity
 }
 
+// GrepActivity is a private resource-probe observer for active concurrent
+// grep scans. It is absent from normal runtime and records aggregates only.
+func (c *Controller) GrepActivity() *fsx.SchedulerActivity {
+	if c == nil {
+		return nil
+	}
+	return c.grepActivity
+}
+
 // Run serves exact gc and snapshot commands. The gc acknowledgement includes
 // only aggregate runtime memory values read after blocking runtime.GC and
 // debug.FreeOSMemory return, so one validated reply is causal evidence that
 // both heap collection and best-effort page release completed.
 func (c *Controller) Run(ctx context.Context) error {
-	if c == nil || c.command == nil || c.ack == nil || c.activity == nil || c.runtimeGC == nil || c.freeOSMemory == nil || c.readMemStats == nil {
+	if c == nil || c.command == nil || c.ack == nil || c.activity == nil || c.grepActivity == nil || c.runtimeGC == nil || c.freeOSMemory == nil || c.readMemStats == nil {
 		return errors.New("resource probe is not configured")
 	}
 	closed := make(chan struct{})
@@ -181,7 +192,8 @@ func (c *Controller) Run(ctx context.Context) error {
 			}
 		case "snapshot\n":
 			snapshot := c.activity.Snapshot()
-			if _, err := fmt.Fprintf(c.ack, "snapshot %d %d\n", snapshot.Total, snapshot.Active); err != nil {
+			grep := c.grepActivity.Snapshot()
+			if _, err := fmt.Fprintf(c.ack, "snapshot %d %d %d %d %d\n", snapshot.Total, snapshot.Active, grep.Total, grep.Active, grep.InFlight); err != nil {
 				return errors.New("resource probe acknowledgement failed")
 			}
 		default:

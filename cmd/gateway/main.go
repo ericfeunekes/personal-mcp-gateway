@@ -67,10 +67,12 @@ func runWithContext(ctx context.Context, args []string, stderr io.Writer, auditF
 	})
 
 	var activity *fsx.ActivityCounter
+	var grepActivity *fsx.SchedulerActivity
 	if probe != nil {
 		activity = probe.Activity()
+		grepActivity = probe.GrepActivity()
 	}
-	application, err := app.NewWithVaultActivity(cfg, log, activity)
+	application, err := app.NewWithActivities(cfg, log, activity, grepActivity)
 	if err != nil {
 		log.Event("gateway.start_failed", map[string]any{
 			"transport":  string(cfg.Mode),

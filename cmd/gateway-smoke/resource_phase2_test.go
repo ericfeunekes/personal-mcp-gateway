@@ -87,8 +87,8 @@ func TestPhase2ResourceProbeExercisesBuiltFiveToolCandidate(t *testing.T) {
 		t.Fatalf("probeCandidateResources: %v; report=%#v", err, report)
 	}
 	if !report.Passed || report.DescriptorCount != 5 || !validResourceWorkload(report.Workload) ||
-		!validResourceBoundaries(report.Boundaries) || report.Idle.ToolCallRowsBefore != resourceMeasuredCalls ||
-		report.Idle.ToolCallRowsAfter != resourceMeasuredCalls {
+		!validResourceBoundaries(report.Boundaries) || report.Idle.ToolCallRowsBefore != resourceConcurrentWarmupCalls+resourceMeasuredCalls+resourceConcurrentProbeCalls ||
+		report.Idle.ToolCallRowsAfter != resourceConcurrentWarmupCalls+resourceMeasuredCalls+resourceConcurrentProbeCalls {
 		t.Fatalf("resource report = %#v", report)
 	}
 	encoded, err := json.Marshal(report)
@@ -235,6 +235,7 @@ func passingPhase2ResourceGateReport() resourceReport {
 		GrepOver1MiBLiteralMatchAccepted: true, GrepOver1MiBRegexErrorCode: "input_too_large",
 		EveryCallWithinTwoSeconds: true, EverySDKResultWithin64KiB: true,
 	}
+	report.ConcurrentGrep = concurrentGrepReport{MaxActive: 9, MaxInFlight: 9, OverlapObserved: true, Bounded: true, QuiescentAfterStop: true, FollowupSucceeded: true, CancellationIsolated: true, FDsRecovered: true, VaultQuiescent: true}
 	for index := range report.Batches {
 		if index == 0 {
 			report.Batches[index].BoundaryCallCount = resourceBoundaryCalls
@@ -249,9 +250,9 @@ func passingPhase2ResourceGateReport() resourceReport {
 	report.Idle.DescriptorCountAfter = 5
 	report.Idle.FDBeforeCount = report.Baseline.FDImmediateCount
 	report.Idle.FDAfterCount = report.Baseline.FDImmediateCount
-	report.Idle.ExpectedToolCallRows = resourceMeasuredCalls
-	report.Idle.ToolCallRowsBefore = resourceMeasuredCalls
-	report.Idle.ToolCallRowsAfter = resourceMeasuredCalls
+	report.Idle.ExpectedToolCallRows = resourceConcurrentWarmupCalls + resourceMeasuredCalls + resourceConcurrentProbeCalls
+	report.Idle.ToolCallRowsBefore = resourceConcurrentWarmupCalls + resourceMeasuredCalls + resourceConcurrentProbeCalls
+	report.Idle.ToolCallRowsAfter = resourceConcurrentWarmupCalls + resourceMeasuredCalls + resourceConcurrentProbeCalls
 	report.Process = candidateProcessProfile{
 		BaselineCPUMicroseconds: report.Baseline.CPUTimeMicroseconds,
 		FinalCPUMicroseconds:    report.Idle.CPUTimeAfterMicroseconds,

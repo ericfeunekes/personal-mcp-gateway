@@ -34,6 +34,8 @@ const (
 	resourceCallsPerToolPerBatch      = 20
 	resourceBoundaryCalls             = 13
 	resourceMeasuredCalls             = resourceBatchCount*resourceBatchCalls + resourceBoundaryCalls
+	resourceConcurrentWarmupCalls     = 1
+	resourceConcurrentProbeCalls      = 3
 	resourceHeapAllocGrowthLimitBytes = uint64(256 * 1024)
 	resourceRSSGrowthLimitBytes       = int64(8 * 1024 * 1024)
 	resourceRSSLimitBytes             = int64(64 * 1024 * 1024)
@@ -44,7 +46,12 @@ const (
 	resourceControlTime               = 5 * time.Second
 	resourceAckMaxBytes               = 128
 	resourceGrepZeroWidthPattern      = "a*"
+	resourceConcurrentGrepFiles       = 8
+	resourceConcurrentGrepFileBytes   = 1 << 20
+	resourceConcurrentGrepWorkerLimit = 8
 )
+
+const resourceConcurrentGrepContentBytes = resourceConcurrentGrepFileBytes + len("resource-concurrent-hit\n") + 1
 
 type resourceReport struct {
 	ReportKind                         string                  `json:"report_kind"`
@@ -75,6 +82,7 @@ type resourceReport struct {
 	AllFDsRecovered                    bool                    `json:"all_fds_recovered"`
 	Batches                            []resourceBatchReport   `json:"batches"`
 	Idle                               idleResourceReport      `json:"idle"`
+	ConcurrentGrep                     concurrentGrepReport    `json:"concurrent_grep"`
 }
 
 type resourceVaultReport struct {
@@ -230,6 +238,13 @@ type idleResourceReport struct {
 	VaultActivityActiveBefore uint64 `json:"vault_activity_active_before"`
 	VaultActivityActiveAfter  uint64 `json:"vault_activity_active_after"`
 	NoVaultActivity           bool   `json:"no_vault_activity"`
+	GrepActivityTotalBefore   uint64 `json:"grep_activity_total_before"`
+	GrepActivityTotalAfter    uint64 `json:"grep_activity_total_after"`
+	GrepActivityActiveBefore  uint64 `json:"grep_activity_active_before"`
+	GrepActivityActiveAfter   uint64 `json:"grep_activity_active_after"`
+	GrepInFlightBefore        uint64 `json:"grep_in_flight_before"`
+	GrepInFlightAfter         uint64 `json:"grep_in_flight_after"`
+	NoGrepActivity            bool   `json:"no_grep_activity"`
 	DescriptorCountAfter      int    `json:"descriptor_count_after"`
 	DescriptorsUnchanged      bool   `json:"descriptors_unchanged"`
 }
@@ -259,8 +274,30 @@ type processResourceSample struct {
 }
 
 type resourceActivitySnapshot struct {
-	total  uint64
-	active uint64
+	total        uint64
+	active       uint64
+	grepTotal    uint64
+	grepActive   uint64
+	grepInFlight uint64
+}
+
+// concurrentGrepReport contains only private exact-candidate lifecycle
+// aggregates. It carries no vault paths, patterns, or content.
+type concurrentGrepReport struct {
+	MaxActive            uint64 `json:"max_active"`
+	MaxInFlight          uint64 `json:"max_in_flight"`
+	OverlapObserved      bool   `json:"overlap_observed"`
+	Bounded              bool   `json:"bounded"`
+	QuiescentAfterStop   bool   `json:"quiescent_after_stop"`
+	FollowupSucceeded    bool   `json:"followup_succeeded"`
+	CancellationIsolated bool   `json:"cancellation_isolated"`
+	FDsRecovered         bool   `json:"fds_recovered"`
+	VaultQuiescent       bool   `json:"vault_quiescent"`
+}
+
+type resourceConcurrentOutcome struct {
+	result *sdk.CallToolResult
+	err    error
 }
 
 type resourceMemorySnapshot struct {
@@ -281,6 +318,7 @@ type resourceFixture struct {
 	smallReadPath string
 	smallBatch    []string
 	boundary      resourceBoundaryFixture
+	concurrentDir string
 	generated     resourceVaultReport
 }
 
@@ -536,15 +574,18 @@ func (c *resourceControl) snapshot(ctx context.Context, timeout time.Duration) (
 		return resourceActivitySnapshot{}, err
 	}
 	fields := strings.Fields(strings.TrimSuffix(line, "\n"))
-	if len(fields) != 3 || fields[0] != "snapshot" {
+	if len(fields) != 6 || fields[0] != "snapshot" {
 		return resourceActivitySnapshot{}, errors.New("candidate snapshot acknowledgement was invalid")
 	}
 	total, totalErr := strconv.ParseUint(fields[1], 10, 64)
 	active, activeErr := strconv.ParseUint(fields[2], 10, 64)
-	if totalErr != nil || activeErr != nil || active > total || line != "snapshot "+strconv.FormatUint(total, 10)+" "+strconv.FormatUint(active, 10)+"\n" {
+	grepTotal, grepTotalErr := strconv.ParseUint(fields[3], 10, 64)
+	grepActive, grepActiveErr := strconv.ParseUint(fields[4], 10, 64)
+	grepInFlight, grepInFlightErr := strconv.ParseUint(fields[5], 10, 64)
+	if totalErr != nil || activeErr != nil || grepTotalErr != nil || grepActiveErr != nil || grepInFlightErr != nil || active > total || grepActive > grepTotal || grepActive > grepInFlight || line != "snapshot "+strconv.FormatUint(total, 10)+" "+strconv.FormatUint(active, 10)+" "+strconv.FormatUint(grepTotal, 10)+" "+strconv.FormatUint(grepActive, 10)+" "+strconv.FormatUint(grepInFlight, 10)+"\n" {
 		return resourceActivitySnapshot{}, errors.New("candidate snapshot acknowledgement was invalid")
 	}
-	return resourceActivitySnapshot{total: total, active: active}, nil
+	return resourceActivitySnapshot{total: total, active: active, grepTotal: grepTotal, grepActive: grepActive, grepInFlight: grepInFlight}, nil
 }
 
 func (c *resourceControl) close() {
@@ -699,6 +740,17 @@ func newResourceFixture() (resourceFixture, error) {
 		return resourceFixture{}, err
 	}
 	fixture.smallBatch = []string{fixture.smallReadPath, smallB}
+	fixture.concurrentDir = "concurrent"
+	if err := os.Mkdir(filepath.Join(root, fixture.concurrentDir), 0o700); err != nil {
+		return resourceFixture{}, errors.New("candidate resource fixture setup failed")
+	}
+	concurrentLine := append([]byte("resource-concurrent-hit\n"), bytes.Repeat([]byte{'c'}, resourceConcurrentGrepFileBytes-1)...)
+	concurrentLine = append(concurrentLine, '\n')
+	for index := 0; index < resourceConcurrentGrepFiles; index++ {
+		if _, err := write(filepath.Join(fixture.concurrentDir, fmt.Sprintf("scan-%02d.md", index)), concurrentLine); err != nil {
+			return resourceFixture{}, err
+		}
+	}
 
 	near := bytes.Repeat([]byte{'a'}, obsidian.MaxMarkdownSourceBytes)
 	copy(near, []byte("# Boundary\n"))
@@ -859,6 +911,12 @@ func probeCandidateResources(ctx context.Context, gatewayBin, root string, optio
 	if err != nil {
 		return resourceReport{}, err
 	}
+	// Establish the worker-runtime baseline with the same activating workload
+	// used in the measured batches. This is a warm-up, not a counted workload
+	// call; repeated-call growth remains measured from the subsequent baseline.
+	if _, err := operations[4].call(); err != nil {
+		return resourceReport{}, errors.New("candidate concurrent grep warm-up failed")
+	}
 	pid := longLived.process.command.Process.Pid
 	baseline, err := observeResourceBaseline(ctx, pid, options, sampler, longLived.control)
 	if err != nil {
@@ -898,6 +956,10 @@ func probeCandidateResources(ctx context.Context, gatewayBin, root string, optio
 		report.Batches = append(report.Batches, batch)
 	}
 	report.Workload = workload.report
+	report.ConcurrentGrep, err = probeConcurrentGrep(ctx, longLived.process.session, longLived.control, fixture.concurrentDir, pid, baseline.FDImmediateCount, options.ControlTime, sampler)
+	if err != nil {
+		return resourceReport{}, err
+	}
 	report.Idle, err = observeResourceIdle(ctx, longLived.process.session, pid, descriptorCount, baseline.FDImmediateCount, longLived.dbPath, options, sampler, longLived.control)
 	if err != nil {
 		return resourceReport{}, err
@@ -952,6 +1014,135 @@ func noVaultActivity(before, after resourceActivitySnapshot) bool {
 	return before.active == 0 && after.active == 0 && before.total == after.total
 }
 
+// probeConcurrentGrep proves two overlapping request-local pools, cancellation
+// isolation, and quiescence through the private aggregate-only control pipe.
+func probeConcurrentGrep(ctx context.Context, session *sdk.ClientSession, control *resourceControl, path string, pid, baselineFD int, controlTimeout time.Duration, sampler resourceSampler) (concurrentGrepReport, error) {
+	if session == nil || control == nil || path == "" || pid <= 0 || baselineFD <= 0 || sampler == nil {
+		return concurrentGrepReport{}, errors.New("concurrent grep probe was unavailable")
+	}
+	args := map[string]any{
+		"pattern": "resource-batch-absent", "path": path, "regex": false, "case_sensitive": true,
+		"context_lines": 0, "limit": 1, "max_files": resourceConcurrentGrepFiles,
+		"max_bytes": resourceConcurrentGrepFiles * resourceConcurrentGrepContentBytes,
+	}
+	firstCtx, cancelFirst := context.WithCancel(ctx)
+	defer cancelFirst()
+	first := make(chan resourceConcurrentOutcome, 1)
+	go func() {
+		result, err := session.CallTool(firstCtx, &sdk.CallToolParams{Name: obsidian.ToolGrep, Arguments: args})
+		first <- resourceConcurrentOutcome{result: result, err: err}
+	}()
+
+	deadline := time.Now().Add(controlTimeout)
+	var maxActive, maxInFlight uint64
+	for time.Now().Before(deadline) {
+		snapshot, err := control.snapshot(ctx, controlTimeout)
+		if err != nil {
+			return concurrentGrepReport{}, err
+		}
+		maxActive = maxUint64(maxActive, snapshot.grepActive)
+		maxInFlight = maxUint64(maxInFlight, snapshot.grepInFlight)
+		if maxActive > 1 {
+			break
+		}
+		select {
+		case done := <-first:
+			if done.err != nil || done.result == nil || done.result.IsError {
+				return concurrentGrepReport{}, errors.New("first concurrent grep ended before activation evidence")
+			}
+			return concurrentGrepReport{}, errors.New("first concurrent grep completed before activation evidence")
+		case <-time.After(200 * time.Microsecond):
+		}
+	}
+	if maxActive <= 1 {
+		return concurrentGrepReport{}, errors.New("first concurrent grep did not activate multiple workers")
+	}
+	second := make(chan resourceConcurrentOutcome, 1)
+	go func() {
+		result, err := session.CallTool(ctx, &sdk.CallToolParams{Name: obsidian.ToolGrep, Arguments: args})
+		second <- resourceConcurrentOutcome{result: result, err: err}
+	}()
+	overlapDeadline := time.Now().Add(controlTimeout)
+	for time.Now().Before(overlapDeadline) {
+		snapshot, err := control.snapshot(ctx, controlTimeout)
+		if err != nil {
+			return concurrentGrepReport{}, err
+		}
+		maxActive = maxUint64(maxActive, snapshot.grepActive)
+		maxInFlight = maxUint64(maxInFlight, snapshot.grepInFlight)
+		if maxActive > resourceConcurrentGrepWorkerLimit {
+			break
+		}
+		select {
+		case done := <-first:
+			return concurrentGrepReport{}, fmt.Errorf("first concurrent grep ended before overlap: err=%v result=%#v", done.err, done.result)
+		case done := <-second:
+			return concurrentGrepReport{}, fmt.Errorf("second concurrent grep ended before overlap: err=%v result=%#v", done.err, done.result)
+		case <-time.After(200 * time.Microsecond):
+		}
+	}
+	if maxActive <= resourceConcurrentGrepWorkerLimit {
+		return concurrentGrepReport{}, errors.New("concurrent grep requests did not overlap")
+	}
+	cancelFirst()
+	select {
+	case done := <-first:
+		if done.err == nil && done.result != nil && !done.result.IsError {
+			return concurrentGrepReport{}, errors.New("canceled concurrent grep completed successfully")
+		}
+	case <-time.After(controlTimeout):
+		return concurrentGrepReport{}, errors.New("canceled concurrent grep did not return")
+	}
+	select {
+	case done := <-second:
+		if !successfulAbsentGrep(done) {
+			return concurrentGrepReport{}, fmt.Errorf("concurrent grep peer failed: err=%v result=%#v", done.err, done.result)
+		}
+	case <-time.After(controlTimeout):
+		return concurrentGrepReport{}, errors.New("concurrent grep peer did not return")
+	}
+	after, err := control.snapshot(ctx, controlTimeout)
+	if err != nil {
+		return concurrentGrepReport{}, err
+	}
+	postStop, err := sampler.Sample(ctx, pid, true)
+	if err != nil {
+		return concurrentGrepReport{}, err
+	}
+	followup, _, isError, err := callResourceCandidate[obsidian.GrepOutput](ctx, session, obsidian.ToolGrep, map[string]any{
+		"pattern": "resource-workload-needle", "path": "small-a.md", "regex": false, "case_sensitive": true, "context_lines": 0, "limit": 1,
+	})
+	if err != nil || isError || !followup.OK || len(followup.Matches) != 1 {
+		return concurrentGrepReport{}, fmt.Errorf("concurrent grep follow-up failed: err=%v is_error=%t output=%#v", err, isError, followup)
+	}
+	report := concurrentGrepReport{
+		MaxActive: maxActive, MaxInFlight: maxInFlight, OverlapObserved: maxActive > 1,
+		Bounded: maxActive <= 2*resourceConcurrentGrepWorkerLimit && maxInFlight <= 2*resourceConcurrentGrepWorkerLimit, QuiescentAfterStop: after.grepActive == 0 && after.grepInFlight == 0,
+		FollowupSucceeded: true, CancellationIsolated: true, FDsRecovered: postStop.fdCount == baselineFD, VaultQuiescent: after.active == 0,
+	}
+	if !validConcurrentGrep(report) {
+		return concurrentGrepReport{}, errors.New("concurrent grep resource gate failed")
+	}
+	return report, nil
+}
+
+func validConcurrentGrep(report concurrentGrepReport) bool {
+	return report.MaxActive > resourceConcurrentGrepWorkerLimit && report.MaxInFlight > resourceConcurrentGrepWorkerLimit && report.MaxActive <= 2*resourceConcurrentGrepWorkerLimit && report.MaxInFlight <= 2*resourceConcurrentGrepWorkerLimit &&
+		report.OverlapObserved && report.Bounded && report.QuiescentAfterStop && report.FollowupSucceeded && report.CancellationIsolated && report.FDsRecovered && report.VaultQuiescent
+}
+
+func successfulAbsentGrep(done resourceConcurrentOutcome) bool {
+	if done.err != nil || done.result == nil || done.result.IsError {
+		return false
+	}
+	encoded, err := json.Marshal(done.result.StructuredContent)
+	if err != nil {
+		return false
+	}
+	var out obsidian.GrepOutput
+	return json.Unmarshal(encoded, &out) == nil && out.OK && len(out.Matches) == 0 && out.Coverage.ResultComplete && out.Coverage.ScopeComplete
+}
+
 func resourceReportPasses(report resourceReport, expectedColdProcesses int) bool {
 	derived := deriveResourceReport(report)
 	if !reportSchemaTuplePasses(report.ReportKind, report.ReportSchema, report.SchemaVersion) ||
@@ -969,6 +1160,7 @@ func resourceReportPasses(report resourceReport, expectedColdProcesses int) bool
 		report.DescriptorCount != 5 || len(report.Batches) != resourceBatchCount ||
 		!candidateRuntimeProfilePasses(report.CandidateRuntime) || !machineProfilePasses(report.Machine) ||
 		!vaultAggregateProfilePasses(report.Vault) || !candidateProcessProfilePasses(report.Process) ||
+		!validConcurrentGrep(report.ConcurrentGrep) ||
 		!report.Fixture.InventoryComplete || !report.Fixture.InventoryReconciled || report.Fixture.GeneratedMarkdownFiles <= 0 ||
 		report.Fixture.GeneratedMarkdownFiles != report.Fixture.InventoryMarkdownFiles || report.Fixture.GeneratedBytes <= 0 ||
 		report.Fixture.GeneratedBytes != report.Fixture.InventoryBytes || !validResourceWorkload(report.Workload) ||
@@ -1026,13 +1218,17 @@ func idleResourceReportPasses(report idleResourceReport, baselineFD, descriptorC
 	noExtraToolCalls := report.ToolCallRowsBefore == report.ToolCallRowsAfter
 	noActivity := report.VaultActivityActiveBefore == 0 && report.VaultActivityActiveAfter == 0 &&
 		report.VaultActivityTotalBefore == report.VaultActivityTotalAfter
+	noGrepActivity := report.GrepActivityActiveBefore == 0 && report.GrepActivityActiveAfter == 0 &&
+		report.GrepInFlightBefore == 0 && report.GrepInFlightAfter == 0 &&
+		report.GrepActivityTotalBefore == report.GrepActivityTotalAfter
 	descriptorsUnchanged := descriptorCount == 5 && report.DescriptorCountAfter == descriptorCount
 	return report.CPUTimeDeltaMicroseconds == cpuDelta && report.CPUTimeBoundMicroseconds == cpuBound &&
 		report.CPUWithinBound == cpuWithinBound && report.CPUWithinBound && report.RSSBeforeBytes > 0 && report.RSSAfterBytes > 0 &&
 		report.FDsRecovered == fdsRecovered && report.FDsRecovered &&
-		report.ExpectedToolCallRows == resourceMeasuredCalls && report.ToolCallRowsBefore == resourceMeasuredCalls &&
+		report.ExpectedToolCallRows == resourceConcurrentWarmupCalls+resourceMeasuredCalls+resourceConcurrentProbeCalls && report.ToolCallRowsBefore == resourceConcurrentWarmupCalls+resourceMeasuredCalls+resourceConcurrentProbeCalls &&
 		report.NoExtraToolCalls == noExtraToolCalls && report.NoExtraToolCalls &&
 		report.NoVaultActivity == noActivity && report.NoVaultActivity &&
+		report.NoGrepActivity == noGrepActivity && report.NoGrepActivity &&
 		report.DescriptorsUnchanged == descriptorsUnchanged && report.DescriptorsUnchanged
 }
 
@@ -1206,7 +1402,7 @@ func observeFreshProcesses(ctx context.Context, gatewayBin, root string, count i
 }
 
 func resourceOperations(ctx context.Context, session *sdk.ClientSession, fixture resourceFixture) ([]resourceOperation, error) {
-	if session == nil || fixture.smallReadPath == "" || len(fixture.smallBatch) != 2 {
+	if session == nil || fixture.smallReadPath == "" || len(fixture.smallBatch) != 2 || fixture.concurrentDir == "" {
 		return nil, errors.New("candidate resource setup failed")
 	}
 	resolve := resourceOperation{tool: obsidian.ToolResolve, call: func() (resourceCallSample, error) {
@@ -1245,9 +1441,12 @@ func resourceOperations(ctx context.Context, session *sdk.ClientSession, fixture
 	}}
 	grep := resourceOperation{tool: obsidian.ToolGrep, call: func() (resourceCallSample, error) {
 		out, sample, isError, err := callResourceCandidate[obsidian.GrepOutput](ctx, session, obsidian.ToolGrep, map[string]any{
-			"pattern": "resource-workload-needle", "path": fixture.smallReadPath, "regex": false, "context_lines": 0, "limit": 1,
+			"pattern": "resource-batch-absent", "path": fixture.concurrentDir, "regex": false, "case_sensitive": true,
+			"context_lines": 0, "limit": 1, "max_files": resourceConcurrentGrepFiles,
+			"max_bytes": resourceConcurrentGrepFiles * resourceConcurrentGrepContentBytes,
 		})
-		if err != nil || isError || !out.OK || len(out.Matches) != 1 {
+		if err != nil || isError || !out.OK || len(out.Matches) != 0 || !out.Coverage.ResultComplete || !out.Coverage.ScopeComplete ||
+			out.Coverage.FilesScanned != uint64(resourceConcurrentGrepFiles) {
 			return resourceCallSample{}, errors.New("candidate resource grep failed")
 		}
 		return coverageResourceCall(sample, out.Coverage), nil
@@ -1623,13 +1822,20 @@ func observeResourceIdle(ctx context.Context, session *sdk.ClientSession, pid, d
 		FDsRecovered:              before.fdCount == baselineFD && after.fdCount == baselineFD,
 		ToolCallRowsBefore:        beforeSQLite.toolCallRows,
 		ToolCallRowsAfter:         afterSQLite.toolCallRows,
-		ExpectedToolCallRows:      resourceMeasuredCalls,
+		ExpectedToolCallRows:      resourceConcurrentWarmupCalls + resourceMeasuredCalls + resourceConcurrentProbeCalls,
 		NoExtraToolCalls:          beforeSQLite.toolCallRows == afterSQLite.toolCallRows,
 		VaultActivityTotalBefore:  activityBefore.total,
 		VaultActivityTotalAfter:   activityAfter.total,
 		VaultActivityActiveBefore: activityBefore.active,
 		VaultActivityActiveAfter:  activityAfter.active,
 		NoVaultActivity:           noVaultActivity(activityBefore, activityAfter),
+		GrepActivityTotalBefore:   activityBefore.grepTotal,
+		GrepActivityTotalAfter:    activityAfter.grepTotal,
+		GrepActivityActiveBefore:  activityBefore.grepActive,
+		GrepActivityActiveAfter:   activityAfter.grepActive,
+		GrepInFlightBefore:        activityBefore.grepInFlight,
+		GrepInFlightAfter:         activityAfter.grepInFlight,
+		NoGrepActivity:            activityBefore.grepActive == 0 && activityAfter.grepActive == 0 && activityBefore.grepInFlight == 0 && activityAfter.grepInFlight == 0 && activityBefore.grepTotal == activityAfter.grepTotal,
 		DescriptorCountAfter:      descriptorCountAfter,
 		DescriptorsUnchanged:      descriptorCountAfter == descriptorCount,
 	}, nil

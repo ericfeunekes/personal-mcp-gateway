@@ -403,7 +403,7 @@ func reportSchemaTuplePasses(kind, schema string, version int) bool {
 	case reportKindFunctional:
 		return schema == functionalReportSchema && version == smokeReportVersion
 	case reportKindPerformance:
-		return schema == performanceReportSchema && version == smokeReportVersion
+		return schema == performanceReportSchema && version == performanceReportVersion
 	case reportKindResource:
 		return schema == resourceReportSchema && version == resourceReportVersion
 	default:

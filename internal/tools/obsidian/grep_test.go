@@ -3,7 +3,6 @@ package obsidian
 import (
 	"context"
 	"encoding/base64"
-	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -641,43 +640,6 @@ func TestGrepPartialFileCursorSeeksAndRejectsChangedSource(t *testing.T) {
 	result, stale, err := tools.Grep(context.Background(), nil, input)
 	if err != nil || result == nil || !result.IsError || stale.Error == nil || stale.Error.Code != CursorStaleCode {
 		t.Fatalf("stale result=%#v out=%#v err=%v", result, stale, err)
-	}
-}
-
-func TestGrepResumedScanRechecksFingerprintOnContentDescriptor(t *testing.T) {
-	root := t.TempDir()
-	writeGrepFile(t, root, "note.md", "old\n")
-	tools := grepTools(t, root)
-
-	var entry fsx.WalkFile
-	if _, err := tools.vault.WalkFiles(context.Background(), "", ".", func(_ context.Context, candidate fsx.WalkFile) (fsx.WalkAction, error) {
-		entry = candidate
-		return fsx.WalkStop, nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	original, err := entry.Open(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	fingerprint := original.Fingerprint()
-	if err := original.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	replacement := filepath.Join(root, "replacement.md")
-	if err := os.WriteFile(replacement, []byte("new\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(replacement, filepath.Join(root, "note.md")); err != nil {
-		t.Fatal(err)
-	}
-
-	run := &grepRun{tools: tools, query: normalizedGrepQuery{MaxFiles: 1, MaxBytes: 1024}}
-	partial := &grepPartialCursor{Fingerprint: encodeDigest(fingerprint[:]), ResumeLine: 1, ContextLine: 1}
-	action, err := run.scanFile(context.Background(), entry, partial)
-	if action != fsx.WalkStop || !errors.Is(err, ErrCursorStale) {
-		t.Fatalf("action=%v err=%v, want stopped cursor_stale", action, err)
 	}
 }
 

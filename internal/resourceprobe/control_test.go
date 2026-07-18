@@ -48,7 +48,7 @@ func TestControllerAcknowledgesCausalGCAndAggregateSnapshots(t *testing.T) {
 		}
 		return line
 	}
-	if got := request("snapshot"); got != "snapshot 0 0\n" {
+	if got := request("snapshot"); got != "snapshot 0 0 0 0 0\n" {
 		t.Fatalf("initial snapshot = %q", got)
 	}
 	root := t.TempDir()
@@ -62,7 +62,7 @@ func TestControllerAcknowledgesCausalGCAndAggregateSnapshots(t *testing.T) {
 	if _, err := vault.Resolve(context.Background(), "", "note.md"); err != nil {
 		t.Fatal(err)
 	}
-	if got := request("snapshot"); got != "snapshot 1 0\n" {
+	if got := request("snapshot"); got != "snapshot 1 0 0 0 0\n" {
 		t.Fatalf("post-activity snapshot = %q", got)
 	}
 	gcAck := request("gc")
@@ -110,6 +110,7 @@ func TestControllerGCAcknowledgementIsCausalForGCReleaseThenMemStats(t *testing.
 		commandRead,
 		ackWrite,
 		&fsx.ActivityCounter{},
+		&fsx.SchedulerActivity{},
 		func() {
 			close(gcStarted)
 			<-allowGC

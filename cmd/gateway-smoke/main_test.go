@@ -145,7 +145,7 @@ func TestRunPerformanceJSONIsBoundedAndSanitized(t *testing.T) {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		t.Fatalf("performance report contained trailing JSON: %v", err)
 	}
-	if !report.Passed || report.ReportKind != reportKindPerformance || report.SchemaVersion != smokeReportVersion ||
+	if !report.Passed || report.ReportKind != reportKindPerformance || report.SchemaVersion != performanceReportVersion ||
 		!validGitOID(report.CandidateCommit) || !validDigest(report.CandidateSHA256) || !validDigest(report.DependencySHA256) ||
 		report.DescriptorCount != 5 || report.CardinalityBucket != "2_10" || !performanceReportEvidencePasses(report) {
 		t.Fatalf("report header = %#v", report)
@@ -1050,6 +1050,7 @@ func TestResourceReportPassesRejectsEachGateFailure(t *testing.T) {
 		{name: "idle fds", mutate: func(r *resourceReport) { r.Idle.FDsRecovered = false }},
 		{name: "idle telemetry", mutate: func(r *resourceReport) { r.Idle.NoExtraToolCalls = false }},
 		{name: "idle vault activity", mutate: func(r *resourceReport) { r.Idle.NoVaultActivity = false }},
+		{name: "idle grep activity", mutate: func(r *resourceReport) { r.Idle.NoGrepActivity = false }},
 		{name: "descriptor drift", mutate: func(r *resourceReport) { r.Idle.DescriptorsUnchanged = false }},
 		{name: "cold negative startup", mutate: func(r *resourceReport) { r.Cold.StartupP50Microseconds = -1 }},
 		{name: "cold unordered first call", mutate: func(r *resourceReport) {
@@ -1066,6 +1067,8 @@ func TestResourceReportPassesRejectsEachGateFailure(t *testing.T) {
 		{name: "idle telemetry raw", mutate: func(r *resourceReport) { r.Idle.ToolCallRowsAfter++ }},
 		{name: "idle activity raw", mutate: func(r *resourceReport) { r.Idle.VaultActivityTotalAfter++ }},
 		{name: "idle active raw", mutate: func(r *resourceReport) { r.Idle.VaultActivityActiveAfter++ }},
+		{name: "idle grep active raw", mutate: func(r *resourceReport) { r.Idle.GrepActivityActiveAfter++ }},
+		{name: "idle grep inflight raw", mutate: func(r *resourceReport) { r.Idle.GrepInFlightAfter++ }},
 		{name: "idle descriptor raw", mutate: func(r *resourceReport) { r.Idle.DescriptorCountAfter-- }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1186,11 +1189,12 @@ func passingResourceGateReport() resourceReport {
 			FDsRecovered:              true,
 			NoExtraToolCalls:          true,
 			NoVaultActivity:           true,
+			NoGrepActivity:            true,
 			DescriptorCountAfter:      5,
 			DescriptorsUnchanged:      true,
-			ExpectedToolCallRows:      resourceMeasuredCalls,
-			ToolCallRowsBefore:        resourceMeasuredCalls,
-			ToolCallRowsAfter:         resourceMeasuredCalls,
+			ExpectedToolCallRows:      resourceConcurrentWarmupCalls + resourceMeasuredCalls + resourceConcurrentProbeCalls,
+			ToolCallRowsBefore:        resourceConcurrentWarmupCalls + resourceMeasuredCalls + resourceConcurrentProbeCalls,
+			ToolCallRowsAfter:         resourceConcurrentWarmupCalls + resourceMeasuredCalls + resourceConcurrentProbeCalls,
 		},
 	}
 	for index := range report.Batches {
@@ -1202,6 +1206,11 @@ func passingResourceGateReport() resourceReport {
 		report.Batches[index].EverySDKResultWithin64KiB = true
 	}
 	report.Batches[0].BoundaryCallCount = resourceBoundaryCalls
+	report.ConcurrentGrep = concurrentGrepReport{
+		MaxActive: 9, MaxInFlight: 9, OverlapObserved: true, Bounded: true,
+		QuiescentAfterStop: true, FollowupSucceeded: true, CancellationIsolated: true,
+		FDsRecovered: true, VaultQuiescent: true,
+	}
 	report.Process = candidateProcessProfile{
 		BaselineCPUMicroseconds: report.Baseline.CPUTimeMicroseconds,
 		FinalCPUMicroseconds:    report.Idle.CPUTimeAfterMicroseconds,

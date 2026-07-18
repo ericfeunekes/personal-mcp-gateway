@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"regexp"
+	"strings"
 	"unicode/utf8"
 
 	"personal-mcp-gateway/internal/fsx"
@@ -36,25 +37,57 @@ func (g *grepRun) matchEvidence(line grepLine) (grepMatchEvidence, bool) {
 			LineBytes:       line.lineBytes,
 		}, true
 	}
+	if !g.query.Regex && g.query.CaseSensitive && line.large == nil {
+		index := strings.Index(line.text, g.query.Pattern)
+		if index < 0 {
+			return grepMatchEvidence{}, false
+		}
+		return g.literalMatchEvidence([]byte(line.text), index)
+	}
 	data := lineBytes(line)
-	index := g.re.FindIndex(data)
+	index := g.matchIndex(data)
 	if len(index) == 0 {
 		return grepMatchEvidence{}, false
 	}
+	return g.literalMatchEvidence(data, index[0])
+}
+
+func (g *grepRun) literalMatchEvidence(data []byte, start int) (grepMatchEvidence, bool) {
 	evidence := grepMatchEvidence{
-		Column:      utf8.RuneCount(data[:index[0]]) + 1,
+		Column:      utf8.RuneCount(data[:start]) + 1,
 		Occurrences: 1,
 		Text:        string(data),
 	}
 	if !g.query.Regex {
-		evidence.Occurrences = countLiteralOccurrences(g.re, data)
+		evidence.Occurrences = g.literalOccurrences(data)
 		if len(data) > grepEvidenceTextBytes {
-			evidence.Text, evidence.TextStartColumn, evidence.TextEndColumn = grepExcerpt(data, index[0], index[1])
+			evidence.Text, evidence.TextStartColumn, evidence.TextEndColumn = grepExcerpt(data, start, start+len(g.query.Pattern))
 			evidence.TextTruncated = true
 			evidence.LineBytes = int64(len(data))
 		}
 	}
 	return evidence, true
+}
+
+// matchIndex keeps ordinary case-sensitive literal scans on bytes.Index. This
+// is semantically identical to the quoted regexp but avoids regexp machinery
+// for the broad negative workload that drives the concurrent scheduler.
+func (g *grepRun) matchIndex(data []byte) []int {
+	if !g.query.Regex && g.query.CaseSensitive {
+		index := bytes.Index(data, []byte(g.query.Pattern))
+		if index < 0 {
+			return nil
+		}
+		return []int{index, index + len(g.query.Pattern)}
+	}
+	return g.re.FindIndex(data)
+}
+
+func (g *grepRun) literalOccurrences(data []byte) int {
+	if g.query.CaseSensitive {
+		return bytes.Count(data, []byte(g.query.Pattern))
+	}
+	return countLiteralOccurrences(g.re, data)
 }
 
 func grepContextEvidence(line grepLine) GrepContextLine {

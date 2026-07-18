@@ -25,17 +25,34 @@ type App struct {
 }
 
 func New(cfg config.Config, log *audit.Logger) (*App, error) {
-	return NewWithVaultActivity(cfg, log, nil)
+	return NewWithActivities(cfg, log, nil, nil)
 }
 
 // NewWithVaultActivity is the private construction seam used by exact-candidate
 // resource proof. Public tool behavior is identical to New.
 func NewWithVaultActivity(cfg config.Config, log *audit.Logger, activity *fsx.ActivityCounter) (*App, error) {
+	return NewWithActivities(cfg, log, activity, nil)
+}
+
+// NewWithActivities is the private exact-candidate construction seam. The
+// second observer records aggregate concurrent grep scans only when the
+// inherited resource probe is enabled.
+func NewWithActivities(cfg config.Config, log *audit.Logger, activity *fsx.ActivityCounter, grepActivity *fsx.SchedulerActivity) (*App, error) {
+	return newWithGrepTestHooks(cfg, log, activity, grepActivity, nil)
+}
+
+// NewWithGrepTestHooks is internal-package test plumbing for deterministic
+// scheduler boundary tests; normal construction always supplies nil hooks.
+func NewWithGrepTestHooks(cfg config.Config, log *audit.Logger, hooks *obsidian.GrepTestHooks) (*App, error) {
+	return newWithGrepTestHooks(cfg, log, nil, nil, hooks)
+}
+
+func newWithGrepTestHooks(cfg config.Config, log *audit.Logger, activity *fsx.ActivityCounter, grepActivity *fsx.SchedulerActivity, hooks *obsidian.GrepTestHooks) (*App, error) {
 	vault, err := fsx.NewVaultWithActivity(cfg.ObsidianRoot, activity)
 	if err != nil {
 		return nil, err
 	}
-	descriptors, err := obsidian.Descriptors(vault)
+	descriptors, err := obsidian.DescriptorsWithGrepTestHooks(vault, grepActivity, hooks)
 	if err != nil {
 		return nil, err
 	}

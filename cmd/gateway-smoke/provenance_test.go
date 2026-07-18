@@ -452,7 +452,7 @@ func completeCandidateReports(expected candidateProvenance) []any {
 	}
 	performance := passingPhase2PerformanceReportShape()
 	performance.ReportKind = reportKindPerformance
-	performance.SchemaVersion = smokeReportVersion
+	performance.SchemaVersion = performanceReportVersion
 	performance.Passed = true
 	performance.CandidateCommit = expected.Commit
 	performance.CandidateSHA256 = expected.CandidateSHA256

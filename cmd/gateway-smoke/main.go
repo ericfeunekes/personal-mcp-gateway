@@ -25,18 +25,19 @@ import (
 )
 
 const (
-	smokeTimeout          = 10 * time.Second
-	performanceTimeout    = 90 * time.Second
-	resourceTimeout       = 4 * time.Minute
-	performanceWarmups    = 10
-	performanceSamples    = 100
-	stratifiedWarmups     = 2
-	stratifiedSamples     = 20
-	performanceP95LimitUS = 100_000
-	cancellationDelay     = 2 * time.Millisecond
-	cancellationBound     = 100 * time.Millisecond
-	defaultSuccessMessage = "gateway smoke passed: resolve(.) returned an existing directory"
-	smokeReportVersion    = 3
+	smokeTimeout             = 10 * time.Second
+	performanceTimeout       = 90 * time.Second
+	resourceTimeout          = 4 * time.Minute
+	performanceWarmups       = 10
+	performanceSamples       = 100
+	stratifiedWarmups        = 2
+	stratifiedSamples        = 20
+	performanceP95LimitUS    = 100_000
+	cancellationDelay        = 2 * time.Millisecond
+	cancellationBound        = 100 * time.Millisecond
+	defaultSuccessMessage    = "gateway smoke passed: resolve(.) returned an existing directory"
+	smokeReportVersion       = 3
+	performanceReportVersion = 4
 )
 
 var stratifiedEntryCounts = [...]int{1, 100, 1_000, 10_000}
@@ -80,33 +81,34 @@ type smokeReport struct {
 }
 
 type performanceReport struct {
-	ReportKind          string                  `json:"report_kind"`
-	ReportSchema        string                  `json:"report_schema"`
-	SchemaVersion       int                     `json:"schema_version"`
-	Passed              bool                    `json:"passed"`
-	CandidateCommit     string                  `json:"candidate_commit"`
-	CandidateSHA256     string                  `json:"candidate_sha256"`
-	DependencySHA256    string                  `json:"dependency_sha256"`
-	CandidateRuntime    candidateRuntimeProfile `json:"candidate_runtime"`
-	Machine             machineProfile          `json:"machine"`
-	CurrentVault        vaultAggregateProfile   `json:"current_vault"`
-	SyntheticCorpus     vaultAggregateProfile   `json:"synthetic_corpus"`
-	DescriptorCount     int                     `json:"descriptor_count"`
-	CardinalityBucket   string                  `json:"cardinality_bucket"`
-	ResolveCached       performanceMetrics      `json:"resolve_cached"`
-	LSFirstLimit1       performanceMetrics      `json:"ls_first_limit_1"`
-	LSContinuedLimit1   performanceMetrics      `json:"ls_continued_limit_1"`
-	LSFirstLimit100     performanceMetrics      `json:"ls_first_limit_100"`
-	SyntheticRead       performanceMetrics      `json:"synthetic_read"`
-	SyntheticGrep       performanceMetrics      `json:"synthetic_grep"`
-	BroadCurrentGrep    broadGrepObservation    `json:"broad_current_grep"`
-	SyntheticProcess    candidateProcessProfile `json:"synthetic_process"`
-	CurrentVaultProcess candidateProcessProfile `json:"current_vault_process"`
-	Stratified          []stratifiedMetrics     `json:"stratified"`
-	CurrentSQLite       sqliteTelemetryProof    `json:"current_sqlite"`
-	StratifiedSQLite    sqliteTelemetryProof    `json:"stratified_sqlite"`
-	SQLiteDegradation   sqliteDegradationProof  `json:"sqlite_degradation"`
-	Cancellation        cancellationObservation `json:"cancellation"`
+	ReportKind          string                   `json:"report_kind"`
+	ReportSchema        string                   `json:"report_schema"`
+	SchemaVersion       int                      `json:"schema_version"`
+	Passed              bool                     `json:"passed"`
+	CandidateCommit     string                   `json:"candidate_commit"`
+	CandidateSHA256     string                   `json:"candidate_sha256"`
+	DependencySHA256    string                   `json:"dependency_sha256"`
+	CandidateRuntime    candidateRuntimeProfile  `json:"candidate_runtime"`
+	Machine             machineProfile           `json:"machine"`
+	CurrentVault        vaultAggregateProfile    `json:"current_vault"`
+	SyntheticCorpus     vaultAggregateProfile    `json:"synthetic_corpus"`
+	DescriptorCount     int                      `json:"descriptor_count"`
+	CardinalityBucket   string                   `json:"cardinality_bucket"`
+	ResolveCached       performanceMetrics       `json:"resolve_cached"`
+	LSFirstLimit1       performanceMetrics       `json:"ls_first_limit_1"`
+	LSContinuedLimit1   performanceMetrics       `json:"ls_continued_limit_1"`
+	LSFirstLimit100     performanceMetrics       `json:"ls_first_limit_100"`
+	SyntheticRead       performanceMetrics       `json:"synthetic_read"`
+	SyntheticGrep       performanceMetrics       `json:"synthetic_grep"`
+	BroadCurrentGrep    broadGrepObservation     `json:"broad_current_grep"`
+	BroadNegativeGrep   broadNegativeObservation `json:"broad_negative_grep"`
+	SyntheticProcess    candidateProcessProfile  `json:"synthetic_process"`
+	CurrentVaultProcess candidateProcessProfile  `json:"current_vault_process"`
+	Stratified          []stratifiedMetrics      `json:"stratified"`
+	CurrentSQLite       sqliteTelemetryProof     `json:"current_sqlite"`
+	StratifiedSQLite    sqliteTelemetryProof     `json:"stratified_sqlite"`
+	SQLiteDegradation   sqliteDegradationProof   `json:"sqlite_degradation"`
+	Cancellation        cancellationObservation  `json:"cancellation"`
 }
 
 type sqliteTelemetryProof struct {
@@ -327,6 +329,7 @@ func runWithCandidateSnapshotter(args []string, stdout, stderr io.Writer, snapsh
 		}
 		report.ReportKind = reportKindPerformance
 		report.ReportSchema = performanceReportSchema
+		report.SchemaVersion = performanceReportVersion
 		report.CandidateCommit = provenance.Commit
 		report.CandidateSHA256 = provenance.CandidateSHA256
 		report.DependencySHA256 = provenance.DependencySHA256
@@ -341,6 +344,7 @@ func runWithCandidateSnapshotter(args []string, stdout, stderr io.Writer, snapsh
 		report.SyntheticRead = phase2.syntheticRead
 		report.SyntheticGrep = phase2.syntheticGrep
 		report.BroadCurrentGrep = phase2.broadCurrentGrep
+		report.BroadNegativeGrep = phase2.broadNegativeGrep
 		report.SyntheticProcess = phase2.syntheticProcess
 		report.CurrentVaultProcess = phase2.currentVaultProcess
 		report.Stratified, report.StratifiedSQLite, report.Cancellation, err = probeStratifiedPerformance(ctx, candidatePath)

@@ -34,6 +34,9 @@ The current accepted server implements `resolve`, shallow `ls`, bounded `read`, 
 - The broad target vocabulary includes first-class `backlinks` and `path_between`, but their implementation and activation remain performance-gated.
 - The agent is the primary user and may choose graph scope based on the task. Outbound references may cross a domain boundary while remaining inside the vault; explicit scopes control which targets are expanded or scanned.
 - Requirements are informed by real workout/exercise/health workflows rather than invented examples alone.
+- Under bounded concurrent `grep`, only the canonical prefix accepted by the
+  ordered reducer is authoritative. Read-ahead beyond its stop boundary is
+  implementation speculation, not public coverage or consistency evidence.
 
 ## Public Tool Vocabulary
 
@@ -87,7 +90,7 @@ Every partial-capable retrieval, scan, or graph result includes the same `covera
 
 - `result_complete`: whether all discovered results fit the output limit;
 - `scope_complete`: whether every file or frontier required by the declared path/scopes and query boundary was examined, regardless of the caller's work budget;
-- `consistency`: `stable` when the operation observed no source change, otherwise `best_effort`;
+- `consistency`: `stable` when the operation's authoritative accepted query evidence observed no source change, otherwise `best_effort`; tool-specific ordered contracts decide when an observation becomes authoritative;
 - `files_scanned` and `bytes_scanned` where content scanning occurred, plus `source_entries_validated` where a continuation revalidated prior source/catalog observations;
 - `stopped_by`: bounded reasons such as `result_limit`, `response_limit`, `file_limit`, `byte_limit`, `node_limit`, `edge_limit`, `timeout`, `canceled`, `scope`, or `source_change`; the corresponding public error code is `source_changed`;
 - `continuation`: `complete`, `cursor`, or `restart`, plus `next_cursor` when its value is `cursor`.
@@ -109,7 +112,7 @@ Common public error codes are:
 - `cursor_invalid` for malformed, oversized, or unsupported-version cursors;
 - `cursor_mismatch` when a cursor does not belong to the normalized query;
 - `cursor_stale` when a resumed source or catalog fingerprint no longer matches;
-- `source_changed` when mutation is observed during an active operation;
+- `source_changed` when mutation observed during an active operation becomes authoritative under the tool-specific ordered contract;
 - `timeout` and `canceled` for request termination.
 
 Tool-specific seed/item errors reuse these codes. Messages remain generic and sanitized; callers branch on the code, not message text.
@@ -172,11 +175,27 @@ The result unit and `limit` unit are matching lines, not files or individual occ
 
 For ordinary lines, `text` remains the complete source line and the excerpt metadata is omitted. Literal-mode match or context evidence longer than 8 KiB is represented explicitly as a UTF-8 excerpt: `text_truncated:true`, one-based `text_start_column` and inclusive `text_end_column`, plus `line_bytes` for the full physical content bytes excluding the line terminator and a stripped CR in CRLF. A matching-line excerpt is centered near the first match when possible; a context excerpt starts at column one. `column` and `occurrences` always describe the complete physical line, not merely the excerpt. Regex-mode match and context text is never silently clipped; if one complete regex match record cannot fit even as the only result inside the absolute SDK envelope, the call returns `response_too_large` with restart coverage and no cursor.
 
-Scanning is deterministic canonical-path order and stops as soon as it has enough evidence to prove a result, response, file, or byte boundary. A result/response stop returns a cursor after the last emitted matching line; a file/byte stop returns a cursor at the last fully processed source position and may validly return no matches. All deterministic partials set `scope_complete:false`. Continuation repeats the identical normalized query and budgets, revalidates the already examined catalog prefix from canonical paths plus current source stamps, and resumes without hidden server state. Metadata-only prefix validation is charged to the common two-second operation timeout and reported as `source_entries_validated`; it does not consume the new page's content `max_files` or `max_bytes` budget. A source-prefix change returns `cursor_stale`; mutation observed during a call returns `source_changed` with `continuation:restart`. If a regex examines a physical line beyond 1 MiB, grep returns `input_too_large` with `continuation:restart` and no cursor after reading at most a one-byte sentinel beyond the cap and before whole-line UTF-8 validation or regexp evaluation. Literal mode continues through the complete physical line with bounded memory, validates its complete UTF-8 source, and never treats omitted excerpt bytes as unsearched. If the caller's lower byte budget cannot process one complete source line at the continuation boundary, the tool returns `limit_exceeded` rather than a non-advancing cursor; the caller must restart with a larger budget.
+Scanning is deterministic canonical-path order and stops as soon as it has enough evidence to prove a result, response, file, or byte boundary. A result/response stop returns a cursor after the last emitted matching line; a file/byte stop returns a cursor at the last fully processed source position and may validly return no matches. All deterministic partials set `scope_complete:false`. Continuation repeats the identical normalized query and budgets, revalidates the already examined catalog prefix from canonical paths plus current source stamps, and resumes without hidden server state. Metadata-only prefix validation is charged to the common two-second operation timeout and reported as `source_entries_validated`; it does not consume the new page's content `max_files` or `max_bytes` budget. A source-prefix change returns `cursor_stale`; mutation accepted as part of the authoritative canonical scan prefix during a call returns `source_changed` with `continuation:restart`. If a regex examines a physical line beyond 1 MiB, grep returns `input_too_large` with `continuation:restart` and no cursor after reading at most a one-byte sentinel beyond the cap and before whole-line UTF-8 validation or regexp evaluation. Literal mode continues through the complete physical line with bounded memory, validates its complete UTF-8 source, and never treats omitted excerpt bytes as unsearched. If the caller's lower byte budget cannot process one complete source line at the continuation boundary, the tool returns `limit_exceeded` rather than a non-advancing cursor; the caller must restart with a larger budget.
+
+An implementation may scan files concurrently behind that same deterministic
+contract, with eight workers as the tested ceiling. Jobs are reserved and
+numbered in canonical order before dispatch, while one ordered reducer remains
+the sole authority for match emission, result fitting, prefix digests,
+`files_scanned`, `bytes_scanned`, consistency, errors, stop reason, and cursor
+state. Only the contiguous canonical prefix the reducer accepts contributes to
+those public results or their telemetry summaries. When the reducer reaches a
+result, response, file, byte, timeout, cancellation, or source-change boundary,
+later read-ahead is canceled and discarded: its completed bytes, fingerprints,
+matches, or errors cannot change the returned outcome. An error or source
+change becomes authoritative when the reducer reaches that job in canonical
+order, never merely because a later worker finishes first. Reservation must
+still prevent physically dispatched work from exceeding the request's file and
+byte budgets; queues, reorder buffers, open descriptors, and worker lifetime
+remain bounded, and every worker is joined before the handler returns.
 
 The grep cursor binds the normalized query and budgets, canonical stored-spelling scan boundary, next byte/line position when a file is partial, the partial file's source fingerprint, and a cumulative digest of the already examined canonical Markdown catalog prefix. The digest includes each fully examined path and its opaque source fingerprint. On continuation the server re-enumerates that metadata prefix and compares the digest, then validates the partial file's source stamp and seeks directly to its bound byte position. An insertion, deletion, rename, replacement, or detectable content change at or before the continuation boundary therefore becomes `cursor_stale`; changes strictly after an unexamined boundary do not invalidate evidence already returned. Cursor payloads retain only the bounded digest and boundary state needed to recompute and verify that prefix, not an unbounded file list.
 
-`files_scanned` counts allowed Markdown files whose content was opened and examined during that call; `bytes_scanned` counts actual source bytes read for the new page. `source_entries_validated` counts metadata entries revisited to validate a continuation prefix. Invalid UTF-8 in an examined Markdown file returns `invalid_utf8` with restart coverage. All content scanning and metadata validation remain bounded by the shared two-second operation timeout; validation timeout returns `timeout` with `continuation:restart` and no cursor. The default 10,000-file / 256 MiB page-work budgets still bound new content work, and the absolute encoded SDK result remains 64 KiB.
+`files_scanned` counts allowed Markdown files whose content the ordered reducer accepts as examined query evidence during that call; `bytes_scanned` counts source bytes accepted into that authoritative new-page prefix. Physical speculative suffix reads canceled or discarded before canonical acceptance are implementation work, not public query coverage. `source_entries_validated` counts metadata entries revisited and accepted while validating a continuation prefix. Invalid UTF-8 in an accepted examined Markdown file returns `invalid_utf8` with restart coverage. All content scanning and metadata validation remain bounded by the shared two-second operation timeout; validation timeout returns `timeout` with `continuation:restart` and no cursor. The default 10,000-file / 256 MiB page-work budgets still bound new content work, and the absolute encoded SDK result remains 64 KiB.
 
 ### `links`
 
@@ -231,6 +250,27 @@ Builds a live request-local authored-reference graph inside the scopes and retur
 The vault is authoritative. Live parsing and scanning produce bounded read projections. No persistent/background index, startup scan, filesystem watcher, or derived durable graph is required by this contract.
 
 The requirements spike used a representative 47-file, approximately 231 KiB exercise/health/marathon corpus. Direct grep completed in roughly 12-41 ms, request-local graph construction after content load in roughly 1-3 ms, and the broader path/identity load in roughly 110-596 ms across observed cold/warm runs. These numbers are planning evidence, not implementation proof.
+
+A 2026-07-17 bounded-concurrency spike isolated the current broad negative
+literal `grep` hot path on the live vault. Its serial-walk,
+serial-confined-open, bounded-parallel-scan prototype reused `fsx.WalkFiles`
+and `fsx.File.Read`, including physical-line framing, complete UTF-8 validation,
+case-insensitive quoted RE2 evaluation, and bounded oversized-literal
+streaming. Across the tested `1/2/4/8` worker counts, eight was fastest: median
+complete-scan time over a 256 MiB work envelope fell from approximately 5.75 s
+at one worker to 1.95 s at eight, while a raw-read control took approximately
+0.34 s and pure canonical enumeration approximately 0.13 s. This establishes
+bounded parallel line scanning as the next implementation candidate and shows
+that line processing, not raw I/O or enumeration alone, dominates the negative
+literal workload.
+
+Those measurements began as planning evidence. The production handler now uses
+eight as its fixed, internal worker ceiling: a serial canonical walker and
+ordered reducer preserve ordering, budgets, cursors, source-change semantics,
+and public coverage while bounded speculative scans run concurrently. Exact
+candidate proof covers two-second calls, descriptor recovery, repeated-call RSS,
+30-second RSS recovery, 64 KiB results, cancellation cleanup, and JSONL/SQLite
+telemetry whose counters remain reducer-authoritative.
 
 Initial performance expectations:
 

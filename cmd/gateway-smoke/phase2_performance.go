@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -14,13 +16,14 @@ import (
 )
 
 const (
-	performanceReportSchema    = "personal-mcp-gateway.performance.v3"
+	performanceReportSchema    = "personal-mcp-gateway.performance.v4"
 	phase2SyntheticFileCount   = 50
 	phase2SyntheticFileBytes   = 5_120
 	phase2SyntheticCorpusBytes = phase2SyntheticFileCount * phase2SyntheticFileBytes
 	phase2ScopedGrepP95LimitUS = 250_000
 	phase2BroadGrepBound       = 2 * time.Second
 	phase2PerformanceNeedle    = "phase2-candidate-performance-needle"
+	phase2BroadNegativeSamples = 5
 )
 
 type broadGrepObservation struct {
@@ -40,6 +43,21 @@ type broadGrepObservation struct {
 	UnderTwoSecondBound    bool   `json:"under_two_second_bound"`
 }
 
+type broadNegativeObservation struct {
+	Samples                 int    `json:"samples"`
+	P50Microseconds         int64  `json:"p50_microseconds"`
+	P95Microseconds         int64  `json:"p95_microseconds"`
+	MaxMicroseconds         int64  `json:"max_microseconds"`
+	MaxSDKResultBytes       int    `json:"max_sdk_result_bytes"`
+	MaxStructuredBytes      int    `json:"max_structured_bytes"`
+	FilesScanned            uint64 `json:"files_scanned"`
+	BytesScanned            uint64 `json:"bytes_scanned"`
+	ZeroMatches             bool   `json:"zero_matches"`
+	Complete                bool   `json:"complete"`
+	InventoryReconciled     bool   `json:"inventory_reconciled"`
+	EveryCallUnderTwoSecond bool   `json:"every_call_under_two_seconds"`
+}
+
 type phase2PerformanceEvidence struct {
 	runtime             candidateRuntimeProfile
 	machine             machineProfile
@@ -48,6 +66,7 @@ type phase2PerformanceEvidence struct {
 	syntheticRead       performanceMetrics
 	syntheticGrep       performanceMetrics
 	broadCurrentGrep    broadGrepObservation
+	broadNegativeGrep   broadNegativeObservation
 	syntheticProcess    candidateProcessProfile
 	currentVaultProcess candidateProcessProfile
 }
@@ -79,9 +98,13 @@ func probePhase2Performance(ctx context.Context, gatewayBin, currentVaultRoot st
 	if err != nil {
 		return phase2PerformanceEvidence{}, err
 	}
+	negative, err := probeBroadNegativeCurrentVaultGrep(ctx, gatewayBin, currentVaultRoot, currentVault)
+	if err != nil {
+		return phase2PerformanceEvidence{}, err
+	}
 	return phase2PerformanceEvidence{
 		runtime: runtimeProfile, machine: machine, currentVault: currentVault, syntheticCorpus: syntheticCorpus,
-		syntheticRead: syntheticRead, syntheticGrep: syntheticGrep, broadCurrentGrep: broad,
+		syntheticRead: syntheticRead, syntheticGrep: syntheticGrep, broadCurrentGrep: broad, broadNegativeGrep: negative,
 		syntheticProcess: syntheticProcess, currentVaultProcess: currentProcess,
 	}, nil
 }
@@ -231,6 +254,57 @@ func probeBroadCurrentVaultGrep(ctx context.Context, gatewayBin, root string, in
 	return observation, processProfile, nil
 }
 
+func probeBroadNegativeCurrentVaultGrep(ctx context.Context, gatewayBin, root string, inventory vaultAggregateProfile) (broadNegativeObservation, error) {
+	process, err := connectCandidateProcessHandle(ctx, exec.Command(gatewayBin, "stdio", "--obsidian-root", root, "--telemetry", "off"), io.Discard)
+	if err != nil {
+		return broadNegativeObservation{}, err
+	}
+	defer process.session.Close()
+	if count, err := requireExactToolList(ctx, process.session); err != nil || count != 5 {
+		return broadNegativeObservation{}, errors.New("broad negative descriptor gate failed")
+	}
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return broadNegativeObservation{}, err
+	}
+	literal := "phase2-broad-negative-" + hex.EncodeToString(raw[:])
+	var files, bytes uint64
+	operation := func() (operationSample, error) {
+		callCtx, cancel := context.WithTimeout(ctx, phase2BroadGrepBound)
+		defer cancel()
+		out, measured, callErr := callMeasured[obsidian.GrepOutput](callCtx, process.session, obsidian.ToolGrep, map[string]any{
+			"pattern": literal, "path": ".", "regex": false, "case_sensitive": true, "context_lines": 0, "limit": 1,
+			"max_files": obsidian.MaxGrepMaxFiles, "max_bytes": obsidian.MaxGrepMaxBytes,
+		})
+		if callErr != nil || !out.OK || len(out.Matches) != 0 || !out.Coverage.ResultComplete || !out.Coverage.ScopeComplete ||
+			out.Coverage.Continuation != obsidian.CoverageContinuationComplete || out.Coverage.StoppedBy != obsidian.CoverageStopScope ||
+			measured.sdkResultBytes > obsidian.MaxSDKResultBytes || measured.latency >= phase2BroadGrepBound {
+			return operationSample{}, errors.New("broad negative current-vault grep failed")
+		}
+		if files == 0 {
+			files, bytes = out.Coverage.FilesScanned, out.Coverage.BytesScanned
+		} else if files != out.Coverage.FilesScanned || bytes != out.Coverage.BytesScanned {
+			return operationSample{}, errors.New("broad negative current-vault coverage drifted")
+		}
+		return sampleFromCoverage(measured, out.Coverage), nil
+	}
+	metrics, err := collectPerformanceMetrics(operation, phase2BroadNegativeSamples)
+	if err != nil {
+		return broadNegativeObservation{}, err
+	}
+	observation := broadNegativeObservation{
+		Samples: phase2BroadNegativeSamples, P50Microseconds: metrics.P50Microseconds, P95Microseconds: metrics.P95Microseconds,
+		MaxMicroseconds: metrics.MaxMicroseconds, MaxSDKResultBytes: metrics.MaxSDKResultBytes, MaxStructuredBytes: metrics.MaxStructuredBytes,
+		FilesScanned: files, BytesScanned: bytes, ZeroMatches: true, Complete: true,
+		InventoryReconciled:     inventory.InventoryComplete && files == inventory.MarkdownFileCount && bytes == inventory.MarkdownByteCount,
+		EveryCallUnderTwoSecond: metrics.MaxMicroseconds < phase2BroadGrepBound.Microseconds(),
+	}
+	if !broadNegativeObservationPasses(observation, inventory) {
+		return broadNegativeObservation{}, errors.New("broad negative current-vault gate failed")
+	}
+	return observation, nil
+}
+
 func newPhase2SyntheticFixture() (phase2SyntheticFixture, error) {
 	root, err := os.MkdirTemp("", "personal-mcp-gateway-phase2-performance-")
 	if err != nil {
@@ -309,6 +383,15 @@ func broadGrepObservationPasses(observation broadGrepObservation, inventory vaul
 	return !observation.CompletenessReconciled && observation.Continuation == obsidian.CoverageContinuationCursor && observation.AdvancingCursor
 }
 
+func broadNegativeObservationPasses(observation broadNegativeObservation, inventory vaultAggregateProfile) bool {
+	return observation.Samples == phase2BroadNegativeSamples && observation.P50Microseconds >= 0 &&
+		observation.P95Microseconds >= observation.P50Microseconds && observation.MaxMicroseconds >= observation.P95Microseconds &&
+		observation.MaxSDKResultBytes > 0 && observation.MaxSDKResultBytes <= obsidian.MaxSDKResultBytes &&
+		observation.MaxStructuredBytes > 0 && observation.MaxStructuredBytes <= observation.MaxSDKResultBytes &&
+		observation.ZeroMatches && observation.Complete && observation.InventoryReconciled && observation.EveryCallUnderTwoSecond &&
+		inventory.InventoryComplete && observation.FilesScanned == inventory.MarkdownFileCount && observation.BytesScanned == inventory.MarkdownByteCount
+}
+
 // performanceReportEvidencePasses is the single production predicate used to
 // derive performanceReport.Passed after every Phase 1 and Phase 2 field has
 // been populated. Report-set validation calls the same predicate.
@@ -326,7 +409,8 @@ func phase2PerformanceEvidencePasses(report performanceReport) bool {
 		report.SyntheticCorpus.InventoryComplete != true || report.SyntheticCorpus.MarkdownFileCount != phase2SyntheticFileCount ||
 		report.SyntheticCorpus.MarkdownByteCount != phase2SyntheticCorpusBytes ||
 		!phase2SyntheticReadMetricsPass(report.SyntheticRead) || !phase2SyntheticGrepMetricsPass(report.SyntheticGrep) ||
-		!broadGrepObservationPasses(report.BroadCurrentGrep, report.CurrentVault) {
+		!broadGrepObservationPasses(report.BroadCurrentGrep, report.CurrentVault) ||
+		!broadNegativeObservationPasses(report.BroadNegativeGrep, report.CurrentVault) {
 		return false
 	}
 	return true

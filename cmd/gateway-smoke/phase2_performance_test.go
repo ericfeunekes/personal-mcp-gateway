@@ -38,6 +38,7 @@ func TestPhase2PerformanceExactCandidate(t *testing.T) {
 		evidence.syntheticCorpus.MarkdownByteCount != phase2SyntheticCorpusBytes ||
 		!phase2SyntheticReadMetricsPass(evidence.syntheticRead) || !phase2SyntheticGrepMetricsPass(evidence.syntheticGrep) ||
 		!broadGrepObservationPasses(evidence.broadCurrentGrep, evidence.currentVault) ||
+		!broadNegativeObservationPasses(evidence.broadNegativeGrep, evidence.currentVault) ||
 		!candidateProcessProfilePasses(evidence.syntheticProcess) || !candidateProcessProfilePasses(evidence.currentVaultProcess) {
 		t.Fatalf("phase 2 evidence = %#v", evidence)
 	}
@@ -46,8 +47,9 @@ func TestPhase2PerformanceExactCandidate(t *testing.T) {
 		CandidateRuntime: evidence.runtime, Machine: evidence.machine,
 		CurrentVault: evidence.currentVault, SyntheticCorpus: evidence.syntheticCorpus,
 		SyntheticRead: evidence.syntheticRead, SyntheticGrep: evidence.syntheticGrep,
-		BroadCurrentGrep: evidence.broadCurrentGrep,
-		SyntheticProcess: evidence.syntheticProcess, CurrentVaultProcess: evidence.currentVaultProcess,
+		BroadCurrentGrep:  evidence.broadCurrentGrep,
+		BroadNegativeGrep: evidence.broadNegativeGrep,
+		SyntheticProcess:  evidence.syntheticProcess, CurrentVaultProcess: evidence.currentVaultProcess,
 	}
 	encoded, err := json.Marshal(report)
 	if err != nil {
@@ -182,7 +184,8 @@ func TestPerformanceReportEvidenceRequiresEveryPhase2Gate(t *testing.T) {
 			report.BroadCurrentGrep.CompletenessClaimed = true
 			report.BroadCurrentGrep.CompletenessReconciled = false
 		},
-		"fd_recovery": func(report *performanceReport) { report.SyntheticProcess.FDsRecovered = false },
+		"negative_incomplete": func(report *performanceReport) { report.BroadNegativeGrep.Complete = false },
+		"fd_recovery":         func(report *performanceReport) { report.SyntheticProcess.FDsRecovered = false },
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := report
@@ -207,7 +210,7 @@ func passingPhase2PerformanceReportShape() performanceReport {
 		BaselineFDCount: 1, FinalFDCount: 1, MaxObservedFDCount: 1, FDsRecovered: true,
 	}
 	return performanceReport{
-		ReportSchema: performanceReportSchema, DescriptorCount: 5,
+		ReportSchema: performanceReportSchema, SchemaVersion: performanceReportVersion, DescriptorCount: 5,
 		CandidateRuntime: candidateRuntimeProfile{GoVersion: "go1.0", GOOS: "darwin", GOARCH: "arm64"},
 		Machine:          machineProfile{LogicalCPUCount: 1, GOMAXPROCS: 1},
 		CurrentVault:     vaultAggregateProfile{InventoryPolicy: markdownInventoryPolicy, InventoryComplete: true, StoppedBy: "scope", MarkdownFileCount: 1, MarkdownByteCount: 1},
@@ -216,6 +219,9 @@ func passingPhase2PerformanceReportShape() performanceReport {
 		BroadCurrentGrep: broadGrepObservation{LatencyMicroseconds: 1, SDKResultBytes: 1, StructuredBytes: 1, MatchCount: 1,
 			FilesScanned: 1, BytesScanned: 1, Continuation: "complete", StoppedBy: "scope", UsefulMatch: true,
 			CompletenessClaimed: true, CompletenessReconciled: true, UnderTwoSecondBound: true},
+		BroadNegativeGrep: broadNegativeObservation{Samples: phase2BroadNegativeSamples, P50Microseconds: 1, P95Microseconds: 1,
+			MaxMicroseconds: 1, MaxSDKResultBytes: 1, MaxStructuredBytes: 1, FilesScanned: 1, BytesScanned: 1,
+			ZeroMatches: true, Complete: true, InventoryReconciled: true, EveryCallUnderTwoSecond: true},
 		SyntheticProcess: process, CurrentVaultProcess: process,
 	}
 }

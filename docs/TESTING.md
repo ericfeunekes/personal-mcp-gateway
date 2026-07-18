@@ -114,6 +114,19 @@ which the SDK rejects before gateway middleware observes a request.
 
 If linting or race tests are added, document the exact commands here before treating them as required gates.
 
+For bounded-concurrent `grep` changes, run the affected race and exact-candidate
+proofs in addition to `make test`:
+
+```bash
+GOCACHE=$(pwd)/.gocache go test -race -count=1 ./internal/tools/obsidian ./internal/app
+GOCACHE=$(pwd)/.gocache go test -count=1 ./cmd/gateway-smoke -run '^TestPhase2PerformanceExactCandidate$' -v
+GOCACHE=$(pwd)/.gocache go test -count=1 ./cmd/gateway-smoke -run '^TestPhase2ResourceProbeExercisesBuiltFiveToolCandidate$' -v
+```
+
+The resource proof must observe overlapping request-local pools above one
+eight-worker ceiling, bounded active and reserved work, cancellation isolation,
+immediate FD/vault quiescence, and a successful same-session follow-up.
+
 ## Test Data Rules
 
 - Use generated fixture vaults in tests.

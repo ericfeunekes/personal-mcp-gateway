@@ -22,13 +22,19 @@ const (
 )
 
 type Tools struct {
-	vault   *fsx.Vault
-	openDir func(context.Context, string, string) (listDirectory, error)
+	vault        *fsx.Vault
+	openDir      func(context.Context, string, string) (listDirectory, error)
+	grepActivity *fsx.SchedulerActivity
 }
 
 func New(vault *fsx.Vault) *Tools {
+	return newTools(vault, nil)
+}
+
+func newTools(vault *fsx.Vault, grepActivity *fsx.SchedulerActivity) *Tools {
 	return &Tools{
-		vault: vault,
+		vault:        vault,
+		grepActivity: grepActivity,
 		openDir: func(ctx context.Context, base, path string) (listDirectory, error) {
 			return vault.OpenDir(ctx, base, path)
 		},
@@ -42,7 +48,23 @@ type listDirectory interface {
 }
 
 func Descriptors(vault *fsx.Vault) ([]localmcp.ToolDescriptor, error) {
-	tools := New(vault)
+	return DescriptorsWithGrepActivity(vault, nil)
+}
+
+// DescriptorsWithGrepActivity is private wiring for the inherited exact
+// resource probe; normal callers use Descriptors and pay no observer cost.
+func DescriptorsWithGrepActivity(vault *fsx.Vault, grepActivity *fsx.SchedulerActivity) ([]localmcp.ToolDescriptor, error) {
+	return descriptorsWithGrepTestHooks(vault, grepActivity, nil)
+}
+
+// DescriptorsWithGrepTestHooks is internal Go test plumbing; it does not alter
+// the exposed MCP descriptor set or add a runtime capability.
+func DescriptorsWithGrepTestHooks(vault *fsx.Vault, grepActivity *fsx.SchedulerActivity, hooks *GrepTestHooks) ([]localmcp.ToolDescriptor, error) {
+	return descriptorsWithGrepTestHooks(vault, grepActivity, hooks)
+}
+
+func descriptorsWithGrepTestHooks(vault *fsx.Vault, grepActivity *fsx.SchedulerActivity, hooks *GrepTestHooks) ([]localmcp.ToolDescriptor, error) {
+	tools := newTools(vault, grepActivity)
 	resolve, err := localmcp.NewToolDescriptor(sdk.Tool{
 		Name:        ToolResolve,
 		Description: ResolveDescription,
@@ -94,7 +116,9 @@ func Descriptors(vault *fsx.Vault) ([]localmcp.ToolDescriptor, error) {
 		Description: GrepDescription,
 		Annotations: readOnlyToolAnnotations(),
 		InputSchema: grepInputSchema(),
-	}, tools.Grep, summarizeGrepArgs, summarizeGrepResult)
+	}, func(ctx context.Context, request *sdk.CallToolRequest, input GrepInput) (*sdk.CallToolResult, GrepOutput, error) {
+		return tools.grep(ctx, input, hooks.concurrentHooks())
+	}, summarizeGrepArgs, summarizeGrepResult)
 	if err != nil {
 		return nil, err
 	}
