@@ -15,7 +15,7 @@ import (
 // grepWorkerCeiling is intentionally an internal fixed ceiling. It is not a
 // caller option: all public ordering, cursor, and coverage semantics remain
 // independent of when any individual worker completes.
-const grepWorkerCeiling = 8
+const grepWorkerCeiling = 16
 
 type grepCheckpointCoords struct {
 	resumeOffset  int64
@@ -167,8 +167,8 @@ func (s *grepConcurrentState) releasePending() {
 }
 
 // ensureWorkers starts only the workers the ordered window can currently use.
-// Broad scans still reach the fixed eight-worker ceiling; a one-file request
-// does not retain eight short-lived worker stacks after every call.
+// Broad scans still reach the fixed sixteen-worker ceiling; a one-file request
+// does not retain sixteen short-lived worker stacks after every call.
 func (s *grepConcurrentState) ensureWorkers() {
 	for s.workers < len(s.pending) && s.workers < grepWorkerCeiling {
 		s.workers++

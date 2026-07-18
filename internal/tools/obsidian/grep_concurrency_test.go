@@ -15,7 +15,7 @@ import (
 
 func TestGrepConcurrentCeilingAndCanonicalReduction(t *testing.T) {
 	root := t.TempDir()
-	for i := range 12 {
+	for i := range 20 {
 		writeGrepFile(t, root, string(rune('a'+i))+".md", strings.Repeat("absent literal workload\n", 2*1024))
 	}
 	tools := grepTools(t, root)
@@ -65,7 +65,7 @@ func TestGrepConcurrentCeilingAndCanonicalReduction(t *testing.T) {
 	}
 	close(release)
 	got := <-done
-	if got.err != nil || !got.out.OK || !got.out.Coverage.ScopeComplete || got.out.Coverage.FilesScanned != 12 {
+	if got.err != nil || !got.out.OK || !got.out.Coverage.ScopeComplete || got.out.Coverage.FilesScanned != 20 {
 		t.Fatalf("out=%#v err=%v", got.out, got.err)
 	}
 	mu.Lock()

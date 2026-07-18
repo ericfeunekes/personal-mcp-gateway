@@ -178,7 +178,7 @@ For ordinary lines, `text` remains the complete source line and the excerpt meta
 Scanning is deterministic canonical-path order and stops as soon as it has enough evidence to prove a result, response, file, or byte boundary. A result/response stop returns a cursor after the last emitted matching line; a file/byte stop returns a cursor at the last fully processed source position and may validly return no matches. All deterministic partials set `scope_complete:false`. Continuation repeats the identical normalized query and budgets, revalidates the already examined catalog prefix from canonical paths plus current source stamps, and resumes without hidden server state. Metadata-only prefix validation is charged to the common two-second operation timeout and reported as `source_entries_validated`; it does not consume the new page's content `max_files` or `max_bytes` budget. A source-prefix change returns `cursor_stale`; mutation accepted as part of the authoritative canonical scan prefix during a call returns `source_changed` with `continuation:restart`. If a regex examines a physical line beyond 1 MiB, grep returns `input_too_large` with `continuation:restart` and no cursor after reading at most a one-byte sentinel beyond the cap and before whole-line UTF-8 validation or regexp evaluation. Literal mode continues through the complete physical line with bounded memory, validates its complete UTF-8 source, and never treats omitted excerpt bytes as unsearched. If the caller's lower byte budget cannot process one complete source line at the continuation boundary, the tool returns `limit_exceeded` rather than a non-advancing cursor; the caller must restart with a larger budget.
 
 An implementation may scan files concurrently behind that same deterministic
-contract, with eight workers as the tested ceiling. Jobs are reserved and
+contract, with sixteen workers as the tested ceiling. Jobs are reserved and
 numbered in canonical order before dispatch, while one ordered reducer remains
 the sole authority for match emission, result fitting, prefix digests,
 `files_scanned`, `bytes_scanned`, consistency, errors, stop reason, and cursor
@@ -265,7 +265,7 @@ that line processing, not raw I/O or enumeration alone, dominates the negative
 literal workload.
 
 Those measurements began as planning evidence. The production handler now uses
-eight as its fixed, internal worker ceiling: a serial canonical walker and
+sixteen as its fixed, internal worker ceiling: a serial canonical walker and
 ordered reducer preserve ordering, budgets, cursors, source-change semantics,
 and public coverage while bounded speculative scans run concurrently. Exact
 candidate proof covers two-second calls, descriptor recovery, repeated-call RSS,
