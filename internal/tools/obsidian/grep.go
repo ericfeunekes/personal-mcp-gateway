@@ -29,7 +29,11 @@ var (
 
 var grepPrefixDomain = []byte("personal-mcp-gateway/obsidian/grep-prefix/v1\x00")
 
-const grepFastFileBytes = 32 * 1024
+// Literal negative scans can validate and reject a complete ordinary file in
+// one allocation. Keeping this bounded at 256 KiB lets the worker pool avoid
+// per-line framing for the common vault-note size while retaining a small,
+// request-bounded working set.
+const grepFastFileBytes = 256 * 1024
 
 type normalizedGrepQuery struct {
 	Pattern       string `json:"pattern"`
