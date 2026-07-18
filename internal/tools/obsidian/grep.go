@@ -576,6 +576,15 @@ func (r *grepLineReader) next(ctx context.Context) (grepLine, error) {
 					r.line++
 					return grepLine{number: lineNumber, start: start, end: r.offset, text: string(text)}, nil
 				}
+				if r.oversizedLiteral != nil && line.length+newline > MaxGrepPhysicalLineBytes+1 {
+					take := MaxGrepPhysicalLineBytes + 1 - line.length
+					if err := r.appendLine(&line, fragment[:take]); err != nil {
+						return grepLine{}, err
+					}
+					r.pendingPos += take
+					r.offset += int64(take)
+					return r.finishOversizedLiteral(ctx, start, lineNumber, &line, false)
+				}
 				if err := r.appendLine(&line, fragment[:newline]); err != nil {
 					return grepLine{}, err
 				}
@@ -596,6 +605,15 @@ func (r *grepLineReader) next(ctx context.Context) (grepLine, error) {
 					return grepLine{number: lineNumber, start: start, end: r.offset, large: text, mapped: line.mapped}, nil
 				}
 				return grepLine{number: lineNumber, start: start, end: r.offset, text: string(text)}, nil
+			}
+			if r.oversizedLiteral != nil && line.length+len(fragment) > MaxGrepPhysicalLineBytes+1 {
+				take := MaxGrepPhysicalLineBytes + 1 - line.length
+				if err := r.appendLine(&line, fragment[:take]); err != nil {
+					return grepLine{}, err
+				}
+				r.pendingPos += take
+				r.offset += int64(take)
+				return r.finishOversizedLiteral(ctx, start, lineNumber, &line, false)
 			}
 			if err := r.appendLine(&line, fragment); err != nil {
 				return grepLine{}, err
