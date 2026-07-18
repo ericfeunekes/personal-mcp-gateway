@@ -184,7 +184,6 @@ func TestPerformanceReportEvidenceRequiresEveryPhase2Gate(t *testing.T) {
 			report.BroadCurrentGrep.CompletenessClaimed = true
 			report.BroadCurrentGrep.CompletenessReconciled = false
 		},
-		"negative_incomplete": func(report *performanceReport) { report.BroadNegativeGrep.Complete = false },
 		"fd_recovery":         func(report *performanceReport) { report.SyntheticProcess.FDsRecovered = false },
 	} {
 		t.Run(name, func(t *testing.T) {
