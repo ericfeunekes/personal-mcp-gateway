@@ -31,6 +31,15 @@ active="$state_root/active"
 authority="$active/authority"
 command="${1:-status}"
 
+# The common preflight path only asks whether an existing transaction must be
+# resumed. When there is no active transaction, answer before allocating the
+# private capture channels used to dispatch a controller. This keeps the
+# no-op path bounded and prevents a clean release from depending on temporary
+# channel setup it will not use.
+if [[ "$command" == "resume-if-active" && ! -e "$active" && ! -L "$active" ]]; then
+  exit 3
+fi
+
 selected=""
 selection=""
 select_controller() {
