@@ -264,9 +264,14 @@ func (s *oversizedLiteralScanner) processValid(data []byte) {
 	windowStart := previousBytes - int64(len(s.tail))
 	windowStartColumn := s.totalRunes - utf8.RuneCount(s.tail) + 1
 	searchStart := max(0, int(s.lastMatchEnd-windowStart))
-	for _, index := range s.re.FindAllIndex(window[searchStart:], -1) {
+	for searchStart < len(window) {
+		index := s.re.FindIndex(window[searchStart:])
+		if len(index) == 0 {
+			break
+		}
 		index[0] += searchStart
 		index[1] += searchStart
+		searchStart = index[1]
 		absoluteStart := windowStart + int64(index[0])
 		absoluteEnd := windowStart + int64(index[1])
 		if absoluteEnd <= previousBytes || absoluteStart < s.lastMatchEnd {
