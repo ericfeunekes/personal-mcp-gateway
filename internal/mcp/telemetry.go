@@ -3,8 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"path"
+	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -15,7 +14,13 @@ import (
 	"personal-mcp-gateway/internal/limits"
 )
 
-const methodToolsCall = "tools/call"
+const (
+	methodToolsCall = "tools/call"
+
+	summaryErrorCallback = "callback_error"
+	summaryErrorPanic    = "callback_panic"
+	summaryErrorTooLarge = "too_large"
+)
 
 var knownMCPMethods = []string{
 	"initialize",
@@ -29,7 +34,14 @@ var knownMCPMethods = []string{
 	"completion/complete",
 }
 
-func telemetryMiddleware(log *audit.Logger, transport string, knownTools []string) sdk.Middleware {
+func telemetryMiddleware(log *audit.Logger, transport string, descriptors []ToolDescriptor) sdk.Middleware {
+	lookup := descriptorLookup(descriptors)
+	knownTools := make([]string, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		knownTools = append(knownTools, descriptor.Name())
+	}
+	sort.Strings(knownTools)
+
 	return func(next sdk.MethodHandler) sdk.MethodHandler {
 		return func(ctx context.Context, method string, req sdk.Request) (sdk.Result, error) {
 			start := time.Now()
@@ -37,7 +49,7 @@ func telemetryMiddleware(log *audit.Logger, transport string, knownTools []strin
 			duration := time.Since(start)
 
 			if method == methodToolsCall {
-				logToolCall(log, transport, knownTools, req, res, err, duration)
+				logToolCall(log, transport, lookup, knownTools, req, res, err, duration)
 			} else {
 				logMCPRequest(log, transport, method, err, duration)
 			}
@@ -68,7 +80,7 @@ func logMCPRequest(log *audit.Logger, transport, method string, err error, durat
 	log.Event("mcp.request", attrs)
 }
 
-func logToolCall(log *audit.Logger, transport string, knownTools []string, req sdk.Request, res sdk.Result, err error, duration time.Duration) {
+func logToolCall(log *audit.Logger, transport string, descriptors map[string]ToolDescriptor, knownTools []string, req sdk.Request, res sdk.Result, callErr error, duration time.Duration) {
 	if log == nil || !log.Enabled() {
 		return
 	}
@@ -81,232 +93,215 @@ func logToolCall(log *audit.Logger, transport string, knownTools []string, req s
 	}
 
 	toolValue, toolDetails := audit.SafeIdentifier(toolName, log.RunID(), "unknown", knownTools...)
-	outcome := "ok"
 	attrs := map[string]any{
 		"transport":   transport,
 		"method":      methodToolsCall,
 		"tool":        toolValue,
 		"tool_meta":   toolDetails,
-		"outcome":     outcome,
+		"outcome":     "ok",
 		"duration_ms": duration.Milliseconds(),
-		"args":        summarizeArgs(rawArgs, log.RunID()),
 	}
 
-	if err != nil {
-		outcome = "protocol_error"
-		attrs["outcome"] = outcome
-		attrs["error_code"] = protocolErrorCode(err)
+	var result *sdk.CallToolResult
+	if typed, ok := res.(*sdk.CallToolResult); ok {
+		result = typed
+		if result != nil {
+			attrs["is_error"] = result.IsError
+		}
+	}
+
+	descriptor, known := descriptors[toolName]
+	var (
+		envelope    safeSummaryEnvelope
+		summaryCode string
+		resultCode  string
+		haveSummary bool
+	)
+	if known {
+		envelope, resultCode, summaryCode, haveSummary = buildDescriptorSummary(log.RunID(), descriptor, rawArgs, result)
+	} else {
+		envelope, summaryCode, haveSummary = buildUnknownSummary(log.RunID(), rawArgs)
+	}
+	if haveSummary {
+		attrs["summary"] = envelope
+	}
+	if summaryCode != "" {
+		attrs["summary_error"] = summaryCode
+	}
+
+	if callErr != nil {
+		attrs["outcome"] = "protocol_error"
+		attrs["error_code"] = protocolErrorCode(callErr)
 		log.Event("tool.call", attrs)
 		return
 	}
-
-	if result, ok := res.(*sdk.CallToolResult); ok && result != nil {
-		attrs["is_error"] = result.IsError
-		for k, v := range summarizeToolResult(result) {
-			attrs[k] = v
-		}
-		if result.IsError {
-			attrs["outcome"] = "tool_error"
-			if _, ok := attrs["error_code"]; !ok {
-				attrs["error_code"] = toolErrorCode(result)
-			}
+	if result != nil && result.IsError {
+		attrs["outcome"] = "tool_error"
+		if resultCode != "" {
+			attrs["error_code"] = resultCode
+		} else {
+			attrs["error_code"] = toolErrorCode(result)
 		}
 	}
 
 	log.Event("tool.call", attrs)
 }
 
-func summarizeArgs(raw json.RawMessage, runID string) map[string]any {
-	out := map[string]any{
-		"present": false,
-		"bytes":   len(raw),
-	}
-	if len(raw) == 0 {
-		return out
-	}
-	out["present"] = true
-	if len(raw) > limits.TelemetryArgsBytes {
-		out["too_large"] = true
-		return out
-	}
-
-	var obj map[string]any
-	if err := json.Unmarshal(raw, &obj); err != nil {
-		out["shape"] = "invalid_json"
-		return out
-	}
-
-	knownFields := make([]string, 0, 3)
-	unknownHashes := make([]string, 0)
-	unknownTooLarge := 0
-	for key := range obj {
-		switch key {
-		case "path", "base", "limit":
-			knownFields = append(knownFields, key)
-		default:
-			if len([]byte(key)) > limits.TelemetryMaxKeyBytes {
-				unknownTooLarge++
-			}
-			if len(unknownHashes) < limits.TelemetryMaxKeys {
-				unknownHashes = append(unknownHashes, audit.HashString(runID, key))
-			}
-		}
-	}
-	sort.Strings(knownFields)
-	out["known_fields"] = knownFields
-	unknownCount := len(obj) - len(knownFields)
-	if unknownCount > 0 {
-		out["unknown_key_count"] = unknownCount
-		out["unknown_key_hashes"] = unknownHashes
-		out["unknown_key_truncated"] = unknownCount > len(unknownHashes)
-		if unknownTooLarge > 0 {
-			out["unknown_key_too_large_count"] = unknownTooLarge
-		}
-	}
-
-	for _, field := range []string{"path", "base"} {
-		if value, ok := obj[field]; ok {
-			out[field] = summarizePathValue(value, runID)
-		}
-	}
-	if value, ok := obj["limit"]; ok {
-		out["limit"] = summarizeLimitValue(value)
-	}
-	return out
+func buildDescriptorSummary(runID string, descriptor ToolDescriptor, rawArgs json.RawMessage, result *sdk.CallToolResult) (envelope safeSummaryEnvelope, resultCode, summaryCode string, ok bool) {
+	return buildDescriptorSummaryWithLimit(runID, descriptor, rawArgs, result, limits.TelemetryEventBytes)
 }
 
-func summarizePathValue(value any, runID string) map[string]any {
-	out := map[string]any{
-		"present": true,
-		"type":    jsonType(value),
+func buildDescriptorSummaryWithLimit(runID string, descriptor ToolDescriptor, rawArgs json.RawMessage, result *sdk.CallToolResult, maxBytes int) (envelope safeSummaryEnvelope, resultCode, summaryCode string, ok bool) {
+	builder := newSafeSummaryBuilder(runID)
+	if err := builder.Bool(SectionArguments, BoolPresent, len(rawArgs) > 0); err != nil {
+		return safeSummaryEnvelope{}, "", summaryErrorCallback, false
 	}
-	s, ok := value.(string)
-	if !ok {
-		return out
-	}
-
-	out["bytes"] = len([]byte(s))
-	if len([]byte(s)) > limits.PathMaxBytes {
-		out["too_large"] = true
-		out["hash"] = audit.HashString(runID, s)
-		return out
+	if err := builder.Counter(SectionArguments, CounterRawBytes, uint64(len(rawArgs))); err != nil {
+		return safeSummaryEnvelope{}, "", summaryErrorCallback, false
 	}
 
-	normalized := strings.TrimSpace(strings.ReplaceAll(s, "\\", "/"))
-	out["empty"] = normalized == ""
-	out["hash"] = audit.HashString(runID, normalized)
-	out["absolute"] = strings.HasPrefix(normalized, "/")
-
-	clean := path.Clean(normalized)
-	if clean == "." && normalized != "." {
-		clean = normalized
+	if len(rawArgs) > limits.TelemetryArgsBytes {
+		if err := builder.Bool(SectionArguments, BoolTooLarge, true); err != nil {
+			return safeSummaryEnvelope{}, "", summaryErrorCallback, false
+		}
+	} else if err, panicked := invokeSummary(func() error {
+		return descriptor.summarizeArgs(builder, rawArgs)
+	}); err != nil {
+		if panicked {
+			return safeSummaryEnvelope{}, "", summaryErrorPanic, false
+		}
+		return safeSummaryEnvelope{}, "", summaryErrorCallback, false
 	}
 
-	segments := pathSegments(clean)
-	out["segments"] = len(segments)
-	if len(segments) > limits.PathMaxSegments {
-		out["too_many_segments"] = true
+	if err := builder.Bool(SectionResult, BoolPresent, result != nil); err != nil {
+		return safeSummaryEnvelope{}, "", summaryErrorCallback, false
 	}
-	out["traversal"] = hasSegment(segments, "..")
-	out["hidden_segment"] = hasHiddenSegment(segments)
-	if ext := strings.TrimPrefix(strings.ToLower(path.Ext(clean)), "."); ext != "" {
-		out["ext"] = ext
+	if result != nil {
+		if err := builder.Bool(SectionResult, BoolIsError, result.IsError); err != nil {
+			return safeSummaryEnvelope{}, "", summaryErrorCallback, false
+		}
+		if err, panicked := invokeSummary(func() error {
+			return descriptor.summarizeResult(builder, result)
+		}); err != nil {
+			if panicked {
+				return safeSummaryEnvelope{}, "", summaryErrorPanic, false
+			}
+			return safeSummaryEnvelope{}, "", summaryErrorCallback, false
+		}
 	}
-	return out
+
+	resultCode, _ = builder.resultErrorCode()
+	envelope, err := builder.sealWithLimit(maxBytes)
+	if err != nil {
+		if errors.Is(err, errSafeSummaryTooLarge) {
+			return safeSummaryEnvelope{}, "", summaryErrorTooLarge, false
+		}
+		return safeSummaryEnvelope{}, "", summaryErrorCallback, false
+	}
+	return envelope, resultCode, "", true
 }
 
-func summarizeLimitValue(value any) map[string]any {
-	out := map[string]any{
-		"present": true,
-		"type":    jsonType(value),
+func invokeSummary(callback func() error) (err error, panicked bool) {
+	defer func() {
+		if recover() != nil {
+			err = errors.New("summary callback panicked")
+			panicked = true
+		}
+	}()
+	return callback(), false
+}
+
+func buildUnknownSummary(runID string, rawArgs json.RawMessage) (safeSummaryEnvelope, string, bool) {
+	builder := newSafeSummaryBuilder(runID)
+	if err := builder.Bool(SectionArguments, BoolPresent, len(rawArgs) > 0); err != nil {
+		return safeSummaryEnvelope{}, summaryErrorCallback, false
 	}
-	switch n := value.(type) {
+	if err := builder.Counter(SectionArguments, CounterRawBytes, uint64(len(rawArgs))); err != nil {
+		return safeSummaryEnvelope{}, summaryErrorCallback, false
+	}
+	if len(rawArgs) > limits.TelemetryArgsBytes {
+		if err := builder.Bool(SectionArguments, BoolTooLarge, true); err != nil {
+			return safeSummaryEnvelope{}, summaryErrorCallback, false
+		}
+		return sealUnknownSummary(builder)
+	}
+	if len(rawArgs) > 0 {
+		var value any
+		if err := json.Unmarshal(rawArgs, &value); err != nil {
+			if err := builder.Enum(SectionArguments, EnumShape, ValueInvalidJSON); err != nil {
+				return safeSummaryEnvelope{}, summaryErrorCallback, false
+			}
+		} else {
+			shape, object := summaryJSONShape(value)
+			if err := builder.Enum(SectionArguments, EnumShape, shape); err != nil {
+				return safeSummaryEnvelope{}, summaryErrorCallback, false
+			}
+			if object != nil {
+				keys := make([]string, 0, len(object))
+				for key := range object {
+					keys = append(keys, key)
+				}
+				sort.Strings(keys)
+				tooLarge := 0
+				hashes := make([]string, 0, min(len(keys), limits.TelemetryMaxKeys))
+				for _, key := range keys {
+					if len([]byte(key)) > limits.TelemetryMaxKeyBytes {
+						tooLarge++
+					}
+					if len(hashes) < limits.TelemetryMaxKeys {
+						hashes = append(hashes, audit.HashString(runID, key))
+					}
+				}
+				if err := builder.Counter(SectionArguments, CounterUnknownKeyCount, uint64(len(keys))); err != nil {
+					return safeSummaryEnvelope{}, summaryErrorCallback, false
+				}
+				if tooLarge > 0 {
+					if err := builder.Counter(SectionArguments, CounterUnknownKeyTooLarge, uint64(tooLarge)); err != nil {
+						return safeSummaryEnvelope{}, summaryErrorCallback, false
+					}
+				}
+				if len(keys) > len(hashes) {
+					if err := builder.Bool(SectionArguments, BoolUnknownKeyTruncated, true); err != nil {
+						return safeSummaryEnvelope{}, summaryErrorCallback, false
+					}
+				}
+				if err := builder.unknownKeyHashes(hashes); err != nil {
+					return safeSummaryEnvelope{}, summaryErrorCallback, false
+				}
+			}
+		}
+	}
+	return sealUnknownSummary(builder)
+}
+
+func sealUnknownSummary(builder *SafeSummaryBuilder) (safeSummaryEnvelope, string, bool) {
+	envelope, err := builder.seal()
+	if err != nil {
+		if errors.Is(err, errSafeSummaryTooLarge) {
+			return safeSummaryEnvelope{}, summaryErrorTooLarge, false
+		}
+		return safeSummaryEnvelope{}, summaryErrorCallback, false
+	}
+	return envelope, "", true
+}
+
+func summaryJSONShape(value any) (EnumValue, map[string]any) {
+	switch typed := value.(type) {
+	case nil:
+		return ValueNull, nil
+	case string:
+		return ValueString, nil
+	case bool:
+		return ValueBoolean, nil
 	case float64:
-		if n == float64(int(n)) {
-			addLimitCategory(out, int(n))
-		}
-	case int:
-		addLimitCategory(out, n)
-	}
-	return out
-}
-
-func addLimitCategory(out map[string]any, n int) {
-	switch {
-	case n < 0:
-		out["category"] = "negative"
-	case n <= 500:
-		out["value"] = n
-	default:
-		out["category"] = "over_max"
-	}
-}
-
-func summarizeToolResult(result *sdk.CallToolResult) map[string]any {
-	out := map[string]any{}
-	structured, tooLarge := structuredMap(result.StructuredContent)
-	if tooLarge {
-		out["result_too_large"] = true
-		return out
-	}
-	if structured == nil {
-		if result.IsError && result.GetError() != nil {
-			out["error_code"] = toolErrorCode(result)
-		}
-		return out
-	}
-
-	if ok, found := structured["ok"].(bool); found {
-		out["ok"] = ok
-	}
-	if exists, found := structured["exists"].(bool); found {
-		out["exists"] = exists
-	}
-	if typ, found := structured["type"].(string); found {
-		out["result_type"] = typ
-	}
-	if truncated, found := structured["truncated"].(bool); found {
-		out["truncated"] = truncated
-	}
-	if entries, found := structured["entries"].([]any); found {
-		out["entry_count"] = len(entries)
-	}
-	if errObj, found := structured["error"].(map[string]any); found {
-		if code, ok := errObj["code"].(string); ok {
-			out["error_code"] = code
-		}
-	}
-	return out
-}
-
-func structuredMap(value any) (map[string]any, bool) {
-	if value == nil {
-		return nil, false
-	}
-
-	var data []byte
-	switch v := value.(type) {
-	case json.RawMessage:
-		data = v
-	case []byte:
-		data = v
+		return ValueNumber, nil
+	case []any:
+		return ValueArray, nil
 	case map[string]any:
-		return v, false
+		return ValueObject, typed
 	default:
-		var err error
-		data, err = json.Marshal(v)
-		if err != nil {
-			return nil, false
-		}
+		return ValueOther, nil
 	}
-	if len(data) > limits.TelemetryArgsBytes {
-		return nil, true
-	}
-	var out map[string]any
-	if err := json.Unmarshal(data, &out); err != nil {
-		return nil, false
-	}
-	return out, false
 }
 
 func toolErrorCode(result *sdk.CallToolResult) string {
@@ -342,56 +337,4 @@ func protocolErrorCode(err error) string {
 	default:
 		return "protocol_error"
 	}
-}
-
-func jsonType(value any) string {
-	switch value.(type) {
-	case nil:
-		return "null"
-	case string:
-		return "string"
-	case bool:
-		return "boolean"
-	case float64, int:
-		return "number"
-	case []any:
-		return "array"
-	case map[string]any:
-		return "object"
-	default:
-		return fmt.Sprintf("%T", value)
-	}
-}
-
-func pathSegments(s string) []string {
-	if s == "" || s == "." {
-		return nil
-	}
-	parts := strings.Split(s, "/")
-	segments := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if part == "" || part == "." {
-			continue
-		}
-		segments = append(segments, part)
-	}
-	return segments
-}
-
-func hasSegment(segments []string, want string) bool {
-	for _, segment := range segments {
-		if segment == want {
-			return true
-		}
-	}
-	return false
-}
-
-func hasHiddenSegment(segments []string) bool {
-	for _, segment := range segments {
-		if strings.HasPrefix(segment, ".") {
-			return true
-		}
-	}
-	return false
 }

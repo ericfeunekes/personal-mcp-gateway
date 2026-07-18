@@ -57,14 +57,20 @@ For ChatGPT testing that must survive the current shell session, install and
 start the user LaunchAgent:
 
 ```bash
-scripts/install-obsidian-tunnel-launchagent.sh
+make install-launchagent
 ```
 
 The LaunchAgent label is
 `com.ericfeunekes.personal-mcp-gateway.obsidian-tunnel`. It runs
-`scripts/run-obsidian-tunnel.sh`, reads secrets from ignored `.env.local`, and
-writes tunnel-client stdout/stderr under
+`scripts/run-obsidian-tunnel.sh`, parses the allowlisted values in ignored
+`.env.local` as bounded data, and writes tunnel-client stdout/stderr under
 `~/Library/Logs/personal-mcp-gateway/`.
+
+The tunnel and MCP stdio wrappers never shell-source `.env.local`; command
+substitutions, shell commands, duplicate/unknown keys, oversized records, and
+unsupported expansion are rejected before runtime startup. `make
+install-launchagent` performs the same validation before building the release
+controller or invoking the private install adapter.
 
 On 2026-07-02, the LaunchAgent was installed and started successfully. Observed
 proof: launchd reported the service `running`, the tunnel health/admin endpoint
@@ -74,8 +80,58 @@ control-plane poll metrics advanced.
 Stop and remove it with:
 
 ```bash
-scripts/uninstall-obsidian-tunnel-launchagent.sh
+make uninstall-launchagent
 ```
+
+Install, restart, and uninstall are clear-only lifecycle operations. Their Make
+targets acquire the release lock and invoke private narrow LaunchAgent adapters;
+do not invoke files under `scripts/internal/` directly. A first-install rollback
+unloads the job before removing the unproven target but preserves its
+plist/configuration, so run `make install-launchagent` before a later release if
+the job remains unloaded.
+
+Once the LaunchAgent exists, use the release flow rather than manually
+rebuilding its configured gateway binary. `make release` deploys the current
+clean commit; `make update` fast-forwards clean local `main` from GitHub first.
+See `docs/runbooks/local-release.md`.
+
+## Release Activation Proof
+
+Tunnel liveness/readiness and authenticated model proof are separate boundaries.
+The release fast path is:
+
+```bash
+make release
+# Refresh server `obsidian` metadata; observe exactly `grep`, `ls`, `read`,
+# `read_many`, and `resolve` as read-only; and have a fresh model run select
+# `grep`, then `read_many`, then continue `read_many` with the same ordered
+# requests and aggregate budget plus the returned cursor.
+make release-accept RELEASE_ID=<full-id>
+```
+
+If metadata refresh or the model-selected journey fails, run the exact rollback
+command printed by release, refresh authenticated metadata back to the prior
+schema, and make one successful prior-contract call:
+
+```bash
+make release-rollback RELEASE_ID=<full-id>
+```
+
+`make release` must end `pending` after local readiness and retain the previous
+runtime. `make release-status` is available after interruption or for bounded
+diagnostics; it is not an extra mandatory step in the successful flow. Never
+accept based only on `/healthz`, `/readyz`, `make verify-live`, local MCP smoke,
+or an old model journey. Record only the authenticated surface, server, metadata
+observation, selected tool/journey, sanitized release/hash identity, and outcome;
+do not record prompts, note names/content, vault paths, credentials, or raw
+environment data.
+
+The accepted five-tool core-retrieval implementation has passed the merge
+suite, installed rollback drills, and a fresh authenticated
+`grep` -> `read_many` -> continued `read_many` pending-to-accept journey.
+The sanitized accepted record is maintained in `docs/TESTING.md`. Repeat the
+same boundaries after changing the advertised tools or release lifecycle; the
+historical evidence below proves only the original tunnel setup.
 
 ## Current Boundary
 
@@ -83,7 +139,7 @@ The stdio tunnel profile is the current live-smoke path because local tunnel
 `doctor` passed for stdio and the HTTP profile still needs OpenAI-compatible
 OAuth resource metadata before it should be used for ChatGPT connector proof.
 
-## Latest Local Proof
+## Historical Tunnel Setup And Phase 1 Proof
 
 On 2026-07-02, `scripts/run-obsidian-tunnel.sh` started the repo-local
 `obsidian-stdio` profile with a valid tunnel runtime key. Observed proof:
@@ -173,6 +229,7 @@ returned to `liveness=1` and `readiness=1`. At
 `2026-07-10T18:40:56.147842Z`, another Codex model-driven `resolve` call
 succeeded and produced a sanitized row under a third gateway run.
 
-The remaining surface-specific connector gap is a ChatGPT-web-prompted
-`resolve` call. The same installed app and tunnel path are proven from Codex,
-but that evidence should not be relabeled as ChatGPT-web proof.
+The current surface-specific connector gap is a five-tool-surface `resolve`
+call from both Codex and ChatGPT web. The installed app and tunnel path were
+proven from Codex on the historical two-tool surface, but that evidence should
+not be relabeled as current five-tool or ChatGPT-web proof.

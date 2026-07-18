@@ -15,7 +15,9 @@ import (
 	"personal-mcp-gateway/internal/app"
 	"personal-mcp-gateway/internal/audit"
 	"personal-mcp-gateway/internal/config"
+	"personal-mcp-gateway/internal/fsx"
 	localmcp "personal-mcp-gateway/internal/mcp"
+	"personal-mcp-gateway/internal/resourceprobe"
 )
 
 func main() {
@@ -35,6 +37,14 @@ func runWithContext(ctx context.Context, args []string, stderr io.Writer, auditF
 	if err != nil {
 		writeErr(stderr, "configuration error: %v\n", err)
 		return 2
+	}
+	probe, err := resourceprobe.FromEnvironment()
+	if err != nil {
+		writeErr(stderr, "configuration error: resource probe is invalid\n")
+		return 2
+	}
+	if probe != nil {
+		defer probe.Close()
 	}
 
 	log, closeLog, err := auditFactory(cfg, stderr)
@@ -56,7 +66,13 @@ func runWithContext(ctx context.Context, args []string, stderr io.Writer, auditF
 		"telemetry": cfg.Telemetry,
 	})
 
-	application, err := app.New(cfg, log)
+	var activity *fsx.ActivityCounter
+	var grepActivity *fsx.SchedulerActivity
+	if probe != nil {
+		activity = probe.Activity()
+		grepActivity = probe.GrepActivity()
+	}
+	application, err := app.NewWithActivities(cfg, log, activity, grepActivity)
 	if err != nil {
 		log.Event("gateway.start_failed", map[string]any{
 			"transport":  string(cfg.Mode),
@@ -65,10 +81,34 @@ func runWithContext(ctx context.Context, args []string, stderr io.Writer, auditF
 		writeErr(stderr, "startup error: gateway is not ready\n")
 		return 1
 	}
+	probeContext := ctx
+	var probeErrors <-chan error
+	if probe != nil {
+		controlled, cancelProbe := context.WithCancel(ctx)
+		defer cancelProbe()
+		errors := make(chan error, 1)
+		go func() {
+			errors <- probe.Run(controlled)
+			cancelProbe()
+		}()
+		probeContext = controlled
+		probeErrors = errors
+	}
+	probeFailed := func() bool {
+		if probeErrors == nil {
+			return false
+		}
+		select {
+		case probeErr := <-probeErrors:
+			return probeErr != nil && ctx.Err() == nil
+		default:
+			return false
+		}
+	}
 
 	switch cfg.Mode {
 	case config.ModeStdio:
-		if err := localmcp.RunStdio(ctx, application.Server()); err != nil && !errors.Is(err, context.Canceled) {
+		if err := localmcp.RunStdio(probeContext, application.Server()); err != nil && !errors.Is(err, context.Canceled) {
 			log.Event("gateway.runtime_error", map[string]any{
 				"transport":  string(cfg.Mode),
 				"error_code": "stdio_stopped",
@@ -76,15 +116,23 @@ func runWithContext(ctx context.Context, args []string, stderr io.Writer, auditF
 			writeErr(stderr, "runtime error: stdio server stopped\n")
 			return 1
 		}
+		if probeFailed() {
+			writeErr(stderr, "runtime error: resource probe stopped\n")
+			return 1
+		}
 		log.Event("gateway.stop", map[string]any{"transport": string(cfg.Mode)})
 		return 0
 	case config.ModeHTTP:
-		if err := runHTTP(ctx, cfg.Addr, application.HTTPHandler(), stderr); err != nil {
+		if err := runHTTP(probeContext, cfg.Addr, application.HTTPHandler(), stderr); err != nil {
 			log.Event("gateway.runtime_error", map[string]any{
 				"transport":  string(cfg.Mode),
 				"error_code": "http_stopped",
 			})
 			writeErr(stderr, "runtime error: http server stopped\n")
+			return 1
+		}
+		if probeFailed() {
+			writeErr(stderr, "runtime error: resource probe stopped\n")
 			return 1
 		}
 		log.Event("gateway.stop", map[string]any{"transport": string(cfg.Mode)})

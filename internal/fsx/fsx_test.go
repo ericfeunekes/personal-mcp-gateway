@@ -90,7 +90,7 @@ func TestResolveReportsMissingWithoutError(t *testing.T) {
 func TestListIsShallowSortedBoundedAndFiltersDeniedEntries(t *testing.T) {
 	vault := newTestVault(t)
 
-	listed, err := vault.List(context.Background(), "", ".", 2)
+	listed, err := listPage(context.Background(), vault, "", ".", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,8 +99,8 @@ func TestListIsShallowSortedBoundedAndFiltersDeniedEntries(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("names = %#v, want %#v", got, want)
 	}
-	if !listed.Truncated {
-		t.Fatalf("Truncated = false, want true")
+	if !listed.HasMore {
+		t.Fatalf("HasMore = false, want true")
 	}
 	for _, entry := range listed.Entries {
 		if entry.Name == ".obsidian" || entry.Name == ".git" || entry.Name == ".DS_Store" {
@@ -114,7 +114,7 @@ func TestListIsShallowSortedBoundedAndFiltersDeniedEntries(t *testing.T) {
 
 func TestListRejectsLimitAboveMaximum(t *testing.T) {
 	vault := newTestVault(t)
-	_, err := vault.List(context.Background(), "", ".", MaxLimit+1)
+	_, err := listPage(context.Background(), vault, "", ".", MaxLimit+1)
 	assertCode(t, err, CodeLimitExceeded)
 }
 
@@ -140,12 +140,12 @@ func TestListLargeDirectoryReturnsLexicalPrefixAndTruncates(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	listed, err := vault.List(ctx, "", "many", 3)
+	listed, err := listPage(ctx, vault, "", "many", 3)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !listed.Truncated {
-		t.Fatalf("Truncated = false, want true")
+	if !listed.HasMore {
+		t.Fatalf("HasMore = false, want true")
 	}
 	got := names(listed.Entries)
 	want := []string{"note-000.md", "note-001.md", "note-002.md"}
@@ -157,10 +157,10 @@ func TestListLargeDirectoryReturnsLexicalPrefixAndTruncates(t *testing.T) {
 func TestListRejectsNonDirectoryAndMissingPath(t *testing.T) {
 	vault := newTestVault(t)
 
-	_, err := vault.List(context.Background(), "", "README.md", 0)
+	_, err := listPage(context.Background(), vault, "", "README.md", 0)
 	assertCode(t, err, CodeNotDirectory)
 
-	_, err = vault.List(context.Background(), "", "missing", 0)
+	_, err = listPage(context.Background(), vault, "", "missing", 0)
 	assertCode(t, err, CodeNotFound)
 }
 
@@ -178,7 +178,7 @@ func TestSymlinkTraversalDenied(t *testing.T) {
 		t.Fatalf("Kind = %q, want symlink", resolved.Kind)
 	}
 
-	_, err = vault.List(context.Background(), "", "project-link", 0)
+	_, err = listPage(context.Background(), vault, "", "project-link", 0)
 	assertCode(t, err, CodeSymlinkDenied)
 
 	_, err = vault.Resolve(context.Background(), "", "outside-link/secret.md")
@@ -191,7 +191,7 @@ func TestListHonorsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := vault.List(ctx, "", ".", 0)
+	_, err := listPage(ctx, vault, "", ".", 0)
 	assertCode(t, err, CodeCanceled)
 }
 
@@ -206,7 +206,7 @@ func TestResolveAndListDoNotMutateVault(t *testing.T) {
 	if _, err := vault.Resolve(context.Background(), "", "home/projects/alpha.md"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := vault.List(context.Background(), "", "home/projects", 0); err != nil {
+	if _, err := listPage(context.Background(), vault, "", "home/projects", 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -223,6 +223,15 @@ func newTestVault(t *testing.T) *Vault {
 		t.Fatal(err)
 	}
 	return vault
+}
+
+func listPage(ctx context.Context, vault *Vault, base, input string, limit int) (ListPage, error) {
+	directory, err := vault.OpenDir(ctx, base, input)
+	if err != nil {
+		return ListPage{}, err
+	}
+	defer directory.Close()
+	return directory.ListPage(ctx, ListOptions{Limit: limit})
 }
 
 func assertCode(t *testing.T, err error, code Code) {

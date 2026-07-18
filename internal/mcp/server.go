@@ -3,7 +3,10 @@ package mcp
 import (
 	"bufio"
 	"context"
+	_ "embed"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -19,17 +22,52 @@ const (
 	ServerVersion = "0.1.0"
 )
 
-func NewServer(log *audit.Logger, transport string, knownTools []string) *sdk.Server {
+// iconSVG is Obsidian's unmodified official gradient mark, downloaded from
+// https://obsidian.md/images/obsidian-logo-gradient.svg.
+//
+//go:embed obsidian-mcp-icon.svg
+var iconSVG []byte
+
+func serverIcons() []sdk.Icon {
+	return []sdk.Icon{{
+		Source:   "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString(iconSVG),
+		MIMEType: "image/svg+xml",
+		Sizes:    []string{"any"},
+		Theme:    sdk.IconThemeDark,
+	}}
+}
+
+func NewServer(log *audit.Logger, transport string, descriptors []ToolDescriptor) (*sdk.Server, []string, error) {
+	ordered, names, err := validateDescriptors(descriptors)
+	if err != nil {
+		return nil, nil, err
+	}
 	server := sdk.NewServer(&sdk.Implementation{
 		Name:    ServerName,
 		Version: ServerVersion,
+		Icons:   serverIcons(),
 	}, &sdk.ServerOptions{
 		Capabilities: &sdk.ServerCapabilities{},
 	})
 	if log != nil && log.Enabled() {
-		server.AddReceivingMiddleware(telemetryMiddleware(log, transport, knownTools))
+		server.AddReceivingMiddleware(telemetryMiddleware(log, transport, ordered))
 	}
-	return server
+	for _, descriptor := range ordered {
+		if err := registerDescriptor(server, descriptor); err != nil {
+			return nil, nil, err
+		}
+	}
+	return server, names, nil
+}
+
+func registerDescriptor(server *sdk.Server, descriptor ToolDescriptor) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("register tool %q: %v", descriptor.Name(), recovered)
+		}
+	}()
+	descriptor.register(server)
+	return nil
 }
 
 func RunStdio(ctx context.Context, server *sdk.Server) error {

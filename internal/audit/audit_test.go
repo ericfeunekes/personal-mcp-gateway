@@ -118,13 +118,19 @@ func TestLoggerCapsOversizedEventBody(t *testing.T) {
 	sink := &captureSink{}
 	log := New("test-run", sink)
 	log.Event("tool.call", map[string]any{
-		"transport": "stdio",
-		"method":    "tools/call",
-		"tool":      "ls",
-		"args": map[string]any{
-			"present": true,
-			"bytes":   limits.TelemetryEventBytes * 2,
-			"raw":     strings.Repeat("x", limits.TelemetryEventBytes*2),
+		"transport":     "stdio",
+		"method":        "tools/call",
+		"tool":          "ls",
+		"outcome":       "tool_error",
+		"error_code":    "path_denied",
+		"duration_ms":   int64(7),
+		"is_error":      true,
+		"summary_error": "too_large",
+		"entry_count":   999,
+		"summary": map[string]any{
+			"arguments": map[string]any{
+				"raw": strings.Repeat("x", limits.TelemetryEventBytes*2),
+			},
 		},
 	})
 	if len(sink.records) != 1 {
@@ -143,6 +149,43 @@ func TestLoggerCapsOversizedEventBody(t *testing.T) {
 	}
 	if strings.Contains(string(body), strings.Repeat("x", 128)) {
 		t.Fatalf("bounded event retained large raw payload")
+	}
+	for _, key := range []string{"summary", "args", "entry_count"} {
+		if _, found := record[key]; found {
+			t.Fatalf("overflow record retained optional/domain key %q: %#v", key, record)
+		}
+	}
+	if record["tool"] != "ls" || record["outcome"] != "tool_error" || record["error_code"] != "path_denied" || record["is_error"] != true || record["summary_error"] != "too_large" {
+		t.Fatalf("overflow record lost validated base scalars: %#v", record)
+	}
+}
+
+func TestLoggerBoundsUnmarshalableEventToValidatedBase(t *testing.T) {
+	sink := &captureSink{}
+	log := New("test-run", sink)
+	log.Event("tool.call", map[string]any{
+		"tool":        "ls",
+		"outcome":     "ok",
+		"duration_ms": int64(2),
+		"summary":     make(chan struct{}),
+		"route":       strings.Repeat("private", limits.TelemetryMaxKeyBytes),
+	})
+
+	if len(sink.records) != 1 {
+		t.Fatalf("records = %d, want 1", len(sink.records))
+	}
+	record := sink.records[0]
+	if record["body_truncated"] != true || record["body_bytes"] != 0 {
+		t.Fatalf("invalid body fallback = %#v", record)
+	}
+	if record["tool"] != "ls" || record["outcome"] != "ok" || record["duration_ms"] != int64(2) {
+		t.Fatalf("invalid body lost validated base: %#v", record)
+	}
+	if _, found := record["summary"]; found {
+		t.Fatalf("invalid summary retained: %#v", record)
+	}
+	if _, found := record["route"]; found {
+		t.Fatalf("oversized base string retained: %#v", record)
 	}
 }
 

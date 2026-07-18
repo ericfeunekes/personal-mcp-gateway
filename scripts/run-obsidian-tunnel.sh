@@ -5,21 +5,22 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
 env_file="${MCP_GATEWAY_ENV_FILE:-$repo_root/.env.local}"
 
-if [[ -f "$env_file" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "$env_file"
-  set +a
+fail() {
+  printf 'personal-mcp-gateway: %s\n' "$1" >&2
+  exit 1
+}
+
+# shellcheck source=internal/release-config.sh
+if ! source "$script_dir/internal/release-config.sh" >/dev/null 2>&1; then
+  fail "local environment configuration is invalid."
+fi
+if [[ -f "$env_file" ]] && ! load_release_config "$env_file"; then
+  fail "local environment configuration is invalid."
 fi
 
 # This tunnel profile uses CONTROL_PLANE_API_KEY explicitly. Do not let a
 # broader inherited OpenAI API key become an accidental fallback credential.
 unset OPENAI_API_KEY
-
-fail() {
-  printf 'personal-mcp-gateway: %s\n' "$1" >&2
-  exit 1
-}
 
 require_env() {
   local name="$1"
@@ -52,7 +53,7 @@ fi
 
 profile_name="${TUNNEL_CLIENT_PROFILE:-obsidian-stdio}"
 profile_dir="${TUNNEL_CLIENT_PROFILE_DIR:-${TMPDIR:-/tmp}/personal-mcp-gateway/tunnel-client-profiles}"
-health_url_file="${TUNNEL_HEALTH_URL_FILE:-${TMPDIR:-/tmp}/personal-mcp-gateway/tunnel-health.url}"
+health_url_file="${TUNNEL_HEALTH_URL_FILE:-/tmp/personal-mcp-gateway/tunnel-health.url}"
 health_listen_addr="${TUNNEL_HEALTH_LISTEN_ADDR:-127.0.0.1:0}"
 log_format="${TUNNEL_LOG_FORMAT:-json}"
 

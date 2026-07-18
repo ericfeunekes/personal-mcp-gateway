@@ -201,41 +201,53 @@ func sinkName(sink Sink) string {
 
 func enforceRecordBudget(record map[string]any) map[string]any {
 	body, err := json.Marshal(record)
-	if err != nil || len(body) <= limits.TelemetryEventBytes {
+	if err == nil && len(body) <= limits.TelemetryEventBytes {
 		return record
 	}
 
+	bodyBytes := 0
+	if err == nil {
+		bodyBytes = len(body)
+	}
 	out := map[string]any{
 		"body_truncated": true,
-		"body_bytes":     len(body),
+		"body_bytes":     bodyBytes,
 	}
 	for _, key := range []string{
-		"ts", "event", "run_id", "seq", "transport", "method", "tool",
-		"outcome", "error_code", "duration_ms", "route", "status",
-		"is_error", "ok", "exists", "result_type", "truncated", "entry_count",
+		"ts", "event", "run_id", "transport", "method", "tool", "outcome",
+		"error_code", "route", "summary_error",
 	} {
-		if value, ok := record[key]; ok {
+		if value, ok := boundedString(record[key]); ok {
 			out[key] = value
 		}
 	}
-	if args, ok := record["args"]; ok {
-		out["args"] = truncateNestedSummary(args)
+	for _, key := range []string{"seq", "duration_ms", "status"} {
+		if value, ok := boundedNumber(record[key]); ok {
+			out[key] = value
+		}
+	}
+	if value, ok := record["is_error"].(bool); ok {
+		out["is_error"] = value
 	}
 	return out
 }
 
-func truncateNestedSummary(value any) map[string]any {
-	out := map[string]any{
-		"truncated": true,
+func boundedString(value any) (string, bool) {
+	text, ok := value.(string)
+	if !ok || len([]byte(text)) > limits.TelemetryMaxKeyBytes {
+		return "", false
 	}
-	if m, ok := value.(map[string]any); ok {
-		for _, key := range []string{"present", "bytes", "too_large", "shape"} {
-			if v, found := m[key]; found {
-				out[key] = v
-			}
-		}
+	return text, true
+}
+
+func boundedNumber(value any) (any, bool) {
+	switch value.(type) {
+	case int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64:
+		return value, true
+	default:
+		return nil, false
 	}
-	return out
 }
 
 type jsonlSink struct {

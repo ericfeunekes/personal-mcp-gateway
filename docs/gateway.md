@@ -4,9 +4,11 @@ status: draft
 purpose: "Own the local MCP gateway process, OpenAI tunnel boundary, config, health, and cross-server rules."
 covers:
   - cmd/gateway/
+  - cmd/release-activation/
   - internal/mcp/
   - internal/config/
   - internal/audit/
+  - internal/releaseactivation/
 ---
 
 # Gateway Domain
@@ -45,6 +47,8 @@ telemetry summaries. The gateway owns registration, protocol mapping, health,
 resource limits, and audit plumbing. Do not mix unrelated integration tools into
 the `obsidian` server to simulate namespacing.
 
+Generic MCP middleware receives domain-owned tool descriptors through app composition. Each descriptor is the single source for tool name, registration/schema/handler, annotations, and safe summaries; the app derives its registered and known-tool sets from the activated descriptors rather than parallel lists or maps. Middleware may record bounded safe counters, but it must not import an integration package, inspect integration-specific content, or grow a central switch for every future tool field. Domain summaries never include raw paths, patterns, selectors, cursors, link text, snippets, note content, or candidate names.
+
 ## OpenAI Docs
 
 This repo carries a project-scoped OpenAI docs MCP config in `.codex/config.toml`. Use it before implementing tunnel, Apps SDK, connector, or MCP assumptions. If the running Codex session does not expose `openaiDeveloperDocs`, restart Codex from this repo.
@@ -65,6 +69,44 @@ It loads ignored local settings from `.env.local`, generates a temp
 environment reference (`env:CONTROL_PLANE_API_KEY`) so the key is not written
 into the profile. See `docs/runbooks/openai-tunnel.md` for the operator flow
 and latest foreground tunnel proof.
+
+The canonical always-on local deployment is `make release`, documented in
+`docs/runbooks/local-release.md`. It builds and probes the gateway binary before
+atomically replacing the configured `GATEWAY_BIN`, restarts and verifies the
+LaunchAgent, and then leaves the release pending authenticated metadata/model
+proof. Local readiness is necessary but does not accept a candidate.
+
+The public release contract has four commands: `make release`, diagnostic
+`make release-status`, and exact-ID `make release-accept` /
+`make release-rollback`. The normal fast path omits status: release, refresh
+connector metadata and complete the required model-selected journey, then
+accept or roll back that same full release ID. An interrupted `prepared`
+transaction resumes through `make release` with the same immutable candidate.
+Missing or malformed release IDs are rejected by the same controller grammar
+as every other invalid release command; Make adds only its ordinary bounded
+target/exit diagnostic. `make update` pins the fetched commit object before
+entering the lifecycle lock and releases that lock before calling the release
+script directly.
+
+`internal/releaseactivation` is the only transition and persistence authority.
+Its fixed per-user slot keeps the immutable candidate, optional previous binary,
+and controller copy needed to recover independently of mutable source/build
+output. `cmd/release-activation` is only the private CLI adapter, while
+`scripts/release-activation.sh` is a stable selector for the current or pinned
+controller. It treats any `active` directory entry, including a dangling link,
+as active and fails closed unless the pinned authority is a regular executable.
+Controller output crosses private, bounded channels and is relayed only after
+completion; one pre-effect authority-selection race may be reselected once.
+Restart and LaunchAgent install/uninstall effects use private
+adapters, remain under the shared fail-fast lock, and are permitted only while
+the transaction is clear.
+
+Git synchronization is deliberately separate. `make update` fetches without
+holding the lifecycle lock, then locks and revalidates a clear slot, clean
+`main`, and unchanged HEAD/tree before verifying and fast-forwarding to the
+immutable fetched commit ID captured before lock acquisition. It never merges
+mutable `FETCH_HEAD`, and releases the lock before the updated checkout starts
+the same release path.
 
 ## Telemetry
 
@@ -115,6 +157,7 @@ Current first-slice resource budgets:
 - telemetry event body: 16 KiB after summarization;
 - vault-relative path/base input: 4096 bytes and 128 segments;
 - Obsidian tool operation timeout: 2 seconds.
+- encoded SDK `CallToolResult` for every activated Obsidian tool: 64 KiB absolute, including text and structured content.
 
 ## Current Implementation
 
@@ -142,13 +185,15 @@ ChatGPT connector, `launchd`, or always-on suitability.
 
 - `GAP-GW-002`: OpenAI Secure MCP Tunnel stdio startup, control-plane
   polling, ChatGPT app installation, and connector `initialize`/`tools/list`
-  are proven. A bounded model-driven ChatGPT `ls` call and a Codex
-  model-driven `resolve` call through the installed app are proven; a
-  ChatGPT-web-specific `resolve` call is not independently proven.
+  are proven, including exact discovery of the accepted five-tool surface. A
+  bounded model-driven ChatGPT `ls` call, a fresh ChatGPT core-retrieval
+  journey, and historical two-tool Codex `resolve` calls are proven; current
+  five-tool Codex/ChatGPT-web `resolve` calls are not independently proven.
 - `GAP-GW-003`: Current `launchd` readiness, bounded idle impact, and automatic
   crash recovery are proven. A multi-day soak and sleep/wake recovery cycle
   have not been measured.
-- `GAP-GW-006`: Sanitized model-driven ChatGPT `ls` and Codex `resolve`
-  telemetry have been harvested. ChatGPT-web-specific `resolve` telemetry has
+- `GAP-GW-006`: Sanitized model-driven ChatGPT `ls`, `grep`, and continued
+  `read_many` telemetry plus historical two-tool Codex `resolve` telemetry have
+  been harvested. Current five-tool Codex/ChatGPT-web `resolve` telemetry has
   not. Local SDK subprocess and HTTP tests continue to prove the broader
   server-side matrix only.

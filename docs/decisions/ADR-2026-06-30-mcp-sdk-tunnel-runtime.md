@@ -1,7 +1,7 @@
 ---
 title: "ADR 2026-06-30 MCP SDK Tunnel And Runtime"
-status: stable
-purpose: "Record the MCP implementation, tunnel adapter, search dependency, and local supervision decisions."
+status: partially_superseded
+purpose: "Record the MCP implementation, tunnel adapter, historical search dependency, and local supervision decisions."
 covers:
   - cmd/gateway/
   - internal/mcp/
@@ -14,7 +14,9 @@ covers:
 
 ## Status
 
-Accepted.
+Accepted for the MCP SDK, tunnel adapters, and local supervision. The Obsidian
+`search`/`grep` split below was superseded on 2026-07-10 by
+`ADR-2026-07-10-obsidian-agent-tool-surface.md`.
 
 ## Decision
 
@@ -25,7 +27,7 @@ Use the official Go MCP SDK, `github.com/modelcontextprotocol/go-sdk`, as the MC
 
 Keep direct MCP JSON-RPC implementation as a contingency only if a proven OpenAI Secure MCP Tunnel or ChatGPT connector requirement cannot be satisfied through the SDK.
 
-For Obsidian search:
+Historical Obsidian search decision, now superseded:
 
 - `search` starts as filename/path/title-oriented navigation inside the `obsidian` MCP server.
 - `grep` owns content search inside the `obsidian` MCP server.
@@ -57,5 +59,5 @@ Run from the downloaded `github.com/modelcontextprotocol/go-sdk@v1.6.1` module, 
 - Keep `internal/mcp/` thin and SDK-oriented.
 - Keep the backend transport-independent so stdio and HTTP do not drift.
 - Treat ChatGPT connector behavior for the `obsidian` server and its tool names as a live connector smoke-test requirement, not an SDK blocker.
-- Avoid background indexing and required global dependencies until real-vault measurements justify them.
+- Avoid background indexing and required global dependencies until real-vault measurements justify them. The current tool vocabulary and graph-performance gates are defined in `ADR-2026-07-10-obsidian-agent-tool-surface.md`.
 - Do not enable always-on startup until idle machine impact has been measured.

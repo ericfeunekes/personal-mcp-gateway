@@ -1,6 +1,8 @@
 package testutil
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -38,7 +40,7 @@ func Snapshot(t *testing.T, root string) []string {
 	t.Helper()
 
 	var paths []string
-	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(root, func(p string, _ os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -49,11 +51,26 @@ func Snapshot(t *testing.T, root string) []string {
 		if rel == "." {
 			return nil
 		}
-		info, err := d.Info()
+		info, err := os.Lstat(p)
 		if err != nil {
 			return err
 		}
-		paths = append(paths, rel+"|"+info.Mode().String())
+		record := fmt.Sprintf("%s|%s|%d|%d", rel, info.Mode().String(), info.Size(), info.ModTime().UnixNano())
+		switch {
+		case info.Mode().IsRegular():
+			data, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			record += fmt.Sprintf("|sha256:%x", sha256.Sum256(data))
+		case info.Mode()&os.ModeSymlink != 0:
+			target, err := os.Readlink(p)
+			if err != nil {
+				return err
+			}
+			record += "|target:" + target
+		}
+		paths = append(paths, record)
 		return nil
 	})
 	if err != nil {
