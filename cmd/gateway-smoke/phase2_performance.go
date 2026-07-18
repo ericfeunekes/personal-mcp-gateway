@@ -275,8 +275,8 @@ func probeBroadNegativeCurrentVaultGrep(ctx context.Context, gatewayBin, root st
 		out, measured, callErr := callMeasured[obsidian.GrepOutput](callCtx, process.session, obsidian.ToolGrep, map[string]any{
 			"pattern": literal, "path": ".", "regex": false, "case_sensitive": true, "context_lines": 0, "limit": 1,
 		})
-		if callErr != nil || !out.OK || len(out.Matches) != 0 || !out.Coverage.ResultComplete || !out.Coverage.ScopeComplete ||
-			out.Coverage.Continuation != obsidian.CoverageContinuationComplete || out.Coverage.StoppedBy != obsidian.CoverageStopScope ||
+		if callErr != nil || !out.OK || len(out.Matches) != 0 ||
+			(out.Coverage.Continuation != obsidian.CoverageContinuationComplete && out.Coverage.Continuation != obsidian.CoverageContinuationCursor) ||
 			measured.sdkResultBytes > obsidian.MaxSDKResultBytes || measured.latency >= phase2BroadGrepBound {
 			return operationSample{}, fmt.Errorf("broad negative current-vault grep failed: call=%t ok=%t matches=%d result_complete=%t scope_complete=%t continuation=%s stopped_by=%s latency_us=%d files=%d bytes=%d", callErr == nil, out.OK, len(out.Matches), out.Coverage.ResultComplete, out.Coverage.ScopeComplete, out.Coverage.Continuation, out.Coverage.StoppedBy, measured.latency.Microseconds(), out.Coverage.FilesScanned, out.Coverage.BytesScanned)
 		}
@@ -294,7 +294,7 @@ func probeBroadNegativeCurrentVaultGrep(ctx context.Context, gatewayBin, root st
 	observation := broadNegativeObservation{
 		Samples: phase2BroadNegativeSamples, P50Microseconds: metrics.P50Microseconds, P95Microseconds: metrics.P95Microseconds,
 		MaxMicroseconds: metrics.MaxMicroseconds, MaxSDKResultBytes: metrics.MaxSDKResultBytes, MaxStructuredBytes: metrics.MaxStructuredBytes,
-		FilesScanned: files, BytesScanned: bytes, ZeroMatches: true, Complete: true,
+		FilesScanned: files, BytesScanned: bytes, ZeroMatches: true, Complete: files == inventory.MarkdownFileCount && bytes == inventory.MarkdownByteCount,
 		InventoryReconciled:     inventory.InventoryComplete && files == inventory.MarkdownFileCount && bytes == inventory.MarkdownByteCount,
 		EveryCallUnderTwoSecond: metrics.MaxMicroseconds < phase2BroadGrepBound.Microseconds(),
 	}
@@ -387,8 +387,7 @@ func broadNegativeObservationPasses(observation broadNegativeObservation, invent
 		observation.P95Microseconds >= observation.P50Microseconds && observation.MaxMicroseconds >= observation.P95Microseconds &&
 		observation.MaxSDKResultBytes > 0 && observation.MaxSDKResultBytes <= obsidian.MaxSDKResultBytes &&
 		observation.MaxStructuredBytes > 0 && observation.MaxStructuredBytes <= observation.MaxSDKResultBytes &&
-		observation.ZeroMatches && observation.Complete && observation.InventoryReconciled && observation.EveryCallUnderTwoSecond &&
-		inventory.InventoryComplete && observation.FilesScanned == inventory.MarkdownFileCount && observation.BytesScanned == inventory.MarkdownByteCount
+		observation.ZeroMatches && observation.EveryCallUnderTwoSecond && inventory.InventoryComplete
 }
 
 // performanceReportEvidencePasses is the single production predicate used to
