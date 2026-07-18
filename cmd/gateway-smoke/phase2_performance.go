@@ -274,7 +274,6 @@ func probeBroadNegativeCurrentVaultGrep(ctx context.Context, gatewayBin, root st
 		defer cancel()
 		out, measured, callErr := callMeasured[obsidian.GrepOutput](callCtx, process.session, obsidian.ToolGrep, map[string]any{
 			"pattern": literal, "path": ".", "regex": false, "case_sensitive": true, "context_lines": 0, "limit": 1,
-			"max_files": obsidian.DefaultGrepMaxFiles, "max_bytes": obsidian.DefaultGrepMaxBytes,
 		})
 		if callErr != nil || !out.OK || len(out.Matches) != 0 || !out.Coverage.ResultComplete || !out.Coverage.ScopeComplete ||
 			out.Coverage.Continuation != obsidian.CoverageContinuationComplete || out.Coverage.StoppedBy != obsidian.CoverageStopScope ||
