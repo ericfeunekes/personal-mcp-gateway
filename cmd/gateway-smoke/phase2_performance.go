@@ -279,7 +279,7 @@ func probeBroadNegativeCurrentVaultGrep(ctx context.Context, gatewayBin, root st
 		if callErr != nil || !out.OK || len(out.Matches) != 0 || !out.Coverage.ResultComplete || !out.Coverage.ScopeComplete ||
 			out.Coverage.Continuation != obsidian.CoverageContinuationComplete || out.Coverage.StoppedBy != obsidian.CoverageStopScope ||
 			measured.sdkResultBytes > obsidian.MaxSDKResultBytes || measured.latency >= phase2BroadGrepBound {
-			return operationSample{}, errors.New("broad negative current-vault grep failed")
+			return operationSample{}, fmt.Errorf("broad negative current-vault grep failed: call=%t ok=%t matches=%d result_complete=%t scope_complete=%t continuation=%s stopped_by=%s latency_us=%d files=%d bytes=%d", callErr == nil, out.OK, len(out.Matches), out.Coverage.ResultComplete, out.Coverage.ScopeComplete, out.Coverage.Continuation, out.Coverage.StoppedBy, measured.latency.Microseconds(), out.Coverage.FilesScanned, out.Coverage.BytesScanned)
 		}
 		if files == 0 {
 			files, bytes = out.Coverage.FilesScanned, out.Coverage.BytesScanned
