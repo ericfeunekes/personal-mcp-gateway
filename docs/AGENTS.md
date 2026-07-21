@@ -29,6 +29,8 @@ Read this file first when navigating `docs/`.
 ## Requirements
 
 - `requirements/obsidian-filesystem-tools.md` — target model-facing vocabulary, schemas, limits, graph semantics, and performance gates for `obsidian` read-only tools.
+- `requirements/obsidian-mutation-tools.md` — trusted personal-vault write, edit, move, and permanent-delete contract.
+- `requirements/obsidian-document-reading.md` — native ChatGPT delivery contract for supported vault documents.
 - `feature-gap-map.md` — open implementation, proof, decision, and spike gaps.
 
 ## Decisions
