@@ -1,6 +1,6 @@
 ---
 title: "Issue 4 Native Document Transfer Spike"
-status: pending-live-proof
+status: blocked-local-resource-proof
 issue: 4
 ---
 
@@ -48,3 +48,28 @@ prints only the exact rollback command while the transaction is pending.
 On pass, issue #4 returns to whole-design phase planning. On failure, ignore,
 download-only handling, or surrogate handling, the issue records a client or
 upstream blocker; no fallback transport is introduced.
+
+## Outcome on 2026-07-21
+
+The candidate never reached installation, so no authenticated ChatGPT transfer
+test ran and the accepted five-tool metadata never changed.
+
+After canonical tests passed, two consecutive exact-candidate resource smokes
+failed the unchanged local release gate:
+
+- Run one exceeded the 8 MiB post-30-second RSS-growth limit: 12,521,472 bytes.
+- Run two passed RSS but exceeded the 256 KiB heap-allocation-growth limit:
+  277,624 bytes, or 15,480 bytes over the bound.
+
+Both runs passed every other reported CPU, high-water RSS, FD recovery, SDK
+result, latency, scan, cancellation, concurrency, descriptor-stability, and
+60-second idle invariant. The release transaction remained clear after each
+failure. The canonical checkout's LaunchAgent wrapper was reinstalled and read
+back as loaded, tunnel-live, and tunnel-ready with the previously accepted
+runtime.
+
+The probe remains blocked before live proof. Do not weaken the accepted
+resource gate or infer ChatGPT compatibility from the local SDK evidence. The
+next implementation pass must either reduce the candidate's measured resource
+growth or establish and fix a release-harness measurement defect before
+repeating the live attempt.
