@@ -86,7 +86,7 @@ func TestPhase2ResourceProbeExercisesBuiltFiveToolCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("probeCandidateResources: %v; report=%#v", err, report)
 	}
-	if !report.Passed || report.DescriptorCount != 5 || !validResourceWorkload(report.Workload) ||
+	if !report.Passed || report.DescriptorCount != candidateDescriptorCount || !validResourceWorkload(report.Workload) ||
 		!validResourceBoundaries(report.Boundaries) || report.Idle.ToolCallRowsBefore != resourceConcurrentWarmupCalls+resourceMeasuredCalls+resourceConcurrentProbeCalls ||
 		report.Idle.ToolCallRowsAfter != resourceConcurrentWarmupCalls+resourceMeasuredCalls+resourceConcurrentProbeCalls {
 		t.Fatalf("resource report = %#v", report)
@@ -206,7 +206,7 @@ func TestPhase2ResourceGateRejectsBoundaryAndToolMixDrift(t *testing.T) {
 
 func passingPhase2ResourceGateReport() resourceReport {
 	report := passingResourceGateReport()
-	report.DescriptorCount = 5
+	report.DescriptorCount = candidateDescriptorCount
 	report.Cold.MaxSDKResultBytes = 1
 	report.Cold.MaxStructuredBytes = 1
 	report.CandidateRuntime = candidateRuntimeProfile{GoVersion: "go1.26.1", GOOS: "darwin", GOARCH: "amd64"}
@@ -247,7 +247,7 @@ func passingPhase2ResourceGateReport() resourceReport {
 		report.Batches[index].EveryCallWithinTwoSeconds = true
 		report.Batches[index].EverySDKResultWithin64KiB = true
 	}
-	report.Idle.DescriptorCountAfter = 5
+	report.Idle.DescriptorCountAfter = candidateDescriptorCount
 	report.Idle.FDBeforeCount = report.Baseline.FDImmediateCount
 	report.Idle.FDAfterCount = report.Baseline.FDImmediateCount
 	report.Idle.ExpectedToolCallRows = resourceConcurrentWarmupCalls + resourceMeasuredCalls + resourceConcurrentProbeCalls

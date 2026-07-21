@@ -24,6 +24,8 @@ import (
 	"personal-mcp-gateway/internal/tools/obsidian"
 )
 
+const candidateDescriptorCount = 6
+
 const (
 	smokeTimeout             = 10 * time.Second
 	performanceTimeout       = 90 * time.Second
@@ -425,6 +427,9 @@ func probeCurrentVault(ctx context.Context, gatewayBin, root string, report *smo
 	report.ToolCount = toolCount
 	tracker, err := startCandidateProcessTracker(ctx, process, systemResourceSampler{})
 	if err != nil {
+		return err
+	}
+	if err := verifyDocumentTransferProbe(ctx, process.session, report); err != nil {
 		return err
 	}
 
@@ -1368,16 +1373,16 @@ func requireExactToolList(ctx context.Context, session *sdk.ClientSession) (int,
 		return 0, errors.New("candidate tool list failed")
 	}
 	if !exactCandidateToolGrammar(listed.Tools) {
-		return 0, errors.New("candidate tool grammar did not match the exact five-tool contract")
+		return 0, errors.New("candidate tool grammar did not match the exact temporary six-tool probe contract")
 	}
 	names := make([]string, 0, len(listed.Tools))
 	for _, tool := range listed.Tools {
 		names = append(names, tool.Name)
 	}
 	sort.Strings(names)
-	want := []string{obsidian.ToolGrep, obsidian.ToolLS, obsidian.ToolRead, obsidian.ToolReadMany, obsidian.ToolResolve}
+	want := []string{obsidian.ToolDocumentTransferProbe, obsidian.ToolGrep, obsidian.ToolLS, obsidian.ToolRead, obsidian.ToolReadMany, obsidian.ToolResolve}
 	if !reflect.DeepEqual(names, want) {
-		return 0, errors.New("candidate tool list was not exactly grep, ls, read, read_many, and resolve")
+		return 0, errors.New("candidate tool list did not match the exact temporary document-transfer probe surface")
 	}
 	return len(names), nil
 }

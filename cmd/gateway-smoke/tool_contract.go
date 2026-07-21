@@ -11,7 +11,7 @@ import (
 )
 
 func exactCandidateToolGrammar(tools []*sdk.Tool) bool {
-	if len(tools) != 5 {
+	if len(tools) != candidateDescriptorCount {
 		return false
 	}
 	byName := make(map[string]*sdk.Tool, len(tools))
@@ -25,7 +25,12 @@ func exactCandidateToolGrammar(tools []*sdk.Tool) bool {
 		byName[obsidian.ToolLS] == nil || byName[obsidian.ToolLS].Description != obsidian.LSDescription ||
 		byName[obsidian.ToolRead] == nil || byName[obsidian.ToolRead].Description != obsidian.ReadDescription ||
 		byName[obsidian.ToolReadMany] == nil || byName[obsidian.ToolReadMany].Description != obsidian.ReadManyDescription ||
-		byName[obsidian.ToolGrep] == nil || byName[obsidian.ToolGrep].Description != obsidian.GrepDescription {
+		byName[obsidian.ToolGrep] == nil || byName[obsidian.ToolGrep].Description != obsidian.GrepDescription ||
+		byName[obsidian.ToolDocumentTransferProbe] == nil || byName[obsidian.ToolDocumentTransferProbe].Description != obsidian.DocumentTransferProbeDescription {
+		return false
+	}
+	probe, ok := normalizedSchema(byName[obsidian.ToolDocumentTransferProbe].InputSchema)
+	if !ok || len(probe) != 2 || probe["type"] != "object" || probe["additionalProperties"] != false {
 		return false
 	}
 

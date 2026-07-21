@@ -63,6 +63,24 @@ func DescriptorsWithGrepTestHooks(vault *fsx.Vault, grepActivity *fsx.SchedulerA
 	return descriptorsWithGrepTestHooks(vault, grepActivity, hooks)
 }
 
+// DescriptorsWithDocumentTransferProbe is temporary test plumbing for the
+// disposable issue #4 candidate contract. Normal runtime construction uses
+// Descriptors and cannot activate this surface without the candidate build tag.
+func DescriptorsWithDocumentTransferProbe(vault *fsx.Vault) ([]localmcp.ToolDescriptor, error) {
+	descriptors, err := descriptorsWithGrepTestHooks(vault, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if documentTransferProbeEnabled() {
+		return descriptors, nil
+	}
+	probe, err := documentTransferProbeDescriptor(newTools(vault, nil))
+	if err != nil {
+		return nil, err
+	}
+	return append(descriptors, probe), nil
+}
+
 func descriptorsWithGrepTestHooks(vault *fsx.Vault, grepActivity *fsx.SchedulerActivity, hooks *GrepTestHooks) ([]localmcp.ToolDescriptor, error) {
 	tools := newTools(vault, grepActivity)
 	resolve, err := localmcp.NewToolDescriptor(sdk.Tool{
@@ -122,7 +140,15 @@ func descriptorsWithGrepTestHooks(vault *fsx.Vault, grepActivity *fsx.SchedulerA
 	if err != nil {
 		return nil, err
 	}
-	return []localmcp.ToolDescriptor{resolve, ls, read, readMany, grep}, nil
+	descriptors := []localmcp.ToolDescriptor{resolve, ls, read, readMany, grep}
+	if documentTransferProbeEnabled() {
+		probe, err := documentTransferProbeDescriptor(tools)
+		if err != nil {
+			return nil, err
+		}
+		descriptors = append(descriptors, probe)
+	}
+	return descriptors, nil
 }
 
 func readOnlyToolAnnotations() *sdk.ToolAnnotations {

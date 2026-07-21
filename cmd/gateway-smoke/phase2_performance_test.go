@@ -43,7 +43,7 @@ func TestPhase2PerformanceExactCandidate(t *testing.T) {
 		t.Fatalf("phase 2 evidence = %#v", evidence)
 	}
 	report := performanceReport{
-		ReportSchema: performanceReportSchema, DescriptorCount: 5,
+		ReportSchema: performanceReportSchema, DescriptorCount: candidateDescriptorCount,
 		CandidateRuntime: evidence.runtime, Machine: evidence.machine,
 		CurrentVault: evidence.currentVault, SyntheticCorpus: evidence.syntheticCorpus,
 		SyntheticRead: evidence.syntheticRead, SyntheticGrep: evidence.syntheticGrep,
@@ -184,7 +184,7 @@ func TestPerformanceReportEvidenceRequiresEveryPhase2Gate(t *testing.T) {
 			report.BroadCurrentGrep.CompletenessClaimed = true
 			report.BroadCurrentGrep.CompletenessReconciled = false
 		},
-		"fd_recovery":         func(report *performanceReport) { report.SyntheticProcess.FDsRecovered = false },
+		"fd_recovery": func(report *performanceReport) { report.SyntheticProcess.FDsRecovered = false },
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := report
@@ -209,7 +209,7 @@ func passingPhase2PerformanceReportShape() performanceReport {
 		BaselineFDCount: 1, FinalFDCount: 1, MaxObservedFDCount: 1, FDsRecovered: true,
 	}
 	return performanceReport{
-		ReportSchema: performanceReportSchema, SchemaVersion: performanceReportVersion, DescriptorCount: 5,
+		ReportSchema: performanceReportSchema, SchemaVersion: performanceReportVersion, DescriptorCount: candidateDescriptorCount,
 		CandidateRuntime: candidateRuntimeProfile{GoVersion: "go1.0", GOOS: "darwin", GOARCH: "arm64"},
 		Machine:          machineProfile{LogicalCPUCount: 1, GOMAXPROCS: 1},
 		CurrentVault:     vaultAggregateProfile{InventoryPolicy: markdownInventoryPolicy, InventoryComplete: true, StoppedBy: "scope", MarkdownFileCount: 1, MarkdownByteCount: 1},

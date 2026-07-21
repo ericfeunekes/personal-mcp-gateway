@@ -78,7 +78,7 @@ func TestRunReportJSONIsOneSanitizedAggregate(t *testing.T) {
 		t.Fatalf("report contained trailing JSON: %v", err)
 	}
 	if !report.Passed || report.ReportKind != reportKindFunctional || report.SchemaVersion != smokeReportVersion ||
-		!validGitOID(report.CandidateCommit) || !validDigest(report.CandidateSHA256) || !validDigest(report.DependencySHA256) || report.ToolCount != 5 ||
+		!validGitOID(report.CandidateCommit) || !validDigest(report.CandidateSHA256) || !validDigest(report.DependencySHA256) || report.ToolCount != candidateDescriptorCount ||
 		!report.CurrentResolveExistingDir || !report.SyntheticCanonicalResolve ||
 		report.SyntheticPageCount < 2 || report.SyntheticEntryCount != 3 ||
 		!report.SyntheticSecondProgress || !report.SyntheticNoDuplicates ||
@@ -147,7 +147,7 @@ func TestRunPerformanceJSONIsBoundedAndSanitized(t *testing.T) {
 	}
 	if !report.Passed || report.ReportKind != reportKindPerformance || report.SchemaVersion != performanceReportVersion ||
 		!validGitOID(report.CandidateCommit) || !validDigest(report.CandidateSHA256) || !validDigest(report.DependencySHA256) ||
-		report.DescriptorCount != 5 || report.CardinalityBucket != "2_10" || !performanceReportEvidencePasses(report) {
+		report.DescriptorCount != candidateDescriptorCount || report.CardinalityBucket != "2_10" || !performanceReportEvidencePasses(report) {
 		t.Fatalf("report header = %#v", report)
 	}
 	for name, metrics := range map[string]performanceMetrics{
@@ -315,14 +315,14 @@ func TestProbeCandidateResourcesUsesFreshProcessesAndEmitsOnlySanitizedAggregate
 	report.CandidateCommit = strings.Repeat("a", 40)
 	report.CandidateSHA256 = strings.Repeat("b", 64)
 	report.DependencySHA256 = strings.Repeat("c", 64)
-	if !report.Passed || report.SchemaVersion != resourceReportVersion || report.DescriptorCount != 5 || report.Cold.FreshProcessCount != 2 ||
+	if !report.Passed || report.SchemaVersion != resourceReportVersion || report.DescriptorCount != candidateDescriptorCount || report.Cold.FreshProcessCount != 2 ||
 		len(report.Batches) != resourceBatchCount || report.Baseline.MeasuredCallCount != 0 ||
 		!report.Baseline.GCAcknowledged || !report.Baseline.FDRecoveredAtEverySample ||
 		report.Baseline.Memory.HeapAllocBytes == 0 || report.Baseline.Memory.HeapSysBytes == 0 ||
 		report.GCAcknowledgementCount != resourceBatchCount+1 || !report.HighWaterWithinBound ||
 		!report.HeapAllocGrowthWithinBound || !report.RSSAfter30SecondsGrowthWithinBound || !report.AllFDsRecovered ||
 		!report.Idle.CPUWithinBound || !report.Idle.FDsRecovered || !report.Idle.NoExtraToolCalls ||
-		!report.Idle.NoVaultActivity || !report.Idle.DescriptorsUnchanged || report.Idle.DescriptorCountAfter != 5 {
+		!report.Idle.NoVaultActivity || !report.Idle.DescriptorsUnchanged || report.Idle.DescriptorCountAfter != candidateDescriptorCount {
 		t.Fatalf("resource report = %#v", report)
 	}
 	for _, batch := range report.Batches {
@@ -457,7 +457,7 @@ func TestSystemResourceSamplerAgainstBuiltCandidate(t *testing.T) {
 	if err != nil && err.Error() != "candidate resource gate failed" {
 		t.Fatalf("%v: %#v", err, report)
 	}
-	if report.Cold.FreshProcessCount != 2 || report.DescriptorCount != 5 || report.Baseline.MeasuredCallCount != 0 ||
+	if report.Cold.FreshProcessCount != 2 || report.DescriptorCount != candidateDescriptorCount || report.Baseline.MeasuredCallCount != 0 ||
 		report.GCAcknowledgementCount != resourceBatchCount+1 || !report.HighWaterWithinBound ||
 		!report.HeapAllocGrowthWithinBound || !report.RSSAfter30SecondsGrowthWithinBound || !report.AllFDsRecovered ||
 		!report.Idle.CPUWithinBound || !report.Idle.FDsRecovered ||
@@ -1126,7 +1126,7 @@ func passingResourceGateReport() resourceReport {
 		ReportKind:       reportKindResource,
 		ReportSchema:     resourceReportSchema,
 		SchemaVersion:    resourceReportVersion,
-		DescriptorCount:  5,
+		DescriptorCount:  candidateDescriptorCount,
 		Cold:             coldResourceReport{FreshProcessCount: 10, MaxSDKResultBytes: 1, MaxStructuredBytes: 1},
 		CandidateRuntime: candidateRuntimeProfile{GoVersion: "go1.26.1", GOOS: "darwin", GOARCH: "amd64"},
 		Machine:          machineProfile{LogicalCPUCount: 8, GOMAXPROCS: 8},
@@ -1190,7 +1190,7 @@ func passingResourceGateReport() resourceReport {
 			NoExtraToolCalls:          true,
 			NoVaultActivity:           true,
 			NoGrepActivity:            true,
-			DescriptorCountAfter:      5,
+			DescriptorCountAfter:      candidateDescriptorCount,
 			DescriptorsUnchanged:      true,
 			ExpectedToolCallRows:      resourceConcurrentWarmupCalls + resourceMeasuredCalls + resourceConcurrentProbeCalls,
 			ToolCallRowsBefore:        resourceConcurrentWarmupCalls + resourceMeasuredCalls + resourceConcurrentProbeCalls,
@@ -1375,7 +1375,7 @@ func buildGatewayCandidate(t *testing.T) string {
 	t.Helper()
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	candidate := filepath.Join(t.TempDir(), "personal-mcp-gateway")
-	build := exec.Command("go", "build", "-buildvcs=false", "-o", candidate, "./cmd/gateway")
+	build := exec.Command("go", "build", "-buildvcs=false", "-ldflags", "-X personal-mcp-gateway/internal/tools/obsidian.documentTransferProbeBuild=enabled", "-o", candidate, "./cmd/gateway")
 	build.Dir = repoRoot
 	build.Env = os.Environ()
 	if output, err := build.CombinedOutput(); err != nil {

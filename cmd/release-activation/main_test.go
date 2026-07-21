@@ -391,6 +391,24 @@ func TestRunRejectsMissingReleaseIDAsUsage(t *testing.T) {
 	}
 }
 
+func TestRollbackOnlyBuildRefusesAcceptAndPrintsOnlyRollbackGuidance(t *testing.T) {
+	original := rollbackOnlyBuild
+	rollbackOnlyBuild = "enabled"
+	t.Cleanup(func() { rollbackOnlyBuild = original })
+
+	manager := &fakeManager{manifest: &releaseactivation.Manifest{State: releaseactivation.StatePending, ID: testID}}
+	var stdout, stderr bytes.Buffer
+	exit := runWithDependencies(context.Background(), []string{"accept", "--release-id", testID}, &stdout, &stderr, dependencies{manager: manager})
+	if exit != 1 || stdout.Len() != 0 || stderr.String() != "error=rollback_only message=candidate must be rolled back\n" {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", exit, stdout.String(), stderr.String())
+	}
+	records := manifestRecords(manager.manifest)
+	if len(records) != 2 || strings.Contains(strings.Join(records, "\n"), "accept=") ||
+		records[1] != "rollback=make release-rollback RELEASE_ID="+testID {
+		t.Fatalf("rollback-only guidance = %#v", records)
+	}
+}
+
 func TestRunRejectsUnknownCommandAsExactUsage(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	exit := runWithDependencies(context.Background(), []string{"unknown-private-command", "/private/sentinel"}, &stdout, &stderr, dependencies{manager: &fakeManager{}})

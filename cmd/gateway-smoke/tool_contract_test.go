@@ -19,7 +19,7 @@ import (
 func TestExactCandidateToolGrammarRejectsAgentVisibleDrift(t *testing.T) {
 	tools := listedCandidateTools(t)
 	if !exactCandidateToolGrammar(tools) {
-		t.Fatal("exact five-tool grammar was rejected")
+		t.Fatal("exact temporary six-tool probe grammar was rejected")
 	}
 	for _, mutation := range []struct {
 		name string
@@ -56,7 +56,7 @@ func TestExactCandidateToolGrammarRejectsAgentVisibleDrift(t *testing.T) {
 			changed := cloneTools(t, tools)
 			mutation.edit(changed)
 			if exactCandidateToolGrammar(changed) {
-				t.Fatal("drifted five-tool grammar was accepted")
+				t.Fatal("drifted temporary probe grammar was accepted")
 			}
 		})
 	}
@@ -68,7 +68,7 @@ func listedCandidateTools(t *testing.T) []*sdk.Tool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	descriptors, err := obsidian.Descriptors(vault)
+	descriptors, err := obsidian.DescriptorsWithDocumentTransferProbe(vault)
 	if err != nil {
 		t.Fatal(err)
 	}

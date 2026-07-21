@@ -396,8 +396,8 @@ func completeCandidateReports(expected candidateProvenance) []any {
 	functional := smokeReport{
 		ReportKind: reportKindFunctional, ReportSchema: functionalReportSchema, SchemaVersion: smokeReportVersion, Passed: true,
 		CandidateCommit: expected.Commit, CandidateSHA256: expected.CandidateSHA256, DependencySHA256: expected.DependencySHA256,
-		ToolCalls: functionalToolCallCounts{Resolve: 2, LS: 3, Read: 1, ReadMany: 2, Grep: 1},
-		ToolCount: 5, SDKResultCount: 9, MaxSDKResultBytes: 1, MaxStructuredResultBytes: 1,
+		ToolCalls: functionalToolCallCounts{DocumentTransferProbe: 1, Resolve: 2, LS: 3, Read: 1, ReadMany: 2, Grep: 1},
+		ToolCount: candidateDescriptorCount, SDKResultCount: 10, MaxSDKResultBytes: 1, MaxStructuredResultBytes: 1,
 		MaxClientLatencyMicroseconds: 1, TotalFilesScanned: 1, TotalBytesScanned: 1, TotalSourceEntriesValidated: 1,
 		CurrentResolveExistingDir: true,
 		SyntheticCanonicalResolve: true, SyntheticPageCount: 2, SyntheticEntryCount: 3,

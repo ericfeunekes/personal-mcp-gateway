@@ -131,7 +131,7 @@ func probeSyntheticRetrievalPerformance(ctx context.Context, gatewayBin string) 
 			_ = process.session.Close()
 		}
 	}()
-	if count, err := requireExactToolList(ctx, process.session); err != nil || count != 5 {
+	if count, err := requireExactToolList(ctx, process.session); err != nil || count != candidateDescriptorCount {
 		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, candidateProcessProfile{}, errors.New("phase 2 synthetic descriptor gate failed")
 	}
 	tracker, err := startCandidateProcessTracker(ctx, process, systemResourceSampler{})
@@ -210,7 +210,7 @@ func probeBroadCurrentVaultGrep(ctx context.Context, gatewayBin, root string, in
 			_ = process.session.Close()
 		}
 	}()
-	if count, err := requireExactToolList(ctx, process.session); err != nil || count != 5 {
+	if count, err := requireExactToolList(ctx, process.session); err != nil || count != candidateDescriptorCount {
 		return broadGrepObservation{}, candidateProcessProfile{}, errors.New("broad current-vault descriptor gate failed")
 	}
 	tracker, err := startCandidateProcessTracker(ctx, process, systemResourceSampler{})
@@ -260,7 +260,7 @@ func probeBroadNegativeCurrentVaultGrep(ctx context.Context, gatewayBin, root st
 		return broadNegativeObservation{}, err
 	}
 	defer process.session.Close()
-	if count, err := requireExactToolList(ctx, process.session); err != nil || count != 5 {
+	if count, err := requireExactToolList(ctx, process.session); err != nil || count != candidateDescriptorCount {
 		return broadNegativeObservation{}, errors.New("broad negative descriptor gate failed")
 	}
 	var raw [16]byte
@@ -400,7 +400,7 @@ func performanceReportEvidencePasses(report performanceReport) bool {
 }
 
 func phase2PerformanceEvidencePasses(report performanceReport) bool {
-	if report.ReportSchema != performanceReportSchema || report.DescriptorCount != 5 ||
+	if report.ReportSchema != performanceReportSchema || report.DescriptorCount != candidateDescriptorCount ||
 		!candidateRuntimeProfilePasses(report.CandidateRuntime) || !machineProfilePasses(report.Machine) ||
 		!vaultAggregateProfilePasses(report.CurrentVault) || !vaultAggregateProfilePasses(report.SyntheticCorpus) ||
 		!candidateProcessProfilePasses(report.SyntheticProcess) || !candidateProcessProfilePasses(report.CurrentVaultProcess) ||

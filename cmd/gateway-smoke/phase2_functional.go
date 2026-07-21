@@ -8,11 +8,12 @@ import (
 const functionalReportSchema = "personal-mcp-gateway.functional.v3"
 
 type functionalToolCallCounts struct {
-	Resolve  int `json:"resolve"`
-	LS       int `json:"ls"`
-	Read     int `json:"read"`
-	ReadMany int `json:"read_many"`
-	Grep     int `json:"grep"`
+	DocumentTransferProbe int `json:"document_transfer_probe"`
+	Resolve               int `json:"resolve"`
+	LS                    int `json:"ls"`
+	Read                  int `json:"read"`
+	ReadMany              int `json:"read_many"`
+	Grep                  int `json:"grep"`
 }
 
 func (c *functionalToolCallCounts) add(tool string) {
@@ -20,6 +21,8 @@ func (c *functionalToolCallCounts) add(tool string) {
 		return
 	}
 	switch tool {
+	case obsidian.ToolDocumentTransferProbe:
+		c.DocumentTransferProbe++
 	case obsidian.ToolResolve:
 		c.Resolve++
 	case obsidian.ToolLS:
@@ -34,7 +37,7 @@ func (c *functionalToolCallCounts) add(tool string) {
 }
 
 func (c functionalToolCallCounts) total() int {
-	return c.Resolve + c.LS + c.Read + c.ReadMany + c.Grep
+	return c.DocumentTransferProbe + c.Resolve + c.LS + c.Read + c.ReadMany + c.Grep
 }
 
 func functionalCoverage(value any) obsidian.Coverage {
@@ -58,7 +61,7 @@ func functionalReportEvidencePasses(report smokeReport) bool {
 		vaultAggregateProfilePasses(report.CurrentVault) && vaultAggregateProfilePasses(report.SyntheticVault) &&
 		report.SyntheticVault.InventoryComplete && report.SyntheticVault.MarkdownFileCount == 3 && report.SyntheticVault.MarkdownByteCount > 0 &&
 		candidateProcessProfilePasses(report.CurrentProcess) && candidateProcessProfilePasses(report.SyntheticProcess) &&
-		report.ToolCalls.Resolve == 2 && report.ToolCalls.LS == 3 && report.ToolCalls.Read == 1 &&
+		report.ToolCalls.DocumentTransferProbe == 1 && report.ToolCalls.Resolve == 2 && report.ToolCalls.LS == 3 && report.ToolCalls.Read == 1 &&
 		report.ToolCalls.Grep == 1 && report.ToolCalls.ReadMany == report.SyntheticReadManyPages && report.ToolCalls.ReadMany >= 2 &&
 		report.SDKResultCount == report.ToolCalls.total() && report.MaxStructuredResultBytes > 0 &&
 		report.MaxStructuredResultBytes <= obsidian.MaxStructuredResultBytes &&
@@ -67,7 +70,7 @@ func functionalReportEvidencePasses(report smokeReport) bool {
 }
 
 func functionalBehaviorPasses(report smokeReport) bool {
-	return report.ToolCount == 5 && report.CurrentResolveExistingDir &&
+	return report.ToolCount == candidateDescriptorCount && report.CurrentResolveExistingDir &&
 		report.SyntheticCanonicalResolve && report.SyntheticPageCount >= 2 &&
 		report.SyntheticEntryCount == 3 && report.SyntheticSecondProgress &&
 		report.SyntheticNoDuplicates && report.SyntheticFullEquivalence &&

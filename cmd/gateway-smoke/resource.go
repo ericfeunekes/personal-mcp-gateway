@@ -1157,7 +1157,7 @@ func resourceReportPasses(report resourceReport, expectedColdProcesses int) bool
 		return false
 	}
 	if expectedColdProcesses <= 0 || report.Cold.FreshProcessCount != expectedColdProcesses ||
-		report.DescriptorCount != 5 || len(report.Batches) != resourceBatchCount ||
+		report.DescriptorCount != candidateDescriptorCount || len(report.Batches) != resourceBatchCount ||
 		!candidateRuntimeProfilePasses(report.CandidateRuntime) || !machineProfilePasses(report.Machine) ||
 		!vaultAggregateProfilePasses(report.Vault) || !candidateProcessProfilePasses(report.Process) ||
 		!validConcurrentGrep(report.ConcurrentGrep) ||
@@ -1221,7 +1221,7 @@ func idleResourceReportPasses(report idleResourceReport, baselineFD, descriptorC
 	noGrepActivity := report.GrepActivityActiveBefore == 0 && report.GrepActivityActiveAfter == 0 &&
 		report.GrepInFlightBefore == 0 && report.GrepInFlightAfter == 0 &&
 		report.GrepActivityTotalBefore == report.GrepActivityTotalAfter
-	descriptorsUnchanged := descriptorCount == 5 && report.DescriptorCountAfter == descriptorCount
+	descriptorsUnchanged := descriptorCount == candidateDescriptorCount && report.DescriptorCountAfter == descriptorCount
 	return report.CPUTimeDeltaMicroseconds == cpuDelta && report.CPUTimeBoundMicroseconds == cpuBound &&
 		report.CPUWithinBound == cpuWithinBound && report.CPUWithinBound && report.RSSBeforeBytes > 0 && report.RSSAfterBytes > 0 &&
 		report.FDsRecovered == fdsRecovered && report.FDsRecovered &&
@@ -1772,7 +1772,7 @@ func observePostGCResources(ctx context.Context, pid int, options resourceProbeO
 }
 
 func observeResourceIdle(ctx context.Context, session *sdk.ClientSession, pid, descriptorCount, baselineFD int, dbPath string, options resourceProbeOptions, sampler resourceSampler, control *resourceControl) (idleResourceReport, error) {
-	if descriptorCount != 5 {
+	if descriptorCount != candidateDescriptorCount {
 		return idleResourceReport{}, errors.New("candidate descriptor count changed")
 	}
 	activityBefore, err := control.snapshot(ctx, options.ControlTime)
