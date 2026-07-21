@@ -13,7 +13,7 @@ covers:
 
 ## Current Answer
 
-This repo builds a local Go MCP gateway backend that can be started in different transport modes. It exposes narrow MCP tools to ChatGPT through OpenAI's Secure MCP Tunnel, starting with an MCP server named `obsidian` for read-only discovery, bounded reading, and authored-reference traversal over the local Obsidian vault.
+This repo builds a local Go MCP gateway backend that can be started in different transport modes. It exposes narrow MCP tools to ChatGPT through OpenAI's Secure MCP Tunnel, starting with an MCP server named `obsidian` for discovery, bounded reading, authored-reference traversal, and explicitly scoped vault mutation over the local Obsidian vault.
 
 The chosen public namespace shape is the MCP server name, not dotted tool names. The Obsidian server exposes simple tool names such as `ls` and `resolve`; future integrations should be exposed as separate MCP server entries such as `ynab` or `voicenotes`, not as dotted tools in one combined server.
 
@@ -124,7 +124,8 @@ clear-only, lock-held administrative effects. The adapters that invoke
 
 ## Intentionally Not Generalized Yet
 
-- No write tools.
+- No generic filesystem mutation surface: mutation behavior is restricted to the named Obsidian operations defined by `requirements/obsidian-mutation-tools.md`.
+- No generic file-serving surface: native document delivery is restricted to the activation-gated behavior in `requirements/obsidian-document-reading.md`.
 - No generic filesystem, shell, or HTTP proxy server.
 - No background indexer until full-vault scan and graph proof shows a need.
 - No multi-user authorization model until a real non-personal consumer appears.

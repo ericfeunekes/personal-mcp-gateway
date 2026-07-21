@@ -10,7 +10,7 @@ covers:
 
 # Obsidian Domain
 
-The `obsidian` MCP server exposes read-only agent tools over one configured local vault. The surface favors familiar discovery, bounded source reading, and explicit graph operations. Correctness must not depend on hidden server-side state.
+The `obsidian` MCP server exposes narrow agent tools over one configured local vault. The accepted core remains read-only discovery and Markdown retrieval; planned mutation and native-document capabilities are governed separately so they do not weaken vault confinement or become generic filesystem access. Correctness must not depend on hidden server-side state.
 
 ## Tool Vocabulary
 
@@ -25,6 +25,11 @@ Target tool names:
 - `traverse`
 - `backlinks`
 - `path_between`
+- `write`
+- `edit`
+- `move`
+- `delete`
+- document reading (activation-gated name)
 
 The MCP server name is the public integration boundary. Do not prefix tool names with `obsidian.` inside this server, and do not add non-Obsidian tools to this server. Do not expose separate `search`, `stat`, `graph_search`, shell, or generic query tools: `grep` is the content-discovery entry point, and `resolve` owns metadata.
 
@@ -58,7 +63,7 @@ Tools should accept explicit path context:
 
 ## Vault Boundary
 
-All tool paths are vault-relative after normalization. The filesystem adapter must reject absolute tool inputs, path traversal, symlink escapes, hidden local databases, secret directories, and any file outside the configured vault root. Only process startup config may supply the absolute vault root. Content and reference tools operate on Markdown files; `ls` and `resolve` may still report safe attachment metadata.
+All tool paths are vault-relative after normalization. The filesystem adapter must reject absolute tool inputs, path traversal, symlink escapes, hidden local databases, secret directories, and any file outside the configured vault root. Only process startup config may supply the absolute vault root. Content and reference tools operate on Markdown files; `ls` and `resolve` may still report safe attachment metadata. Native document reading is governed by `requirements/obsidian-document-reading.md`; write, edit, move, and permanent delete are governed by `requirements/obsidian-mutation-tools.md`.
 
 ## Retrieval Strategy
 
