@@ -1,6 +1,6 @@
 ---
 title: "Issue 4 Native Document Transfer Spike"
-status: blocked-local-resource-proof
+status: completed-decision-required
 issue: 4
 ---
 
@@ -109,3 +109,52 @@ remains blocked on a valid paired control/candidate resource proof. Any future
 attempt must first make the control mode explicit throughout the smoke grammar
 and workload rather than changing only the descriptor count; it must then use
 a newly reviewed proof contract before release.
+
+## Final outcome on 2026-07-22
+
+The control-path blocker was fixed in `f1ddc07` by adding an explicit
+schema-v8 `accepted` resource surface. Canonical release proof remains the
+default six-tool `candidate` surface; `--resource-control` is valid only with
+`--resource-json`, requires exactly the accepted five descriptors, and is
+rejected by canonical report-set validation.
+
+A new mechanically ordered proof sequence ran once against the frozen
+`f1ddc07` smoke tree. All three five-tool controls and all three six-tool
+candidates passed. The controls reported retained heap growth from 201,080 to
+223,912 bytes and retained RSS-window growth from 2,895,872 to 3,420,160 bytes.
+The candidates reported retained heap growth from 194,136 to 220,504 bytes and
+retained RSS-window growth from 2,752,512 to 4,595,712 bytes. Every report also
+passed lifetime high-water, FD recovery, descriptor stability, idle, workload,
+latency, concurrency, and boundary checks.
+
+The one canonical release entered pending state as release
+`fb47eddffd4153b4276ebe43bd70f911a358d42838b7e01cfb233f09d96be8a9`.
+An initial fresh ChatGPT conversation observed cached five-tool metadata and
+correctly refused the unavailable probe. That was a live non-pass outcome under
+the predeclared rule, but the release was not rolled back immediately. Instead,
+the connector metadata was refreshed under the same pending release. This was
+a protocol deviation and the later result cannot retroactively make the strict
+spike verdict pass.
+
+After the refresh showed `document_transfer_probe`, a second fresh authenticated
+conversation called it exactly once. ChatGPT then requested a separate built-in
+approval to materialize one returned file attachment. After approval, ChatGPT
+read the PDF itself without any user download, upload, or reattachment and
+reported the byte-only nonce
+`NDX-7Q4M-9K2P-R8VC` and the visual relationship: a blue circle is left of an
+orange square, horizontally aligned, separated, and non-overlapping. This proves
+that ChatGPT can interpret the connector-returned PDF after its internal
+materialization handoff. It does not satisfy the frozen pass criterion, which
+allowed ordinary connector invocation approval but rejected an additional
+attachment step.
+
+The exact pending release was rolled back immediately. Release state read back
+as clear, the canonical LaunchAgent and tunnel passed live verification, and a
+second metadata refresh showed exactly the accepted `grep`, `ls`, `read`,
+`read_many`, and `resolve` tools with no probe. The experiment therefore closes
+the transport-feasibility uncertainty but does not pass its strict interaction
+contract. Issue #4 remains open at a decision boundary: accept ChatGPT's
+built-in one-time materialization consent as the intended native experience and
+return to whole-design phase planning, or treat that extra consent as an
+upstream client limitation. The temporary probe must not be accepted or reused
+as the product implementation.
