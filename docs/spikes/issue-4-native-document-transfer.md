@@ -75,3 +75,37 @@ two post-GC batches. RSS uses the maximum of each immediate, five-second, and
 30-second stabilization window. The repaired gate still requires current-state
 canonical and exact-candidate proof before another release attempt; do not
 infer ChatGPT compatibility from the local SDK evidence.
+
+## Outcome on 2026-07-22
+
+The retained-growth gate repair is committed in `a3d6c28`, with its production
+build correction in `4bd91e1`. Canonical tests, the production smoke build,
+focused retained-growth tests, release-script tests, and independent gate
+reviews passed. The repaired schema-v7 decision keeps the existing numeric
+limits and requires a retained heap or RSS breach in at least two of three
+post-GC batches.
+
+The final predeclared current-state sequence did not clear release. All three
+exact-candidate observations used the same candidate SHA-256
+`8df896c95dd2b30c2184776e685cfbc223d66c37534bfd2e8ccda0252099cda5` and
+passed the complete v7 resource report. Retained heap growth was 187,400,
+187,664, and 198,192 bytes; retained RSS-window growth was 3,895,296,
+2,912,256, and 2,703,360 bytes. All three also recovered file descriptors,
+kept descriptors unchanged, showed zero idle CPU growth, and passed the
+workload, latency, concurrency, boundary, and lifetime high-water checks.
+
+All three control slots failed before emitting a resource report. The control
+overlay changed the expected descriptor count from six to five, but the
+committed candidate-specific smoke also requires the exact six-tool name set,
+including the probe descriptor. The five-tool control therefore could not
+satisfy that smoke contract. These failures are harness-contract failures,
+not evidence of a control resource regression. The predeclared proof contract
+forbade another replacement sequence after this setup failure, so the three
+candidate passes cannot be used alone as release clearance.
+
+No canonical release or activation was attempted, no authenticated ChatGPT
+probe ran, and the accepted five-tool live surface was never changed. Issue #4
+remains blocked on a valid paired control/candidate resource proof. Any future
+attempt must first make the control mode explicit throughout the smoke grammar
+and workload rather than changing only the descriptor count; it must then use
+a newly reviewed proof contract before release.
