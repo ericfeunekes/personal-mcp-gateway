@@ -115,8 +115,8 @@ func TestPhase2ResourceProbeSystemProcessMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("system resource probe: %v; report=%#v", err, report)
 	}
-	if !report.Passed || !report.HighWaterWithinBound || !report.HeapAllocGrowthWithinBound ||
-		!report.RSSAfter30SecondsGrowthWithinBound || !report.AllFDsRecovered {
+	if !report.Passed || !report.HighWaterWithinBound || !report.RetainedHeapAllocGrowthWithinBound ||
+		!report.RetainedRSSWindowGrowthWithinBound || !report.AllFDsRecovered {
 		t.Fatalf("system resource report = %#v", report)
 	}
 }

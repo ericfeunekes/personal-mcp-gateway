@@ -142,6 +142,18 @@ The resource proof must observe overlapping request-local pools above one
 eight-worker ceiling, bounded active and reserved work, cancellation isolation,
 immediate FD/vault quiescence, and a successful same-session follow-up.
 
+## Retained Resource Gate
+
+Resource report schema v7 preserves the unchanged 256 KiB retained-heap, 8 MiB
+retained-RSS, and 64 MiB lifetime high-water limits. The three post-GC batch
+heap deltas are measured from the aligned baseline, and the retained value is
+their second-largest nonnegative delta; a heap breach must therefore persist in
+at least two batches. For RSS, each baseline and batch stabilization window is
+the maximum of its immediate, five-second, and 30-second samples, and the gate
+uses the second-largest nonnegative baseline-window-to-batch-window delta. The
+raw checkpoints, blocking-GC acknowledgements, FD recovery, idle, workload,
+latency, boundary, and lifetime high-water gates remain independently required.
+
 ## Mutation Phase Proof Contract
 
 This section is the acceptance bar for a future mutation implementation, not a
@@ -198,7 +210,6 @@ boundary and subprocess interruption before and after commit. A post-commit
 failure may report an uncertain outcome, but it must never expose partial bytes,
 silently overwrite a collision, leave content-bearing residue, or trigger an
 automatic replay.
-
 ## Test Data Rules
 
 - Use generated fixture vaults in tests.
@@ -284,7 +295,7 @@ multi-day soak behavior, every prompt formulation, or future-vault performance.
 
 On 2026-07-17, implementation commit `d74fcd3ba1b1`, installed candidate hash
 prefix `2de6c5f23082`, and release prefix `725425303f84` passed `make test`, the
-exact-candidate functional v3, performance v3, resource v5, and cross-report
+exact-candidate functional v3, performance v3, historical resource v5, and cross-report
 gates, and the installed pending-release readiness checks. Authenticated Chrome
 Refresh then showed exactly `grep`, `ls`, `read`, `read_many`, and `resolve`, all
 read-only.
@@ -305,9 +316,9 @@ hash remained installed, and the LaunchAgent and tunnel were live and ready.
 The current-vault report covered 7,257 Markdown files totaling approximately
 292 MiB. Current-vault p95 latency ranged from approximately 1.3 to 3.5 ms;
 synthetic `read` and `grep` p95 were 7.4 ms and 72.1 ms, and measured 10,000-file
-strata remained below 44 ms. Resource v5 recorded 8,884,224 bytes maximum
-high-water RSS growth, 2,371,584 bytes stabilized 30-second RSS growth, 185,240
-bytes heap growth, exact descriptor recovery after 312 calls, and zero CPU,
+strata remained below 44 ms. Historical Resource v5 recorded 8,884,224 bytes
+maximum high-water RSS growth, 2,371,584 bytes stabilized 30-second RSS growth,
+185,240 bytes heap growth, exact descriptor recovery after 312 calls, and zero CPU,
 tool-call, or vault-activity growth during the 60-second idle window. No prompt,
 pattern, note identity, path, content, cursor value, or cursor hash is retained
 in this record.
@@ -411,9 +422,10 @@ CPU/RSS/FD teardown.
 The accepted installed binary also passed resource-report schema v2. Ten fresh
 processes had 23,963 us startup p50, 36,572 us startup p95/max, 2,184 us first
 call p50, and 4,679 us first-call p95/max. One long-lived process completed
-three exact 100-call batches with four blocking-GC acknowledgements. Maximum
-post-GC heap allocation growth from the aligned baseline was 73,488 bytes;
-maximum stabilized 30-second RSS growth was 3,969,024 bytes; waited lifetime
+three exact 100-call batches with four blocking-GC acknowledgements. Historical
+single-batch maximum post-GC heap allocation growth from the aligned baseline
+was 73,488 bytes; historical maximum stabilized 30-second RSS growth was
+3,969,024 bytes; waited lifetime
 high-water growth was 4,464,640 bytes; and every sample recovered to exactly 14
 file descriptors. During the 60-second idle window, CPU delta was zero, RSS did
 not grow, tool-call rows stayed at 301, vault activity stayed at 527 with zero

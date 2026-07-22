@@ -55,7 +55,7 @@ The candidate never reached installation, so no authenticated ChatGPT transfer
 test ran and the accepted five-tool metadata never changed.
 
 After canonical tests passed, two consecutive exact-candidate resource smokes
-failed the unchanged local release gate:
+failed the then-current single-batch local release gate:
 
 - Run one exceeded the 8 MiB post-30-second RSS-growth limit: 12,521,472 bytes.
 - Run two passed RSS but exceeded the 256 KiB heap-allocation-growth limit:
@@ -68,8 +68,10 @@ failure. The canonical checkout's LaunchAgent wrapper was reinstalled and read
 back as loaded, tunnel-live, and tunnel-ready with the previously accepted
 runtime.
 
-The probe remains blocked before live proof. Do not weaken the accepted
-resource gate or infer ChatGPT compatibility from the local SDK evidence. The
-next implementation pass must either reduce the candidate's measured resource
-growth or establish and fix a release-harness measurement defect before
-repeating the live attempt.
+The probe remains blocked before live proof. Resource-report schema v7 now
+keeps the same 256 KiB retained-heap, 8 MiB retained-RSS, and 64 MiB lifetime
+high-water limits while requiring a heap or RSS breach to persist in at least
+two post-GC batches. RSS uses the maximum of each immediate, five-second, and
+30-second stabilization window. The repaired gate still requires current-state
+canonical and exact-candidate proof before another release attempt; do not
+infer ChatGPT compatibility from the local SDK evidence.

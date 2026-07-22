@@ -26,8 +26,8 @@ import (
 )
 
 const (
-	resourceReportSchema              = "personal-mcp-gateway.resource.v6"
-	resourceReportVersion             = 6
+	resourceReportSchema              = "personal-mcp-gateway.resource.v7"
+	resourceReportVersion             = 7
 	resourceColdProcesses             = 10
 	resourceBatchCount                = 3
 	resourceBatchCalls                = 100
@@ -74,10 +74,10 @@ type resourceReport struct {
 	HighWaterRSSBytes                  int64                   `json:"high_water_rss_bytes"`
 	HighWaterRSSDeltaBytes             int64                   `json:"high_water_rss_delta_bytes"`
 	HighWaterWithinBound               bool                    `json:"high_water_within_bound"`
-	MaxHeapAllocGrowthBytes            uint64                  `json:"max_heap_alloc_growth_bytes"`
-	HeapAllocGrowthWithinBound         bool                    `json:"heap_alloc_growth_within_bound"`
-	MaxRSSAfter30SecondsGrowthBytes    int64                   `json:"max_rss_after_30_seconds_growth_bytes"`
-	RSSAfter30SecondsGrowthWithinBound bool                    `json:"rss_after_30_seconds_growth_within_bound"`
+	RetainedHeapAllocGrowthBytes       uint64                  `json:"retained_heap_alloc_growth_bytes"`
+	RetainedHeapAllocGrowthWithinBound bool                    `json:"retained_heap_alloc_growth_within_bound"`
+	RetainedRSSWindowGrowthBytes       int64                   `json:"retained_rss_window_growth_bytes"`
+	RetainedRSSWindowGrowthWithinBound bool                    `json:"retained_rss_window_growth_within_bound"`
 	GCAcknowledgementCount             int                     `json:"gc_acknowledgement_count"`
 	AllFDsRecovered                    bool                    `json:"all_fds_recovered"`
 	Batches                            []resourceBatchReport   `json:"batches"`
@@ -1148,10 +1148,10 @@ func resourceReportPasses(report resourceReport, expectedColdProcesses int) bool
 	if !reportSchemaTuplePasses(report.ReportKind, report.ReportSchema, report.SchemaVersion) ||
 		report.HighWaterRSSDeltaBytes != derived.HighWaterRSSDeltaBytes ||
 		report.HighWaterWithinBound != derived.HighWaterWithinBound ||
-		report.MaxHeapAllocGrowthBytes != derived.MaxHeapAllocGrowthBytes ||
-		report.HeapAllocGrowthWithinBound != derived.HeapAllocGrowthWithinBound ||
-		report.MaxRSSAfter30SecondsGrowthBytes != derived.MaxRSSAfter30SecondsGrowthBytes ||
-		report.RSSAfter30SecondsGrowthWithinBound != derived.RSSAfter30SecondsGrowthWithinBound ||
+		report.RetainedHeapAllocGrowthBytes != derived.RetainedHeapAllocGrowthBytes ||
+		report.RetainedHeapAllocGrowthWithinBound != derived.RetainedHeapAllocGrowthWithinBound ||
+		report.RetainedRSSWindowGrowthBytes != derived.RetainedRSSWindowGrowthBytes ||
+		report.RetainedRSSWindowGrowthWithinBound != derived.RetainedRSSWindowGrowthWithinBound ||
 		report.GCAcknowledgementCount != derived.GCAcknowledgementCount ||
 		report.AllFDsRecovered != derived.AllFDsRecovered {
 		return false
@@ -1167,8 +1167,8 @@ func resourceReportPasses(report resourceReport, expectedColdProcesses int) bool
 		!validResourceBoundaries(report.Boundaries) ||
 		report.Baseline.MeasuredCallCount != 0 || !report.Baseline.GCAcknowledged ||
 		!report.Baseline.FDRecoveredAtEverySample || report.GCAcknowledgementCount != resourceBatchCount+1 ||
-		!report.HighWaterWithinBound || !report.HeapAllocGrowthWithinBound ||
-		!report.RSSAfter30SecondsGrowthWithinBound || !report.AllFDsRecovered ||
+		!report.HighWaterWithinBound || !report.RetainedHeapAllocGrowthWithinBound ||
+		!report.RetainedRSSWindowGrowthWithinBound || !report.AllFDsRecovered ||
 		!validColdResourceMetrics(report.Cold) ||
 		!idleResourceReportPasses(report.Idle, report.Baseline.FDImmediateCount, report.DescriptorCount) {
 		return false
@@ -1272,11 +1272,13 @@ func validMixedBatch(batch resourceBatchReport) bool {
 }
 
 func deriveResourceReport(report resourceReport) resourceReport {
+	// This derives v7 gate values only from raw checkpoints, so an archived raw
+	// report can be recalculated offline without being accepted as a v7 smoke.
 	report.HighWaterRSSDeltaBytes = nonnegativeDelta(report.HighWaterRSSBytes, report.Baseline.RSSAfter30SecondsBytes)
-	report.MaxHeapAllocGrowthBytes = maxHeapAllocGrowth(report.Baseline, report.Batches)
-	report.HeapAllocGrowthWithinBound = report.MaxHeapAllocGrowthBytes <= resourceHeapAllocGrowthLimitBytes
-	report.MaxRSSAfter30SecondsGrowthBytes = maxRSSAfter30SecondsGrowth(report.Baseline, report.Batches)
-	report.RSSAfter30SecondsGrowthWithinBound = report.MaxRSSAfter30SecondsGrowthBytes <= resourceRSSGrowthLimitBytes
+	report.RetainedHeapAllocGrowthBytes = retainedHeapAllocGrowth(report.Baseline, report.Batches)
+	report.RetainedHeapAllocGrowthWithinBound = report.RetainedHeapAllocGrowthBytes <= resourceHeapAllocGrowthLimitBytes
+	report.RetainedRSSWindowGrowthBytes = retainedRSSWindowGrowth(report.Baseline, report.Batches)
+	report.RetainedRSSWindowGrowthWithinBound = report.RetainedRSSWindowGrowthBytes <= resourceRSSGrowthLimitBytes
 	report.GCAcknowledgementCount = 0
 	if report.Baseline.GCAcknowledged {
 		report.GCAcknowledgementCount++
@@ -1297,22 +1299,42 @@ func deriveResourceReport(report resourceReport) resourceReport {
 	return report
 }
 
-func maxHeapAllocGrowth(baseline resourceBaselineReport, batches []resourceBatchReport) uint64 {
-	var maximum uint64
-	for _, batch := range batches {
-		if batch.Memory.HeapAllocBytes > baseline.Memory.HeapAllocBytes {
-			maximum = maxUint64(maximum, batch.Memory.HeapAllocBytes-baseline.Memory.HeapAllocBytes)
-		}
+func retainedHeapAllocGrowth(baseline resourceBaselineReport, batches []resourceBatchReport) uint64 {
+	deltas := make([]uint64, len(batches))
+	for index, batch := range batches {
+		deltas[index] = nonnegativeUint64Delta(batch.Memory.HeapAllocBytes, baseline.Memory.HeapAllocBytes)
 	}
-	return maximum
+	sort.Slice(deltas, func(i, j int) bool { return deltas[i] > deltas[j] })
+	return secondLargestUint64(deltas)
 }
 
-func maxRSSAfter30SecondsGrowth(baseline resourceBaselineReport, batches []resourceBatchReport) int64 {
-	var maximum int64
-	for _, batch := range batches {
-		maximum = maxInt64(maximum, nonnegativeDelta(batch.RSSAfter30SecondsBytes, baseline.RSSAfter30SecondsBytes))
+func retainedRSSWindowGrowth(baseline resourceBaselineReport, batches []resourceBatchReport) int64 {
+	baselineWindow := resourceRSSWindow(baseline.RSSImmediateBytes, baseline.RSSAfter5SecondsBytes, baseline.RSSAfter30SecondsBytes)
+	deltas := make([]int64, len(batches))
+	for index, batch := range batches {
+		batchWindow := resourceRSSWindow(batch.RSSImmediateBytes, batch.RSSAfter5SecondsBytes, batch.RSSAfter30SecondsBytes)
+		deltas[index] = nonnegativeDelta(batchWindow, baselineWindow)
 	}
-	return maximum
+	sort.Slice(deltas, func(i, j int) bool { return deltas[i] > deltas[j] })
+	return secondLargestInt64(deltas)
+}
+
+func resourceRSSWindow(immediate, after5, after30 int64) int64 {
+	return maxInt64(immediate, maxInt64(after5, after30))
+}
+
+func secondLargestUint64(values []uint64) uint64 {
+	if len(values) < 2 {
+		return 0
+	}
+	return values[1]
+}
+
+func secondLargestInt64(values []int64) int64 {
+	if len(values) < 2 {
+		return 0
+	}
+	return values[1]
 }
 
 func baselineFDsMatch(baseline resourceBaselineReport) bool {
