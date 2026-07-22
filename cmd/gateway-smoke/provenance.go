@@ -250,7 +250,7 @@ func validateReportProof(data []byte, kind string) error {
 		}
 	case reportKindResource:
 		var report resourceReport
-		if err := decodeCompleteReport(data, &report); err != nil || !report.Passed || !resourceReportPasses(report, resourceColdProcesses) {
+		if err := decodeCompleteReport(data, &report); err != nil || !report.Passed || !resourceReportPassesForSurface(report, resourceColdProcesses, candidateToolSurface) {
 			return errors.New("resource report proof is invalid")
 		}
 	default:

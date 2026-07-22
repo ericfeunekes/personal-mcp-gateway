@@ -62,13 +62,49 @@ func TestExactCandidateToolGrammarRejectsAgentVisibleDrift(t *testing.T) {
 	}
 }
 
+func TestExactAcceptedToolGrammarRejectsTemporaryProbeAndSchemaDrift(t *testing.T) {
+	tools := listedAcceptedTools(t)
+	if !exactAcceptedToolGrammar(tools) {
+		t.Fatal("exact accepted five-tool grammar was rejected")
+	}
+	withProbe := cloneTools(t, tools)
+	for _, tool := range listedCandidateTools(t) {
+		if tool.Name == obsidian.ToolDocumentTransferProbe {
+			withProbe = append(withProbe, tool)
+		}
+	}
+	if exactAcceptedToolGrammar(withProbe) {
+		t.Fatal("accepted grammar included the temporary probe")
+	}
+	changed := cloneTools(t, tools)
+	for _, tool := range changed {
+		if tool.Name == obsidian.ToolGrep {
+			tool.Description = "drifted"
+		}
+	}
+	if exactAcceptedToolGrammar(changed) {
+		t.Fatal("drifted accepted grammar was accepted")
+	}
+}
+
 func listedCandidateTools(t *testing.T) []*sdk.Tool {
+	return listedTools(t, true)
+}
+
+func listedAcceptedTools(t *testing.T) []*sdk.Tool {
+	return listedTools(t, false)
+}
+
+func listedTools(t *testing.T, includeProbe bool) []*sdk.Tool {
 	t.Helper()
 	vault, err := fsx.NewVault(testutil.FixtureVault(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	descriptors, err := obsidian.DescriptorsWithDocumentTransferProbe(vault)
+	descriptors, err := obsidian.Descriptors(vault)
+	if includeProbe {
+		descriptors, err = obsidian.DescriptorsWithDocumentTransferProbe(vault)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

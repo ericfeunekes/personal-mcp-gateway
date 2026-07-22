@@ -144,7 +144,7 @@ immediate FD/vault quiescence, and a successful same-session follow-up.
 
 ## Retained Resource Gate
 
-Resource report schema v7 preserves the unchanged 256 KiB retained-heap, 8 MiB
+Resource report schema v8 preserves the unchanged 256 KiB retained-heap, 8 MiB
 retained-RSS, and 64 MiB lifetime high-water limits. The three post-GC batch
 heap deltas are measured from the aligned baseline, and the retained value is
 their second-largest nonnegative delta; a heap breach must therefore persist in
@@ -153,6 +153,11 @@ the maximum of its immediate, five-second, and 30-second samples, and the gate
 uses the second-largest nonnegative baseline-window-to-batch-window delta. The
 raw checkpoints, blocking-GC acknowledgements, FD recovery, idle, workload,
 latency, boundary, and lifetime high-water gates remain independently required.
+Every report identifies its exact `tool_surface`: canonical release proof uses
+the six-tool `candidate` surface. The five-tool `accepted` surface is available
+only through explicit `--resource-control` with `--resource-json`; it exists for
+paired regression comparison and is rejected by canonical report-set
+validation.
 
 ## Mutation Phase Proof Contract
 
@@ -446,6 +451,7 @@ Run the same sanitized gates against a built candidate with:
 go run ./cmd/gateway-smoke --gateway-bin <candidate> --obsidian-root <vault> --report-json
 go run ./cmd/gateway-smoke --gateway-bin <candidate> --obsidian-root <vault> --performance-json
 go run ./cmd/gateway-smoke --gateway-bin <candidate> --obsidian-root <vault> --resource-json
+go run ./cmd/gateway-smoke --gateway-bin <accepted-control> --obsidian-root <vault> --resource-json --resource-control
 ```
 
 ## Codex Temp-Profile Proof

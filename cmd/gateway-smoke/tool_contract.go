@@ -11,7 +11,15 @@ import (
 )
 
 func exactCandidateToolGrammar(tools []*sdk.Tool) bool {
-	if len(tools) != candidateDescriptorCount {
+	return exactToolGrammar(tools, candidateToolSurface)
+}
+
+func exactAcceptedToolGrammar(tools []*sdk.Tool) bool {
+	return exactToolGrammar(tools, acceptedToolSurface)
+}
+
+func exactToolGrammar(tools []*sdk.Tool, surface toolSurface) bool {
+	if len(tools) != surface.descriptorCount() {
 		return false
 	}
 	byName := make(map[string]*sdk.Tool, len(tools))
@@ -25,13 +33,18 @@ func exactCandidateToolGrammar(tools []*sdk.Tool) bool {
 		byName[obsidian.ToolLS] == nil || byName[obsidian.ToolLS].Description != obsidian.LSDescription ||
 		byName[obsidian.ToolRead] == nil || byName[obsidian.ToolRead].Description != obsidian.ReadDescription ||
 		byName[obsidian.ToolReadMany] == nil || byName[obsidian.ToolReadMany].Description != obsidian.ReadManyDescription ||
-		byName[obsidian.ToolGrep] == nil || byName[obsidian.ToolGrep].Description != obsidian.GrepDescription ||
-		byName[obsidian.ToolDocumentTransferProbe] == nil || byName[obsidian.ToolDocumentTransferProbe].Description != obsidian.DocumentTransferProbeDescription {
+		byName[obsidian.ToolGrep] == nil || byName[obsidian.ToolGrep].Description != obsidian.GrepDescription {
 		return false
 	}
-	probe, ok := normalizedSchema(byName[obsidian.ToolDocumentTransferProbe].InputSchema)
-	if !ok || len(probe) != 2 || probe["type"] != "object" || probe["additionalProperties"] != false {
-		return false
+	if surface == candidateToolSurface {
+		probeTool := byName[obsidian.ToolDocumentTransferProbe]
+		if probeTool == nil || probeTool.Description != obsidian.DocumentTransferProbeDescription {
+			return false
+		}
+		probe, ok := normalizedSchema(probeTool.InputSchema)
+		if !ok || len(probe) != 2 || probe["type"] != "object" || probe["additionalProperties"] != false {
+			return false
+		}
 	}
 
 	resolve, ok := normalizedSchema(byName[obsidian.ToolResolve].InputSchema)

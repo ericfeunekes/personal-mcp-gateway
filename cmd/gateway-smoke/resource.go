@@ -26,8 +26,8 @@ import (
 )
 
 const (
-	resourceReportSchema              = "personal-mcp-gateway.resource.v7"
-	resourceReportVersion             = 7
+	resourceReportSchema              = "personal-mcp-gateway.resource.v8"
+	resourceReportVersion             = 8
 	resourceColdProcesses             = 10
 	resourceBatchCount                = 3
 	resourceBatchCalls                = 100
@@ -61,6 +61,7 @@ type resourceReport struct {
 	CandidateCommit                    string                  `json:"candidate_commit"`
 	CandidateSHA256                    string                  `json:"candidate_sha256"`
 	DependencySHA256                   string                  `json:"dependency_sha256"`
+	ToolSurface                        toolSurface             `json:"tool_surface"`
 	DescriptorCount                    int                     `json:"descriptor_count"`
 	CandidateRuntime                   candidateRuntimeProfile `json:"candidate_runtime"`
 	Machine                            machineProfile          `json:"machine"`
@@ -250,6 +251,7 @@ type idleResourceReport struct {
 }
 
 type resourceProbeOptions struct {
+	ToolSurface   toolSurface
 	ColdProcesses int
 	Stabilize5    time.Duration
 	Stabilize30   time.Duration
@@ -259,6 +261,7 @@ type resourceProbeOptions struct {
 
 func defaultResourceProbeOptions() resourceProbeOptions {
 	return resourceProbeOptions{
+		ToolSurface:   candidateToolSurface,
 		ColdProcesses: resourceColdProcesses,
 		Stabilize5:    resourceStabilize5,
 		Stabilize30:   resourceStabilize30,
@@ -867,7 +870,7 @@ func coverageResourceCall(sample resourceCallSample, coverage obsidian.Coverage)
 }
 
 func probeCandidateResources(ctx context.Context, gatewayBin, root string, options resourceProbeOptions, sampler resourceSampler) (resourceReport, error) {
-	if options.ColdProcesses <= 0 || options.Stabilize5 < 0 || options.Stabilize30 < options.Stabilize5 ||
+	if options.ToolSurface.descriptorCount() == 0 || options.ColdProcesses <= 0 || options.Stabilize5 < 0 || options.Stabilize30 < options.Stabilize5 ||
 		options.IdleDuration <= 0 || options.ControlTime <= 0 || sampler == nil {
 		return resourceReport{}, errors.New("candidate resource probe configuration was invalid")
 	}
@@ -894,7 +897,7 @@ func probeCandidateResources(ctx context.Context, gatewayBin, root string, optio
 	// Cold-start proof uses the configured vault root so the report still binds
 	// startup behavior to the actual release surface. The adversarial repeated
 	// workload uses the private fixture below and never writes into that vault.
-	cold, err := observeFreshProcesses(ctx, gatewayBin, root, options.ColdProcesses, sampler)
+	cold, err := observeFreshProcesses(ctx, gatewayBin, root, options, sampler)
 	if err != nil {
 		return resourceReport{}, err
 	}
@@ -903,7 +906,7 @@ func probeCandidateResources(ctx context.Context, gatewayBin, root string, optio
 		return resourceReport{}, err
 	}
 	defer longLived.closeDiscard()
-	descriptorCount, err := requireExactToolList(ctx, longLived.process.session)
+	descriptorCount, err := requireExactToolListForSurface(ctx, longLived.process.session, options.ToolSurface)
 	if err != nil {
 		return resourceReport{}, err
 	}
@@ -926,6 +929,7 @@ func probeCandidateResources(ctx context.Context, gatewayBin, root string, optio
 		ReportKind:       reportKindResource,
 		ReportSchema:     resourceReportSchema,
 		SchemaVersion:    resourceReportVersion,
+		ToolSurface:      options.ToolSurface,
 		DescriptorCount:  descriptorCount,
 		CandidateRuntime: runtimeProfile,
 		Machine:          machineProfile,
@@ -984,7 +988,7 @@ func probeCandidateResources(ctx context.Context, gatewayBin, root string, optio
 		FDsRecovered:            report.Idle.FDAfterCount == report.Baseline.FDImmediateCount,
 	}
 	report = deriveResourceReport(report)
-	report.Passed = resourceReportPasses(report, options.ColdProcesses)
+	report.Passed = resourceReportPassesForSurface(report, options.ColdProcesses, options.ToolSurface)
 	if !report.Passed {
 		return report, errors.New("candidate resource gate failed")
 	}
@@ -1144,6 +1148,10 @@ func successfulAbsentGrep(done resourceConcurrentOutcome) bool {
 }
 
 func resourceReportPasses(report resourceReport, expectedColdProcesses int) bool {
+	return resourceReportPassesForSurface(report, expectedColdProcesses, candidateToolSurface)
+}
+
+func resourceReportPassesForSurface(report resourceReport, expectedColdProcesses int, surface toolSurface) bool {
 	derived := deriveResourceReport(report)
 	if !reportSchemaTuplePasses(report.ReportKind, report.ReportSchema, report.SchemaVersion) ||
 		report.HighWaterRSSDeltaBytes != derived.HighWaterRSSDeltaBytes ||
@@ -1156,8 +1164,8 @@ func resourceReportPasses(report resourceReport, expectedColdProcesses int) bool
 		report.AllFDsRecovered != derived.AllFDsRecovered {
 		return false
 	}
-	if expectedColdProcesses <= 0 || report.Cold.FreshProcessCount != expectedColdProcesses ||
-		report.DescriptorCount != candidateDescriptorCount || len(report.Batches) != resourceBatchCount ||
+	if surface.descriptorCount() == 0 || report.ToolSurface != surface || expectedColdProcesses <= 0 || report.Cold.FreshProcessCount != expectedColdProcesses ||
+		report.DescriptorCount != surface.descriptorCount() || len(report.Batches) != resourceBatchCount ||
 		!candidateRuntimeProfilePasses(report.CandidateRuntime) || !machineProfilePasses(report.Machine) ||
 		!vaultAggregateProfilePasses(report.Vault) || !candidateProcessProfilePasses(report.Process) ||
 		!validConcurrentGrep(report.ConcurrentGrep) ||
@@ -1170,7 +1178,7 @@ func resourceReportPasses(report resourceReport, expectedColdProcesses int) bool
 		!report.HighWaterWithinBound || !report.RetainedHeapAllocGrowthWithinBound ||
 		!report.RetainedRSSWindowGrowthWithinBound || !report.AllFDsRecovered ||
 		!validColdResourceMetrics(report.Cold) ||
-		!idleResourceReportPasses(report.Idle, report.Baseline.FDImmediateCount, report.DescriptorCount) {
+		!idleResourceReportPasses(report.Idle, report.Baseline.FDImmediateCount, report.DescriptorCount, surface) {
 		return false
 	}
 	if report.Process.BaselineCPUMicroseconds != report.Baseline.CPUTimeMicroseconds ||
@@ -1209,7 +1217,7 @@ func orderedNonnegativeDurations(p50, p95, maximum int64) bool {
 	return p50 >= 0 && p95 >= p50 && maximum >= p95
 }
 
-func idleResourceReportPasses(report idleResourceReport, baselineFD, descriptorCount int) bool {
+func idleResourceReportPasses(report idleResourceReport, baselineFD, descriptorCount int, surface toolSurface) bool {
 	cpuDelta := report.CPUTimeAfterMicroseconds - report.CPUTimeBeforeMicroseconds
 	cpuBound := report.DurationMicroseconds / 100
 	cpuWithinBound := report.DurationMicroseconds > 0 && report.CPUTimeBeforeMicroseconds >= 0 &&
@@ -1221,7 +1229,7 @@ func idleResourceReportPasses(report idleResourceReport, baselineFD, descriptorC
 	noGrepActivity := report.GrepActivityActiveBefore == 0 && report.GrepActivityActiveAfter == 0 &&
 		report.GrepInFlightBefore == 0 && report.GrepInFlightAfter == 0 &&
 		report.GrepActivityTotalBefore == report.GrepActivityTotalAfter
-	descriptorsUnchanged := descriptorCount == candidateDescriptorCount && report.DescriptorCountAfter == descriptorCount
+	descriptorsUnchanged := descriptorCount == surface.descriptorCount() && report.DescriptorCountAfter == descriptorCount
 	return report.CPUTimeDeltaMicroseconds == cpuDelta && report.CPUTimeBoundMicroseconds == cpuBound &&
 		report.CPUWithinBound == cpuWithinBound && report.CPUWithinBound && report.RSSBeforeBytes > 0 && report.RSSAfterBytes > 0 &&
 		report.FDsRecovered == fdsRecovered && report.FDsRecovered &&
@@ -1387,7 +1395,8 @@ func maxResourceFD(report resourceReport) int {
 	return maxInt(maximum, report.Idle.FDAfterCount)
 }
 
-func observeFreshProcesses(ctx context.Context, gatewayBin, root string, count int, sampler resourceSampler) (coldResourceReport, error) {
+func observeFreshProcesses(ctx context.Context, gatewayBin, root string, options resourceProbeOptions, sampler resourceSampler) (coldResourceReport, error) {
+	count := options.ColdProcesses
 	startup := make([]int64, 0, count)
 	firstCalls := make([]int64, 0, count)
 	processCPU := make([]int64, 0, count)
@@ -1399,7 +1408,7 @@ func observeFreshProcesses(ctx context.Context, gatewayBin, root string, count i
 			return coldResourceReport{}, err
 		}
 		startup = append(startup, time.Since(started).Microseconds())
-		if _, err := requireExactToolList(ctx, candidate.process.session); err != nil {
+		if _, err := requireExactToolListForSurface(ctx, candidate.process.session, options.ToolSurface); err != nil {
 			candidate.closeDiscard()
 			return coldResourceReport{}, err
 		}
@@ -1801,7 +1810,7 @@ func observePostGCResources(ctx context.Context, pid int, options resourceProbeO
 }
 
 func observeResourceIdle(ctx context.Context, session *sdk.ClientSession, pid, descriptorCount, baselineFD int, dbPath string, options resourceProbeOptions, sampler resourceSampler, control *resourceControl) (idleResourceReport, error) {
-	if descriptorCount != candidateDescriptorCount {
+	if descriptorCount != options.ToolSurface.descriptorCount() {
 		return idleResourceReport{}, errors.New("candidate descriptor count changed")
 	}
 	activityBefore, err := control.snapshot(ctx, options.ControlTime)
@@ -1831,7 +1840,7 @@ func observeResourceIdle(ctx context.Context, session *sdk.ClientSession, pid, d
 	if err != nil {
 		return idleResourceReport{}, err
 	}
-	descriptorCountAfter, err := requireExactToolList(ctx, session)
+	descriptorCountAfter, err := requireExactToolListForSurface(ctx, session, options.ToolSurface)
 	if err != nil {
 		return idleResourceReport{}, err
 	}

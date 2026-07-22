@@ -24,7 +24,28 @@ import (
 	"personal-mcp-gateway/internal/tools/obsidian"
 )
 
-const candidateDescriptorCount = 6
+const (
+	candidateDescriptorCount = 6
+	acceptedDescriptorCount  = 5
+)
+
+type toolSurface string
+
+const (
+	candidateToolSurface toolSurface = "candidate"
+	acceptedToolSurface  toolSurface = "accepted"
+)
+
+func (surface toolSurface) descriptorCount() int {
+	switch surface {
+	case candidateToolSurface:
+		return candidateDescriptorCount
+	case acceptedToolSurface:
+		return acceptedDescriptorCount
+	default:
+		return 0
+	}
+}
 
 const (
 	smokeTimeout             = 10 * time.Second
@@ -254,6 +275,7 @@ func runWithCandidateSnapshotter(args []string, stdout, stderr io.Writer, snapsh
 	reportJSON := flags.Bool("report-json", false, "emit one sanitized aggregate JSON report")
 	performanceJSON := flags.Bool("performance-json", false, "emit one sanitized current-vault and stratified candidate performance report")
 	resourceJSON := flags.Bool("resource-json", false, "emit one sanitized fresh-process, repeated-batch, and idle resource report")
+	resourceControl := flags.Bool("resource-control", false, "use the accepted five-tool surface for --resource-json")
 	validateReports := flags.Bool("validate-report-set", false, "validate exactly one functional, performance, and resource report")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -266,6 +288,9 @@ func runWithCandidateSnapshotter(args []string, stdout, stderr io.Writer, snapsh
 	}
 	if selectedJSONModes > 1 {
 		return errors.New("--report-json, --performance-json, and --resource-json are mutually exclusive")
+	}
+	if *resourceControl && !*resourceJSON {
+		return errors.New("--resource-control requires --resource-json")
 	}
 	if *gatewayBin == "" || *repoRoot == "" || *candidateCommit == "" || *candidateSHA256 == "" || *dependencySHA256 == "" {
 		return errors.New("candidate provenance arguments are required")
@@ -306,7 +331,11 @@ func runWithCandidateSnapshotter(args []string, stdout, stderr io.Writer, snapsh
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	if *resourceJSON {
-		report, err := probeCandidateResources(ctx, candidatePath, *obsidianRoot, defaultResourceProbeOptions(), systemResourceSampler{})
+		options := defaultResourceProbeOptions()
+		if *resourceControl {
+			options.ToolSurface = acceptedToolSurface
+		}
+		report, err := probeCandidateResources(ctx, candidatePath, *obsidianRoot, options, systemResourceSampler{})
 		report.ReportKind = reportKindResource
 		report.CandidateCommit = provenance.Commit
 		report.CandidateSHA256 = provenance.CandidateSHA256
@@ -1368,21 +1397,29 @@ func dropSQLiteEventsTable(dbPath string) error {
 }
 
 func requireExactToolList(ctx context.Context, session *sdk.ClientSession) (int, error) {
+	return requireExactToolListForSurface(ctx, session, candidateToolSurface)
+}
+
+func requireExactToolListForSurface(ctx context.Context, session *sdk.ClientSession, surface toolSurface) (int, error) {
 	listed, err := session.ListTools(ctx, nil)
 	if err != nil {
 		return 0, errors.New("candidate tool list failed")
 	}
-	if !exactCandidateToolGrammar(listed.Tools) {
-		return 0, errors.New("candidate tool grammar did not match the exact temporary six-tool probe contract")
+	if !exactToolGrammar(listed.Tools, surface) {
+		return 0, errors.New("candidate tool grammar did not match the selected exact tool surface")
 	}
 	names := make([]string, 0, len(listed.Tools))
 	for _, tool := range listed.Tools {
 		names = append(names, tool.Name)
 	}
 	sort.Strings(names)
-	want := []string{obsidian.ToolDocumentTransferProbe, obsidian.ToolGrep, obsidian.ToolLS, obsidian.ToolRead, obsidian.ToolReadMany, obsidian.ToolResolve}
+	want := []string{obsidian.ToolGrep, obsidian.ToolLS, obsidian.ToolRead, obsidian.ToolReadMany, obsidian.ToolResolve}
+	if surface == candidateToolSurface {
+		want = append(want, obsidian.ToolDocumentTransferProbe)
+		sort.Strings(want)
+	}
 	if !reflect.DeepEqual(names, want) {
-		return 0, errors.New("candidate tool list did not match the exact temporary document-transfer probe surface")
+		return 0, errors.New("candidate tool list did not match the selected exact tool surface")
 	}
 	return len(names), nil
 }

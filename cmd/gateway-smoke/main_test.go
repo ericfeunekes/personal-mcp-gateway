@@ -286,6 +286,18 @@ func TestRunRejectsResourceJSONCombinedWithAnotherJSONMode(t *testing.T) {
 	}
 }
 
+func TestRunRejectsResourceControlOutsideResourceJSON(t *testing.T) {
+	for _, mode := range [][]string{nil, {"--report-json"}, {"--performance-json"}} {
+		var stdout, stderr bytes.Buffer
+		args := []string{"--gateway-bin", "candidate", "--obsidian-root", "vault", "--resource-control"}
+		args = append(args, mode...)
+		err := run(args, &stdout, &stderr)
+		if err == nil || err.Error() != "--resource-control requires --resource-json" {
+			t.Fatalf("args=%q error=%v", args, err)
+		}
+	}
+}
+
 func TestProbeCandidateResourcesUsesFreshProcessesAndEmitsOnlySanitizedAggregates(t *testing.T) {
 	candidate := buildGatewayCandidate(t)
 	vault := filepath.Join(t.TempDir(), "resource-private-vault")
@@ -302,6 +314,7 @@ func TestProbeCandidateResourcesUsesFreshProcessesAndEmitsOnlySanitizedAggregate
 	defer cancel()
 	sampler := &fixedResourceSampler{}
 	report, err := probeCandidateResources(ctx, candidate, vault, resourceProbeOptions{
+		ToolSurface:   candidateToolSurface,
 		ColdProcesses: 2,
 		Stabilize5:    time.Millisecond,
 		Stabilize30:   2 * time.Millisecond,
@@ -375,7 +388,7 @@ func TestObserveResourceIdleRejectsRealCandidateLSActivity(t *testing.T) {
 	}
 	relativeRepresentative := "representative"
 	sampler := &idleInterferenceSampler{started: make(chan struct{})}
-	options := resourceProbeOptions{IdleDuration: 150 * time.Millisecond, ControlTime: 2 * time.Second}
+	options := resourceProbeOptions{ToolSurface: candidateToolSurface, IdleDuration: 150 * time.Millisecond, ControlTime: 2 * time.Second}
 	type result struct {
 		report idleResourceReport
 		err    error
@@ -448,6 +461,7 @@ func TestSystemResourceSamplerAgainstBuiltCandidate(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	report, err := probeCandidateResources(ctx, candidate, vault, resourceProbeOptions{
+		ToolSurface:   candidateToolSurface,
 		ColdProcesses: 2,
 		Stabilize5:    25 * time.Millisecond,
 		Stabilize30:   50 * time.Millisecond,
@@ -565,13 +579,14 @@ func requestGCReply(t *testing.T, reply string) (resourceMemorySnapshot, error) 
 func TestDefaultResourceProbeContractIsFrozen(t *testing.T) {
 	got := defaultResourceProbeOptions()
 	want := resourceProbeOptions{
+		ToolSurface:   candidateToolSurface,
 		ColdProcesses: 10,
 		Stabilize5:    5 * time.Second,
 		Stabilize30:   30 * time.Second,
 		IdleDuration:  60 * time.Second,
 		ControlTime:   5 * time.Second,
 	}
-	if !reflect.DeepEqual(got, want) || resourceReportVersion != 7 || resourceBatchCount != 3 || resourceBatchCalls != 100 ||
+	if !reflect.DeepEqual(got, want) || resourceReportVersion != 8 || resourceBatchCount != 3 || resourceBatchCalls != 100 ||
 		resourceHeapAllocGrowthLimitBytes != uint64(256*1024) || resourceRSSGrowthLimitBytes != int64(8*1024*1024) ||
 		resourceRSSLimitBytes != int64(64*1024*1024) {
 		t.Fatalf("resource probe defaults = %#v, version=%d batches=%d calls=%d heap=%d rss=%d hwm=%d", got, resourceReportVersion, resourceBatchCount, resourceBatchCalls, resourceHeapAllocGrowthLimitBytes, resourceRSSGrowthLimitBytes, resourceRSSLimitBytes)
@@ -1127,6 +1142,7 @@ func TestResourceReportPassesRejectsEachGateFailure(t *testing.T) {
 		mutate func(*resourceReport)
 	}{
 		{name: "schema", mutate: func(r *resourceReport) { r.SchemaVersion-- }},
+		{name: "tool surface", mutate: func(r *resourceReport) { r.ToolSurface = toolSurface("tampered") }},
 		{name: "cold count", mutate: func(r *resourceReport) { r.Cold.FreshProcessCount = 9 }},
 		{name: "descriptor count", mutate: func(r *resourceReport) { r.DescriptorCount = 3 }},
 		{name: "baseline call count", mutate: func(r *resourceReport) { r.Baseline.MeasuredCallCount = 1 }},
@@ -1237,6 +1253,7 @@ func passingResourceGateReport() resourceReport {
 		ReportKind:       reportKindResource,
 		ReportSchema:     resourceReportSchema,
 		SchemaVersion:    resourceReportVersion,
+		ToolSurface:      candidateToolSurface,
 		DescriptorCount:  candidateDescriptorCount,
 		Cold:             coldResourceReport{FreshProcessCount: 10, MaxSDKResultBytes: 1, MaxStructuredBytes: 1},
 		CandidateRuntime: candidateRuntimeProfile{GoVersion: "go1.26.1", GOOS: "darwin", GOARCH: "amd64"},
@@ -1495,6 +1512,19 @@ func buildGatewayCandidate(t *testing.T) string {
 	return candidate
 }
 
+func buildAcceptedGatewayCandidate(t *testing.T) string {
+	t.Helper()
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	candidate := filepath.Join(t.TempDir(), "personal-mcp-gateway")
+	build := exec.Command("go", "build", "-buildvcs=false", "-o", candidate, "./cmd/gateway")
+	build.Dir = repoRoot
+	build.Env = os.Environ()
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build accepted candidate: %v\n%s", err, output)
+	}
+	return candidate
+}
+
 func provenanceArgs(t *testing.T, candidate string) []string {
 	t.Helper()
 	repo := t.TempDir()
@@ -1553,6 +1583,7 @@ func assertOnlySanitizedReportValues(t *testing.T, value any) {
 		case "2_10", "11_100", "101_1000", "1001_plus",
 			reportKindFunctional, reportKindPerformance, reportKindResource,
 			functionalReportSchema, performanceReportSchema, resourceReportSchema, markdownInventoryPolicy,
+			string(candidateToolSurface), string(acceptedToolSurface),
 			"scope", "file_limit", "byte_limit", "timeout", "source_change", "complete", "cursor",
 			"result_limit", "response_limit", "input_too_large", obsidian.ResponseTooLargeCode,
 			obsidian.InvalidUTF8Code:

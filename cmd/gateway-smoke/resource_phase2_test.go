@@ -77,6 +77,7 @@ func TestPhase2ResourceProbeExercisesBuiltFiveToolCandidate(t *testing.T) {
 	defer cancel()
 	sampler := &phase2ResourceSampler{}
 	report, err := probeCandidateResources(ctx, candidate, t.TempDir(), resourceProbeOptions{
+		ToolSurface:   candidateToolSurface,
 		ColdProcesses: 2,
 		Stabilize5:    time.Millisecond,
 		Stabilize30:   2 * time.Millisecond,
@@ -101,6 +102,27 @@ func TestPhase2ResourceProbeExercisesBuiltFiveToolCandidate(t *testing.T) {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("resource report retained private fixture evidence %q", forbidden)
 		}
+	}
+}
+
+func TestPhase2ResourceProbeAcceptedControlUsesFiveToolSurface(t *testing.T) {
+	candidate := buildAcceptedGatewayCandidate(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	report, err := probeCandidateResources(ctx, candidate, t.TempDir(), resourceProbeOptions{
+		ToolSurface:   acceptedToolSurface,
+		ColdProcesses: 2,
+		Stabilize5:    time.Millisecond,
+		Stabilize30:   2 * time.Millisecond,
+		IdleDuration:  5 * time.Millisecond,
+		ControlTime:   2 * time.Second,
+	}, &phase2ResourceSampler{})
+	if err != nil {
+		t.Fatalf("accepted control resource probe: %v; report=%#v", err, report)
+	}
+	if !report.Passed || report.ToolSurface != acceptedToolSurface || report.DescriptorCount != acceptedDescriptorCount ||
+		!resourceReportPassesForSurface(report, 2, acceptedToolSurface) || !validResourceWorkload(report.Workload) {
+		t.Fatalf("accepted control resource report = %#v", report)
 	}
 }
 
@@ -139,7 +161,7 @@ func TestPhase2BoundaryRSSRecoversAfterThirtySeconds(t *testing.T) {
 	}
 	defer candidate.closeDiscard()
 	sampler := systemResourceSampler{}
-	options := resourceProbeOptions{Stabilize5: 5 * time.Second, Stabilize30: 30 * time.Second, ControlTime: 2 * time.Second}
+	options := resourceProbeOptions{ToolSurface: candidateToolSurface, Stabilize5: 5 * time.Second, Stabilize30: 30 * time.Second, ControlTime: 2 * time.Second}
 	baseline, err := observeResourceBaseline(ctx, candidate.process.command.Process.Pid, options, sampler, candidate.control)
 	if err != nil {
 		t.Fatal(err)
@@ -206,6 +228,7 @@ func TestPhase2ResourceGateRejectsBoundaryAndToolMixDrift(t *testing.T) {
 
 func passingPhase2ResourceGateReport() resourceReport {
 	report := passingResourceGateReport()
+	report.ToolSurface = candidateToolSurface
 	report.DescriptorCount = candidateDescriptorCount
 	report.Cold.MaxSDKResultBytes = 1
 	report.Cold.MaxStructuredBytes = 1
