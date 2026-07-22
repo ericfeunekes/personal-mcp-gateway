@@ -1337,6 +1337,13 @@ func secondLargestInt64(values []int64) int64 {
 	return values[1]
 }
 
+func nonnegativeUint64Delta(after, before uint64) uint64 {
+	if after <= before {
+		return 0
+	}
+	return after - before
+}
+
 func baselineFDsMatch(baseline resourceBaselineReport) bool {
 	return baseline.FDImmediateCount > 0 && baseline.FDImmediateCount == baseline.FDAfter5SecondsCount &&
 		baseline.FDImmediateCount == baseline.FDAfter30SecondsCount

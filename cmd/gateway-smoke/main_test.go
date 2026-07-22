@@ -1066,13 +1066,6 @@ func setResourceReportRSS(report *resourceReport, rss int64) {
 	report.Idle.RSSAfterBytes = rss
 }
 
-func nonnegativeUint64Delta(after, before uint64) uint64 {
-	if after <= before {
-		return 0
-	}
-	return after - before
-}
-
 func TestHighWaterWithinBoundIncludesExactLimit(t *testing.T) {
 	baseline := int64(10 * 1024 * 1024)
 	if resourceRSSLimitBytes != int64(64*1024*1024) {
