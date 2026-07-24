@@ -30,7 +30,7 @@ Target tool names:
 - `edit`
 - `move`
 - `delete`
-- document reading (activation-gated name)
+- `read_document` (activation-gated implementation and format support)
 
 The MCP server name is the public integration boundary. Do not prefix tool names with `obsidian.` inside this server, and do not add non-Obsidian tools to this server. Do not expose separate `search`, `graph_search`, shell, or generic query tools: `grep` is the content-discovery entry point, `resolve` owns canonical path resolution and existence, and mutation-scoped `stat` owns opaque fingerprint acquisition for existing files and directories.
 
