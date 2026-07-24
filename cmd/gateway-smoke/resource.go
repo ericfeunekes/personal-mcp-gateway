@@ -1218,6 +1218,10 @@ func orderedNonnegativeDurations(p50, p95, maximum int64) bool {
 }
 
 func idleResourceReportPasses(report idleResourceReport, baselineFD, descriptorCount int, surface toolSurface) bool {
+	return idleResourceReportPassesExpected(report, baselineFD, descriptorCount, surface, resourceConcurrentWarmupCalls+resourceMeasuredCalls+resourceConcurrentProbeCalls)
+}
+
+func idleResourceReportPassesExpected(report idleResourceReport, baselineFD, descriptorCount int, surface toolSurface, expectedToolCallRows int) bool {
 	cpuDelta := report.CPUTimeAfterMicroseconds - report.CPUTimeBeforeMicroseconds
 	cpuBound := report.DurationMicroseconds / 100
 	cpuWithinBound := report.DurationMicroseconds > 0 && report.CPUTimeBeforeMicroseconds >= 0 &&
@@ -1233,7 +1237,7 @@ func idleResourceReportPasses(report idleResourceReport, baselineFD, descriptorC
 	return report.CPUTimeDeltaMicroseconds == cpuDelta && report.CPUTimeBoundMicroseconds == cpuBound &&
 		report.CPUWithinBound == cpuWithinBound && report.CPUWithinBound && report.RSSBeforeBytes > 0 && report.RSSAfterBytes > 0 &&
 		report.FDsRecovered == fdsRecovered && report.FDsRecovered &&
-		report.ExpectedToolCallRows == resourceConcurrentWarmupCalls+resourceMeasuredCalls+resourceConcurrentProbeCalls && report.ToolCallRowsBefore == resourceConcurrentWarmupCalls+resourceMeasuredCalls+resourceConcurrentProbeCalls &&
+		expectedToolCallRows > 0 && report.ExpectedToolCallRows == expectedToolCallRows && report.ToolCallRowsBefore == expectedToolCallRows &&
 		report.NoExtraToolCalls == noExtraToolCalls && report.NoExtraToolCalls &&
 		report.NoVaultActivity == noActivity && report.NoVaultActivity &&
 		report.NoGrepActivity == noGrepActivity && report.NoGrepActivity &&
@@ -1810,6 +1814,10 @@ func observePostGCResources(ctx context.Context, pid int, options resourceProbeO
 }
 
 func observeResourceIdle(ctx context.Context, session *sdk.ClientSession, pid, descriptorCount, baselineFD int, dbPath string, options resourceProbeOptions, sampler resourceSampler, control *resourceControl) (idleResourceReport, error) {
+	return observeResourceIdleExpected(ctx, session, pid, descriptorCount, baselineFD, dbPath, options, sampler, control, resourceConcurrentWarmupCalls+resourceMeasuredCalls+resourceConcurrentProbeCalls)
+}
+
+func observeResourceIdleExpected(ctx context.Context, session *sdk.ClientSession, pid, descriptorCount, baselineFD int, dbPath string, options resourceProbeOptions, sampler resourceSampler, control *resourceControl, expectedToolCallRows int) (idleResourceReport, error) {
 	if descriptorCount != options.ToolSurface.descriptorCount() {
 		return idleResourceReport{}, errors.New("candidate descriptor count changed")
 	}
@@ -1860,7 +1868,7 @@ func observeResourceIdle(ctx context.Context, session *sdk.ClientSession, pid, d
 		FDsRecovered:              before.fdCount == baselineFD && after.fdCount == baselineFD,
 		ToolCallRowsBefore:        beforeSQLite.toolCallRows,
 		ToolCallRowsAfter:         afterSQLite.toolCallRows,
-		ExpectedToolCallRows:      resourceConcurrentWarmupCalls + resourceMeasuredCalls + resourceConcurrentProbeCalls,
+		ExpectedToolCallRows:      expectedToolCallRows,
 		NoExtraToolCalls:          beforeSQLite.toolCallRows == afterSQLite.toolCallRows,
 		VaultActivityTotalBefore:  activityBefore.total,
 		VaultActivityTotalAfter:   activityAfter.total,

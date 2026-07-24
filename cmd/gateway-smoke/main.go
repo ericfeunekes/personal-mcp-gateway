@@ -276,12 +276,14 @@ func runWithCandidateSnapshotter(args []string, stdout, stderr io.Writer, snapsh
 	performanceJSON := flags.Bool("performance-json", false, "emit one sanitized current-vault and stratified candidate performance report")
 	resourceJSON := flags.Bool("resource-json", false, "emit one sanitized fresh-process, repeated-batch, and idle resource report")
 	resourceControl := flags.Bool("resource-control", false, "use the accepted five-tool surface for --resource-json")
+	documentTransferJSON := flags.Bool("document-transfer-json", false, "emit one disposable exact-size document transfer capacity report")
+	documentTransferArtifact := flags.String("document-transfer-artifact", "", "write the synthetic document transfer fixture for independent validation")
 	validateReports := flags.Bool("validate-report-set", false, "validate exactly one functional, performance, and resource report")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	selectedJSONModes := 0
-	for _, selected := range []bool{*reportJSON, *performanceJSON, *resourceJSON} {
+	for _, selected := range []bool{*reportJSON, *performanceJSON, *resourceJSON, *documentTransferJSON} {
 		if selected {
 			selectedJSONModes++
 		}
@@ -291,6 +293,12 @@ func runWithCandidateSnapshotter(args []string, stdout, stderr io.Writer, snapsh
 	}
 	if *resourceControl && !*resourceJSON {
 		return errors.New("--resource-control requires --resource-json")
+	}
+	if *documentTransferArtifact != "" && !*documentTransferJSON {
+		return errors.New("--document-transfer-artifact requires --document-transfer-json")
+	}
+	if *documentTransferJSON && *documentTransferArtifact == "" {
+		return errors.New("--document-transfer-json requires --document-transfer-artifact")
 	}
 	if *gatewayBin == "" || *repoRoot == "" || *candidateCommit == "" || *candidateSHA256 == "" || *dependencySHA256 == "" {
 		return errors.New("candidate provenance arguments are required")
@@ -325,11 +333,20 @@ func runWithCandidateSnapshotter(args []string, stdout, stderr io.Writer, snapsh
 	timeout := smokeTimeout
 	if *performanceJSON {
 		timeout = performanceTimeout
-	} else if *resourceJSON {
+	} else if *resourceJSON || *documentTransferJSON {
 		timeout = resourceTimeout
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	if *documentTransferJSON {
+		report, err := probeDocumentTransferCapacity(ctx, candidatePath, *obsidianRoot, *documentTransferArtifact, provenance, systemResourceSampler{})
+		if report.SchemaVersion != 0 {
+			if encodeErr := json.NewEncoder(stdout).Encode(report); encodeErr != nil {
+				return errors.New("encode document transfer capacity report failed")
+			}
+		}
+		return err
+	}
 	if *resourceJSON {
 		options := defaultResourceProbeOptions()
 		if *resourceControl {

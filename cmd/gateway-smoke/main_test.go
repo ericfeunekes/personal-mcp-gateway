@@ -1246,6 +1246,19 @@ func TestRetainedLiteralLimitsAreIndependentAndInclusive(t *testing.T) {
 	}
 }
 
+func TestDocumentTransferIdleGateUsesExactTwoCalls(t *testing.T) {
+	idle := passingResourceGateReport().Idle
+	idle.ExpectedToolCallRows = 2
+	idle.ToolCallRowsBefore = 2
+	idle.ToolCallRowsAfter = 2
+	if !idleResourceReportPassesExpected(idle, 7, candidateDescriptorCount, candidateToolSurface, 2) {
+		t.Fatal("document transfer idle shape was rejected")
+	}
+	if idleResourceReportPasses(idle, 7, candidateDescriptorCount, candidateToolSurface) {
+		t.Fatal("document transfer idle shape was accepted as the canonical resource workload")
+	}
+}
+
 func passingResourceGateReport() resourceReport {
 	const baselineRSS = int64(16 * 1024 * 1024)
 	const baselineHeap = uint64(1024 * 1024)

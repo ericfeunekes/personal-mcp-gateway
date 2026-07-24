@@ -47,7 +47,7 @@ build:
 	@mkdir -p "$(BUILD_DIR)" "$(GOCACHE)"
 	@env CGO_ENABLED=1 GOCACHE="$(GOCACHE)" "$(GO)" build \
 		-buildvcs=false -trimpath \
-		-ldflags "-X personal-mcp-gateway/internal/tools/obsidian.documentTransferProbeBuild=enabled" \
+		-ldflags "-X personal-mcp-gateway/internal/tools/obsidian.documentTransferProbeBuild=capacity" \
 		-o "$(GATEWAY_CANDIDATE)" ./cmd/gateway
 
 build-release-controller:

@@ -13,8 +13,6 @@ import (
 	"personal-mcp-gateway/internal/tools/obsidian"
 )
 
-const documentTransferProbeSHA256 = "f8005c1abc16d9be4631d22d3a07e242f39a837187482669343d448b99067cc4"
-
 func verifyDocumentTransferProbe(ctx context.Context, session *sdk.ClientSession, report *smokeReport) error {
 	started := time.Now()
 	result, err := session.CallTool(ctx, &sdk.CallToolParams{
@@ -30,7 +28,8 @@ func verifyDocumentTransferProbe(ctx context.Context, session *sdk.ClientSession
 		return errors.New("document transfer probe resource identity changed")
 	}
 	digest := sha256.Sum256(embedded.Resource.Blob)
-	if hex.EncodeToString(digest[:]) != documentTransferProbeSHA256 {
+	expectedSHA, expectedSize := obsidian.DocumentTransferProbeSHA256ForSize(len(embedded.Resource.Blob))
+	if !expectedSize || hex.EncodeToString(digest[:]) != expectedSHA {
 		return errors.New("document transfer probe bytes changed")
 	}
 	encoded, err := json.Marshal(result.StructuredContent)
@@ -42,16 +41,9 @@ func verifyDocumentTransferProbe(ctx context.Context, session *sdk.ClientSession
 		out.RawBytes != len(embedded.Resource.Blob) {
 		return errors.New("document transfer probe metadata did not match the resource")
 	}
-	resultBytes, err := json.Marshal(result)
-	if err != nil {
-		return errors.New("document transfer probe result was invalid")
-	}
 	if report != nil {
 		report.SDKResultCount++
 		report.ToolCalls.add(obsidian.ToolDocumentTransferProbe)
-		if len(resultBytes) > report.MaxSDKResultBytes {
-			report.MaxSDKResultBytes = len(resultBytes)
-		}
 		if len(encoded) > report.MaxStructuredResultBytes {
 			report.MaxStructuredResultBytes = len(encoded)
 		}
