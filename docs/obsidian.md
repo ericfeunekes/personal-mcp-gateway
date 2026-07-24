@@ -21,6 +21,7 @@ Target tool names:
 - `read`
 - `read_many`
 - `grep`
+- `stat`
 - `links`
 - `traverse`
 - `backlinks`
@@ -31,9 +32,11 @@ Target tool names:
 - `delete`
 - document reading (activation-gated name)
 
-The MCP server name is the public integration boundary. Do not prefix tool names with `obsidian.` inside this server, and do not add non-Obsidian tools to this server. Do not expose separate `search`, `stat`, `graph_search`, shell, or generic query tools: `grep` is the content-discovery entry point, and `resolve` owns metadata.
+The MCP server name is the public integration boundary. Do not prefix tool names with `obsidian.` inside this server, and do not add non-Obsidian tools to this server. Do not expose separate `search`, `graph_search`, shell, or generic query tools: `grep` is the content-discovery entry point, `resolve` owns canonical path resolution and existence, and mutation-scoped `stat` owns opaque fingerprint acquisition for existing files and directories.
 
 The target list is phased. `tools/list` advertises only fully implemented and proven tools, never disabled placeholders. `backlinks` and `path_between` remain absent until the numeric full-vault activation gate in the requirements passes.
+
+The mutation phase would add `stat`, `write`, `edit`, `move`, and `delete` together. It is currently blocked because macOS can enforce an absent destination atomically only on supporting volumes and cannot bind the complete expected source-version stamp to replace, move, or delete at the namespace commit point. `stat` remains a narrow read-only prerequisite for mutation-ready file and directory identity, not a general replacement for `resolve`, and is withheld by product choice while the integrated mutation contract is blocked. If the feasibility gate is resolved, the four mutation tools are advertised by default on the trusted personal connector with no separate server-side write gate. Their fingerprint, absence-precondition, patch, destructive-annotation, permanent-delete, and feasibility contracts live in `requirements/obsidian-mutation-tools.md`.
 
 Implemented and accepted core tools:
 

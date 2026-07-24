@@ -28,8 +28,8 @@ The chosen public namespace shape is the MCP server name, not dotted tool names.
   prepared/pending/accept/rollback state machine, transaction persistence,
   target replacement/recovery, and lock-held supervisor/source-update effects.
 - `internal/mcp/` — thin adapters around the official Go MCP SDK for server construction, transport selection, tool registration, and protocol response handling.
-- `internal/tools/obsidian/` — Obsidian tool handlers, schemas, and ownership of Obsidian-specific note/reference semantics; implementation planning may split internal child packages without moving those semantics into `fsx`.
-- `internal/fsx/` — root-confined filesystem adapter for vault traversal, path normalization, bounded reads, and search helpers.
+- `internal/tools/obsidian/` — Obsidian tool handlers, schemas, public fingerprint/precondition/patch semantics, annotations, and ownership of Obsidian-specific note/reference semantics; implementation planning may split internal child packages without moving those semantics into `fsx`.
+- `internal/fsx/` — root-confined filesystem adapter for vault traversal, path normalization, bounded reads, search helpers, raw file/directory identity, and only those future vault-bound effects whose preconditions the platform can enforce atomically.
 - `internal/limits/` — shared resource budgets for protocol payloads, telemetry summaries, path inputs, and tool operation timeouts.
 - `internal/config/` — local config loading without secrets in repo.
 - `internal/audit/` — metadata-only SQLite/JSONL access logs and operational events.
@@ -61,8 +61,8 @@ Rules:
 
 The expanded read and graph tools share identity, bounded I/O, continuation, coverage, response budgeting, and telemetry behavior. They must reuse one ownership split rather than reimplementing these concerns per tool:
 
-- `internal/fsx` owns stored-spelling/NFC canonical vault-path identity, root confinement, safe generic file opens/reads/walks, cancellation checks, and generic files/bytes work accounting.
-- `internal/tools/obsidian` owns selectors, Markdown/reference semantics, catalog and graph meaning, cursor payloads and query binding, source-fingerprint interpretation, completeness claims, deterministic continuation order, and structured response-byte budgeting. Child packages may separate pure parsing or cursor logic, but ownership remains in the Obsidian domain.
+- `internal/fsx` owns stored-spelling/NFC canonical vault-path identity, root confinement, safe generic file opens/reads/walks, raw file/directory identity and fingerprint derivation/comparison, any future vault-bound commit primitive whose preconditions the platform can enforce atomically, temporary-effect cleanup, cancellation checks, and generic files/bytes work accounting. It does not define a model-visible mutation vocabulary or generic host mutation surface. On a supporting volume the current macOS API can enforce absent-destination no-replace; it cannot compare the complete expected source-version stamp while replacing, moving, or removing an existing name. `fsx` must fail closed on unsupported-volume capability and must not disguise check-then-rename or advisory locking as the stronger primitive.
+- `internal/tools/obsidian` owns selectors, Markdown/reference semantics, catalog and graph meaning, cursor payloads and query binding, public fingerprint encoding and validation, fingerprint/absence precondition variants, structured patch validation, mutation result/error meaning, annotations, completeness claims, deterministic continuation order, and structured response-byte budgeting. Child packages may separate pure parsing or cursor logic, but ownership remains in the Obsidian domain.
 - `internal/limits` owns only budgets that are genuinely shared across the process or transport. Public limits specific to one Obsidian tool remain part of the Obsidian domain contract.
 - Each Obsidian tool descriptor is the single authority for its public name, SDK schema/handler, annotations, and safe argument/result summarizers. The app composes activated descriptor groups and derives both SDK registration and telemetry's known-tool set from that same collection; separate tool-name, registration, or summarizer registries are forbidden.
 - `internal/mcp` owns only the generic descriptor/telemetry-summary handoff contract. MCP middleware must not infer every Obsidian schema itself or import the Obsidian package.
@@ -72,7 +72,7 @@ The expanded read and graph tools share identity, bounded I/O, continuation, cov
 
 ## State Ownership
 
-The Obsidian vault remains the source of truth for notes and files. This gateway is a read model and transport adapter, not an authority for vault state.
+The Obsidian vault remains the source of truth for notes and files. This gateway is a transport and explicitly scoped mutation adapter, not a shadow authority for vault state.
 
 Tool calls should be stateless:
 
@@ -124,7 +124,7 @@ clear-only, lock-held administrative effects. The adapters that invoke
 
 ## Intentionally Not Generalized Yet
 
-- No generic filesystem mutation surface: mutation behavior is restricted to the named Obsidian operations defined by `requirements/obsidian-mutation-tools.md`.
+- No generic filesystem metadata or mutation surface: mutation-ready `stat` and mutation behavior are restricted to the named Obsidian operations defined by `requirements/obsidian-mutation-tools.md`.
 - No generic file-serving surface: native document delivery is restricted to the activation-gated behavior in `requirements/obsidian-document-reading.md`.
 - No generic filesystem, shell, or HTTP proxy server.
 - No background indexer until full-vault scan and graph proof shows a need.
