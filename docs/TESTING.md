@@ -18,7 +18,9 @@ Proof must match the claim. This repo handles personal data, so green unit tests
 | --- | --- | --- |
 | MCP tool registration and schemas | Boundary tests around `internal/mcp` and server/tool registration | Adding or changing tools |
 | Vault path confinement | Filesystem adapter tests with temp fixture vaults, traversal cases, symlink escapes, and denied file patterns | Any filesystem behavior changes |
-| Read-only guarantee | Integration test with before/after fixture-vault snapshot | Any Obsidian tool change |
+| Tool authority and vault non-target isolation | Integration snapshots proving the original five tools and mutation-scoped `stat` remain read-only, while each mutation changes only its explicit allowed target | Any Obsidian tool change |
+| Mutation preconditions and atomicity | Vault-boundary race tests for opaque source fingerprints, explicit absence, collision-safe no-replace, whole-patch validation, prior-or-final visibility, and no automatic replay of uncertain outcomes | Adding or changing mutation behavior |
+| Mutation interruption and cleanup | Production-boundary subprocess checkpoints for cancellation, timeout, injected I/O failure, hostile external replacement, SIGKILL, temporary-file cleanup, descriptor recovery, and no shadow/undo state | Adding or changing mutation behavior |
 | Search and listing limits | Large fixture tests with timeout, depth, byte, result, cancellation, oversized-literal streaming, bounded-evidence, and regex-line-cap assertions | Any traversal or search change |
 | Structured telemetry | SQLite and JSONL proof matrix covering event families, sanitized identifiers, sink degradation, and no raw path leaks | Any audit or tool-call behavior change |
 | Local release transaction lifecycle | Executable state/event matrix plus process tests for locking, crash-boundary reconciliation, exact-hash accept/rollback, first-install unload, recovery-artifact retention, and installed-service pending-to-terminal journeys | Any change to release, update, rollback, acceptance, or supervised-runtime activation behavior |
@@ -54,6 +56,18 @@ treated as accepted:
 
 - config validation and loopback bind rejection tests;
 - root-confined filesystem adapter tests for traversal, absolute paths, hidden entries, symlink traversal, limits, cancellation, and read-only behavior;
+- mutation adapter tests proving `stat` fingerprints allowed regular files and
+  directories without exposing filesystem identity; create and destination
+  absence cannot collide; stale source fingerprints cannot replace, patch,
+  move, or delete a newer source; multi-replacement patches validate every
+  unique non-overlapping match before effect; and rejected calls preserve both
+  the target and every non-target path;
+- process-boundary mutation tests at the production commit points proving
+  collision-safe no-replace behavior under hostile external name replacement,
+  complete prior-or-final visibility under cancellation, timeout, injected I/O
+  failure, and SIGKILL, no content-bearing temporary residue, exact descriptor
+  recovery, permanent-delete truthfulness, and no automatic retry after an
+  uncertain post-commit result;
 - grep boundary tests proving literal mode searches complete oversized physical
   lines while returning explicit bounded UTF-8 evidence, continues to account
   for byte budgets and invalid UTF-8 beyond the excerpt, and leaves regex mode's
@@ -103,8 +117,9 @@ applicable. A valid proof pass includes:
 - the repo-owned stdio message limit using a raw oversized subprocess frame;
 - post-start telemetry sink degradation using fake sink and real temp-SQLite
   failure paths, plus CLI close-failure stderr/exit proof;
-- no raw vault root, host path, note path, note content, tunnel credential, or
-  token material in JSONL text, SQLite indexed columns, or SQLite `body_json`.
+- no raw vault root, host path, note path, destination name, note or attachment
+  content, mutation fingerprint, tunnel credential, host identity, or token
+  material in JSONL text, SQLite indexed columns, or SQLite `body_json`.
 
 Local SDK and HTTP tests prove only the server side. They do not prove
 model-driven Codex behavior or ChatGPT connector behavior through OpenAI Secure
@@ -126,6 +141,63 @@ GOCACHE=$(pwd)/.gocache go test -count=1 ./cmd/gateway-smoke -run '^TestPhase2Re
 The resource proof must observe overlapping request-local pools above one
 eight-worker ceiling, bounded active and reserved work, cancellation isolation,
 immediate FD/vault quiescence, and a successful same-session follow-up.
+
+## Mutation Phase Proof Contract
+
+This section is the acceptance bar for a future mutation implementation, not a
+claim that the platform feasibility gate has passed. The current macOS API has
+no existing-name full-source-version compare-and-change namespace primitive, so
+issue #3 must not enter implementation or mutation-delta release proof until
+`requirements/obsidian-mutation-tools.md` records a newly approved enforceable
+authority boundary. A final-state-only check, advisory lock, or
+revalidate-then-rename implementation cannot satisfy these cells.
+
+Issue #3 adds an exact five-tool mutation delta to the accepted server:
+read-only mutation-scoped `stat`, plus `write`, `edit`, `move`, and `delete`.
+The current accepted baseline is the five read-only tools `grep`, `ls`, `read`,
+`read_many`, and `resolve`, but independently accepted graph tools may expand
+that baseline before mutation is unblocked. The then-current functional,
+performance, resource, release-fake, and report-set contracts remain evidence
+for that accepted baseline only. They must be deliberately versioned or
+replaced before a mutation candidate can pass; adding handler unit tests while
+retaining a release grammar that omits the five-tool delta is failed proof.
+
+The mutation merge and release candidate must prove all of the following:
+
+- `tools/list`, backend-ready telemetry, descriptor grammar, and annotations
+  agree on the then-current accepted baseline plus exactly the five mutation
+  tools. Every previously accepted tool and `stat` retains its declared
+  read-only/destructive truth; `write`, `edit`, `move`, and `delete` are not
+  read-only and are destructive, including `move` because it removes the source
+  path.
+- SDK stdio and Streamable HTTP calls cover `stat` for a regular file and empty
+  directory plus create, complete replacement, structured multi-replacement
+  patch, move, and permanent delete. Follow-on `stat` and `resolve` observe the
+  canonical committed state.
+- Negative calls cover stale fingerprints, create and destination collisions,
+  missing or ambiguous patch matches, overlapping or mixed-encoding patches,
+  denied paths and kinds, non-empty directory deletion, size limits,
+  cancellation, timeout, I/O failure, same-inode in-place source changes,
+  directory-membership changes, and hostile name races without mutating the
+  target or non-target fixture state.
+- Exact-candidate functional reports retain operation outcomes and bounded safe
+  counts without path, destination, content, patch value, fingerprint, cursor,
+  or host identity. Performance and resource reports retain the accepted
+  read-only workloads and add repeated representative mutation cycles that
+  recover temporary files and descriptors exactly, remain within the existing
+  heap/RSS/FD/CPU thresholds, retain no mutation state, and show no continuing
+  resource or vault-activity growth after quiescence.
+- Release fake reports and cross-report validation use the same accepted
+  baseline plus five-tool mutation delta. A report that omits the mutation
+  delta cannot satisfy the mutation candidate gate.
+
+Platform-specific atomicity proof must name the actual macOS commit primitives
+and checkpoints used by the implementation. A check-then-rename helper test is
+insufficient: proof must exercise external replacement at the final effect
+boundary and subprocess interruption before and after commit. A post-commit
+failure may report an uncertain outcome, but it must never expose partial bytes,
+silently overwrite a collision, leave content-bearing residue, or trigger an
+automatic replay.
 
 ## Test Data Rules
 
@@ -179,6 +251,27 @@ The release proof contract is split into three current-state cells:
    candidate hash remains installed, ready, and the transaction returns to
    `clear`. Later graph phases replace this prerequisite journey with their own
    newly activated representative calls.
+
+For the mutation release, replace cell 3's five-tool journey with an explicitly
+safe disposable-target journey. Authenticated refresh must show the accepted
+baseline plus exactly the five mutation tools with the annotations above. A
+fresh model run must perform `stat` on an
+allowed disposable file or directory as needed, then one complete
+`write(create)` -> `stat` -> structured multi-replacement `edit` -> `move` ->
+permanent `delete` journey on a single disposable allowed target. Sanitized
+JSONL and SQLite readback must show the corresponding operation kinds and
+outcomes without retaining the target, destination, content, patch values, or
+fingerprints. Only after that journey may exact-ID acceptance return the release
+to `clear`. Any failure requires exact rollback, authenticated metadata refresh
+to the prior schema, and a successful prior-contract call before the attempt is
+closed; local SDK success alone never authorizes acceptance.
+
+The installed-service step above is a real mutation of Eric's personal vault.
+Even though the target must be newly created, disposable, and allowed, the
+operator must obtain Eric's explicit authenticated approval immediately before
+running that live journey. Issue scope and a passing local candidate authorize
+implementation and preparation; they do not authorize the permanent-delete
+call against the installed personal-vault connector.
 
 Record sanitized release identity and hash prefixes, the authenticated surface,
 metadata observation, selected tool/journey, and terminal outcome. Do not record
@@ -350,7 +443,8 @@ global MCP config is modified. A valid temp-profile setup must prove:
 
 - `codex mcp list --json` shows the gateway as an enabled stdio MCP server;
 - `codex mcp get <name>` shows the expected repo-local command and synthetic fixture vault;
-- a non-interactive Codex run can discover the exact five-tool surface and call representative current tools from the configured `obsidian` MCP server;
+- a non-interactive Codex run can discover the exact accepted tool surface and
+  call representative current tools from the configured `obsidian` MCP server;
 - the configured temp SQLite telemetry database contains corresponding `tool.call` rows.
 
 If the non-interactive Codex run requires an external model call and that call is

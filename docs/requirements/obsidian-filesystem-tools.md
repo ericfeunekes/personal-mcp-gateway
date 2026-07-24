@@ -14,7 +14,7 @@ covers:
 
 An agent can efficiently discover relevant notes, read only the needed portions, follow authored Obsidian references with provenance, and batch explicit reads without hidden state or unbounded vault work. Every result is directly composable into the next call. Every partial search or traversal result says whether the returned results and the declared search scope are complete. Representative real-vault workflows meet explicit latency, scan-work, response-size, and idle-impact targets.
 
-The gateway remains a read-only adapter. The Obsidian vault is the source of truth.
+The surface governed by this requirement remains read-only. The Obsidian vault is the source of truth. A separately governed mutation phase may add mutation-scoped metadata and effects only after `obsidian-mutation-tools.md` passes its feasibility and activation gates.
 
 ## Why The Surface Changes
 
@@ -24,7 +24,7 @@ The current accepted server implements `resolve`, shallow `ls`, bounded `read`, 
 - graph-sparse corpora need bounded `read_many` after discovery;
 - authored evidence chains benefit strongly from outbound links and traversal, while inbound expansion is useful but substantially broader and more expensive.
 
-`search` is therefore removed in favor of `grep`. `stat` is removed because `resolve` already owns existence, type, size, and modified-time metadata. One ambiguous `graph_search` tool is rejected in favor of explicit composable graph operations.
+`search` is therefore removed in favor of `grep`. A general retrieval `stat` is removed because `resolve` already owns existence, type, size, and modified-time metadata; this does not preclude a separately governed mutation-scoped fingerprint tool. One ambiguous `graph_search` tool is rejected in favor of explicit composable graph operations.
 
 ## User-Owned Decisions
 
