@@ -21,7 +21,7 @@ The support target is the current official OpenAI accepted-file list at https://
 
 `obsidian` adds a named document-reading capability distinct from Markdown `read`, `read_many`, and `grep`. It accepts one explicit vault-relative file path plus a bounded request shape and returns unaltered original bytes with an accurate media type through an MCP result form ChatGPT can consume natively. Markdown source-unit selection, graph links, and `grep` remain Markdown-specific.
 
-The actual tool name and MCP content representation are activation-gated: local-SDK and authenticated ChatGPT-through-tunnel proof must establish that the SDK, tunnel, and client carry the original as a native file. A URL, local path, base64 text, or extraction is not equivalent evidence unless the live client demonstrably uses it as the original document.
+The actual tool name and MCP content representation are activation-gated: local-SDK and authenticated ChatGPT-through-tunnel proof must establish that the SDK, tunnel, and client carry the original as a native file. ChatGPT's built-in one-time consent to materialize a connector-returned file is an acceptable native security boundary; manual download, upload, or reattachment by the operator is not. A URL, local path, base64 text, or extraction is not equivalent evidence unless the live client demonstrably uses it as the original document.
 
 ## Required Behavior
 
@@ -62,10 +62,10 @@ Google Docs/Sheets/Slides identifiers are not vault files and are excluded. Appl
 
 ## Decision Record
 
-Eric chose native ChatGPT handling of the original document over normalized text. Native artifact delivery is therefore non-negotiable and the transport representation is a feasibility gate, not an implementation assumption. The full current OpenAI accepted-file surface is the target where it has a safe local vault representation; unproven forms remain visibly unsupported.
+Eric chose native ChatGPT handling of the original document over normalized text. Native artifact delivery is therefore non-negotiable and the transport representation is a feasibility gate, not an implementation assumption. On 2026-07-24, Eric accepted ChatGPT's built-in one-time file-materialization consent as part of the native experience because the model consumes the connector-returned artifact without an operator download, upload, or reattachment step. The full current OpenAI accepted-file surface is the target where it has a safe local vault representation; unproven forms remain visibly unsupported.
 
 ## Progressive Disclosure And Route
 
 Read `docs/ARCHITECTURE.md`, `docs/obsidian.md`, `docs/TESTING.md`, OpenAI's accepted-file guidance, the Markdown handlers, `internal/fsx/`, and `docs/runbooks/openai-tunnel.md` before planning.
 
-The native-transfer mechanism is an empirical feasibility boundary and the format matrix is broader than one delivery loop. Issue #4 remains in Backlog pending `scoping:phase-planning`, a transfer spike, and explicit business Priority.
+The native-transfer mechanism passed its feasibility boundary for PDF with the accepted one-time materialization consent. The format matrix is broader than one delivery loop, so issue #4 remains in Backlog pending `scoping:phase-planning` and explicit business Priority.

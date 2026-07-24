@@ -1,6 +1,6 @@
 ---
 title: "Issue 4 Native Document Transfer Spike"
-status: completed-decision-required
+status: accepted-return-to-phase-planning
 issue: 4
 ---
 
@@ -158,3 +158,13 @@ built-in one-time materialization consent as the intended native experience and
 return to whole-design phase planning, or treat that extra consent as an
 upstream client limitation. The temporary probe must not be accepted or reused
 as the product implementation.
+
+## Product decision on 2026-07-24
+
+Eric accepted ChatGPT's built-in one-time file-materialization consent as a
+reasonable native security boundary. The accepted experience still forbids any
+operator download, upload, or reattachment step. With that interaction decision
+settled, the observed authenticated model interpretation closes the transport
+feasibility boundary and issue #4 returns to whole-design phase planning. The
+earlier proof-protocol deviations remain recorded above and are not rewritten as
+a strict pass of that frozen experiment.
