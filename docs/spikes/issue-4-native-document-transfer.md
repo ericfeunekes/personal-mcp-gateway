@@ -1,6 +1,6 @@
 ---
 title: "Issue 4 Native Document Transfer Spike"
-status: accepted-return-to-phase-planning
+status: embedded-near-ceiling-no-go
 issue: 4
 ---
 
@@ -168,3 +168,37 @@ settled, the observed authenticated model interpretation closes the transport
 feasibility boundary and issue #4 returns to whole-design phase planning. The
 earlier proof-protocol deviations remain recorded above and are not rewritten as
 a strict pass of that frozen experiment.
+
+## Near-ceiling embedded-resource outcome on 2026-07-24
+
+Eric selected the current OpenAI below-50-MB per-file ceiling as the product
+target. A separately challenged local capacity spike therefore generated and
+validated an exact 49,999,999-byte two-page PDF whose nonce and unlabeled visual
+evidence were physically within the final 761 bytes. The frozen candidate was
+commit `d9ff21c17c7d6ace0c723bac35e928cedfea47e2`, binary SHA-256
+`7d4843d67d4854bc9a81f90a1d8d8d933577d1b85a4a1e48546ac4f31c64cdc0`,
+and fixture SHA-256
+`935d656fc945ea0c002af42af4ae62edfbf48f22aeb03872c7a4b51fe6beb69d`.
+`pdfinfo`, page-specific `pdftotext`, and a rendered final-page geometry check
+all passed before measurement.
+
+The one exact SDK call transferred all 49,999,999 raw bytes unchanged in one
+66,666,915-byte JSON-RPC response frame and returned in 1.167 seconds. The
+ordinary structured result remained 52 bytes. File descriptors, activity
+quiescence, the same-session follow-up, retained heap, and the exact two-call
+60-second idle gate all passed.
+
+The embedded path failed the existing minimal-machine-impact limits. Gateway
+lifetime high-water RSS rose 384,262,144 bytes above the aligned baseline,
+against a 64 MiB limit. RSS remained about 384.2 MB above baseline at the
+immediate, five-second, and 30-second post-call checkpoints, against the 8 MiB
+retained-RSS limit, even after acknowledged blocking GC. Retained Go heap grew
+only 37,592 bytes, and RSS later fell below the original baseline during the
+60-second idle window; this does not erase either measured breach.
+
+Under the predeclared stop rule, the near-ceiling embedded-resource path is a
+local no-go. No canonical release, connector activation, metadata refresh, or
+authenticated ChatGPT attempt ran. This result does not reject a resource-link
+or native-hosted delivery mechanism that streams from bounded backing storage;
+that alternative remains an empirical design gate before the 50 MB product
+target can be phased.

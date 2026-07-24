@@ -29,6 +29,7 @@ The MCP content representation remains activation-gated: local-SDK and authentic
 - Original bytes are unchanged. Returned media type comes from a bounded allowlist and validated file evidence; extension alone cannot make a trusted type claim.
 - Malformed, unsupported, ambiguous, oversized, changed, or disallowed sources return a structured sanitized error and no partial or mislabelled artifact.
 - Native transfer has a documented bound. The 64 KiB structured-result cap still governs metadata/text, but cannot truncate a document while calling the output native delivery.
+- The current below-50-MB product target cannot use one atomic embedded-resource result: the exact 49,999,999-byte local SDK call breached both peak and 30-second retained-RSS limits. A resource-link or native-hosted mechanism must prove bounded backing-store lifecycle, byte identity, cleanup, tunnel/client consumption, and the same native ChatGPT experience before that size target is advertised.
 - A format becomes advertised only after representative fixture and authenticated ChatGPT model-journey proof show native interpretation through the installed tunnel. Revalidate when the upstream accepted-file contract or transfer mechanism changes.
 - Telemetry retains only safe format class, outcome, latency, and bounded byte counts—never bytes, paths, names, extracted content, or opaque identities.
 
@@ -62,10 +63,10 @@ Google Docs/Sheets/Slides identifiers are not vault files and are excluded. Appl
 
 ## Decision Record
 
-Eric chose native ChatGPT handling of the original document over normalized text. Native artifact delivery is therefore non-negotiable and the transport representation is a feasibility gate, not an implementation assumption. On 2026-07-24, Eric accepted ChatGPT's built-in one-time file-materialization consent as part of the native experience because the model consumes the connector-returned artifact without an operator download, upload, or reattachment step, and selected `read_document` as the stable public tool name. The full current OpenAI accepted-file surface is the target where it has a safe local vault representation; unproven forms remain visibly unsupported.
+Eric chose native ChatGPT handling of the original document over normalized text. Native artifact delivery is therefore non-negotiable and the transport representation is a feasibility gate, not an implementation assumption. On 2026-07-24, Eric accepted ChatGPT's built-in one-time file-materialization consent as part of the native experience because the model consumes the connector-returned artifact without an operator download, upload, or reattachment step, selected `read_document` as the stable public tool name, and selected the current OpenAI below-50-MB ceiling as the product size target. The full current OpenAI accepted-file surface is the target where it has a safe local vault representation; unproven forms remain visibly unsupported.
 
 ## Progressive Disclosure And Route
 
 Read `docs/ARCHITECTURE.md`, `docs/obsidian.md`, `docs/TESTING.md`, OpenAI's accepted-file guidance, the Markdown handlers, `internal/fsx/`, and `docs/runbooks/openai-tunnel.md` before planning.
 
-The native-transfer mechanism passed its feasibility boundary for PDF with the accepted one-time materialization consent. The format matrix is broader than one delivery loop, so issue #4 remains in Backlog pending `scoping:phase-planning` and explicit business Priority.
+Small embedded PDF delivery passed the authenticated interaction boundary with the accepted one-time materialization consent. The exact 49,999,999-byte embedded-resource path failed the local peak and retained-RSS gates, so the 50 MB product target remains transport-gated on resource-link or native-hosted delivery. Issue #4 remains in Backlog pending that empirical boundary, `scoping:phase-planning`, and explicit business Priority.
