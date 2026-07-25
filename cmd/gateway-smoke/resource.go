@@ -36,6 +36,9 @@ const (
 	resourceMeasuredCalls             = resourceBatchCount*resourceBatchCalls + resourceBoundaryCalls
 	resourceConcurrentWarmupCalls     = 1
 	resourceConcurrentProbeCalls      = 3
+	resourceMutationCycles            = 3
+	resourceMutationWarmupCycles      = 1
+	resourceMutationOperations        = 14
 	resourceHeapAllocGrowthLimitBytes = uint64(256 * 1024)
 	resourceRSSGrowthLimitBytes       = int64(8 * 1024 * 1024)
 	resourceRSSLimitBytes             = int64(64 * 1024 * 1024)
@@ -52,38 +55,42 @@ const (
 )
 
 const resourceConcurrentGrepContentBytes = resourceConcurrentGrepFileBytes + len("resource-concurrent-hit\n") + 1
+const resourceExpectedToolCallRows = resourceConcurrentWarmupCalls + (resourceMutationWarmupCycles+resourceMutationCycles)*resourceMutationOperations + resourceMeasuredCalls + resourceConcurrentProbeCalls
 
 type resourceReport struct {
-	ReportKind                         string                  `json:"report_kind"`
-	ReportSchema                       string                  `json:"report_schema"`
-	SchemaVersion                      int                     `json:"schema_version"`
-	Passed                             bool                    `json:"passed"`
-	CandidateCommit                    string                  `json:"candidate_commit"`
-	CandidateSHA256                    string                  `json:"candidate_sha256"`
-	DependencySHA256                   string                  `json:"dependency_sha256"`
-	ToolSurface                        toolSurface             `json:"tool_surface"`
-	DescriptorCount                    int                     `json:"descriptor_count"`
-	CandidateRuntime                   candidateRuntimeProfile `json:"candidate_runtime"`
-	Machine                            machineProfile          `json:"machine"`
-	Vault                              vaultAggregateProfile   `json:"vault"`
-	Fixture                            resourceVaultReport     `json:"fixture"`
-	Process                            candidateProcessProfile `json:"process"`
-	Workload                           resourceWorkloadReport  `json:"workload"`
-	Boundaries                         resourceBoundaryReport  `json:"boundaries"`
-	Cold                               coldResourceReport      `json:"cold"`
-	Baseline                           resourceBaselineReport  `json:"baseline"`
-	HighWaterRSSBytes                  int64                   `json:"high_water_rss_bytes"`
-	HighWaterRSSDeltaBytes             int64                   `json:"high_water_rss_delta_bytes"`
-	HighWaterWithinBound               bool                    `json:"high_water_within_bound"`
-	RetainedHeapAllocGrowthBytes       uint64                  `json:"retained_heap_alloc_growth_bytes"`
-	RetainedHeapAllocGrowthWithinBound bool                    `json:"retained_heap_alloc_growth_within_bound"`
-	RetainedRSSWindowGrowthBytes       int64                   `json:"retained_rss_window_growth_bytes"`
-	RetainedRSSWindowGrowthWithinBound bool                    `json:"retained_rss_window_growth_within_bound"`
-	GCAcknowledgementCount             int                     `json:"gc_acknowledgement_count"`
-	AllFDsRecovered                    bool                    `json:"all_fds_recovered"`
-	Batches                            []resourceBatchReport   `json:"batches"`
-	Idle                               idleResourceReport      `json:"idle"`
-	ConcurrentGrep                     concurrentGrepReport    `json:"concurrent_grep"`
+	ReportKind                         string                    `json:"report_kind"`
+	ReportSchema                       string                    `json:"report_schema"`
+	SchemaVersion                      int                       `json:"schema_version"`
+	Passed                             bool                      `json:"passed"`
+	CandidateCommit                    string                    `json:"candidate_commit"`
+	CandidateSHA256                    string                    `json:"candidate_sha256"`
+	DependencySHA256                   string                    `json:"dependency_sha256"`
+	ToolSurface                        toolSurface               `json:"tool_surface"`
+	DescriptorCount                    int                       `json:"descriptor_count"`
+	CandidateRuntime                   candidateRuntimeProfile   `json:"candidate_runtime"`
+	Machine                            machineProfile            `json:"machine"`
+	Vault                              vaultAggregateProfile     `json:"vault"`
+	Fixture                            resourceVaultReport       `json:"fixture"`
+	Process                            candidateProcessProfile   `json:"process"`
+	Workload                           resourceWorkloadReport    `json:"workload"`
+	Boundaries                         resourceBoundaryReport    `json:"boundaries"`
+	Cold                               coldResourceReport        `json:"cold"`
+	Baseline                           resourceBaselineReport    `json:"baseline"`
+	HighWaterRSSBytes                  int64                     `json:"high_water_rss_bytes"`
+	HighWaterRSSDeltaBytes             int64                     `json:"high_water_rss_delta_bytes"`
+	HighWaterWithinBound               bool                      `json:"high_water_within_bound"`
+	RetainedHeapAllocGrowthBytes       uint64                    `json:"retained_heap_alloc_growth_bytes"`
+	RetainedHeapAllocGrowthWithinBound bool                      `json:"retained_heap_alloc_growth_within_bound"`
+	RetainedRSSWindowGrowthBytes       int64                     `json:"retained_rss_window_growth_bytes"`
+	RetainedRSSWindowGrowthWithinBound bool                      `json:"retained_rss_window_growth_within_bound"`
+	GCAcknowledgementCount             int                       `json:"gc_acknowledgement_count"`
+	AllFDsRecovered                    bool                      `json:"all_fds_recovered"`
+	Batches                            []resourceBatchReport     `json:"batches"`
+	Idle                               idleResourceReport        `json:"idle"`
+	ConcurrentGrep                     concurrentGrepReport      `json:"concurrent_grep"`
+	MutationCycles                     int                       `json:"mutation_cycles"`
+	MutationOperations                 int                       `json:"mutation_operations"`
+	MutationEvidence                   syntheticMutationEvidence `json:"mutation_evidence"`
 }
 
 type resourceVaultReport struct {
@@ -920,24 +927,44 @@ func probeCandidateResources(ctx context.Context, gatewayBin, root string, optio
 	if _, err := operations[4].call(); err != nil {
 		return resourceReport{}, errors.New("candidate concurrent grep warm-up failed")
 	}
+	mutationWarmup := smokeReport{}
+	for cycle := 0; cycle < resourceMutationWarmupCycles; cycle++ {
+		if _, err := probeSyntheticMutation(ctx, longLived.process.session, fixture.root, &mutationWarmup); err != nil {
+			return resourceReport{}, errors.New("candidate resource mutation warm-up failed")
+		}
+	}
 	pid := longLived.process.command.Process.Pid
 	baseline, err := observeResourceBaseline(ctx, pid, options, sampler, longLived.control)
 	if err != nil {
 		return resourceReport{}, err
 	}
+	// Run mutation cycles after the stabilized baseline so final FD/RSS/heap and
+	// idle comparisons cannot absorb a retained helper, descriptor, or buffer.
+	mutationReport := smokeReport{}
+	for cycle := 0; cycle < resourceMutationCycles; cycle++ {
+		if _, err := probeSyntheticMutation(ctx, longLived.process.session, fixture.root, &mutationReport); err != nil {
+			return resourceReport{}, errors.New("candidate resource mutation cycle failed")
+		}
+	}
+	if mutationReport.ToolCalls.total() != resourceMutationCycles*resourceMutationOperations {
+		return resourceReport{}, errors.New("candidate resource mutation operation count drifted")
+	}
 	report := resourceReport{
-		ReportKind:       reportKindResource,
-		ReportSchema:     resourceReportSchema,
-		SchemaVersion:    resourceReportVersion,
-		ToolSurface:      options.ToolSurface,
-		DescriptorCount:  descriptorCount,
-		CandidateRuntime: runtimeProfile,
-		Machine:          machineProfile,
-		Vault:            vaultProfile,
-		Fixture:          fixture.generated,
-		Cold:             cold,
-		Baseline:         baseline,
-		Batches:          make([]resourceBatchReport, 0, resourceBatchCount),
+		ReportKind:         reportKindResource,
+		ReportSchema:       resourceReportSchema,
+		SchemaVersion:      resourceReportVersion,
+		ToolSurface:        options.ToolSurface,
+		DescriptorCount:    descriptorCount,
+		CandidateRuntime:   runtimeProfile,
+		Machine:            machineProfile,
+		Vault:              vaultProfile,
+		Fixture:            fixture.generated,
+		Cold:               cold,
+		Baseline:           baseline,
+		MutationCycles:     resourceMutationCycles,
+		MutationOperations: mutationReport.ToolCalls.total(),
+		MutationEvidence:   mutationReport.SyntheticMutation,
+		Batches:            make([]resourceBatchReport, 0, resourceBatchCount),
 	}
 	workload := newResourceWorkloadAccumulator()
 	for batchIndex := 0; batchIndex < resourceBatchCount; batchIndex++ {
@@ -1170,6 +1197,8 @@ func resourceReportPassesForSurface(report resourceReport, expectedColdProcesses
 		!vaultAggregateProfilePasses(report.Vault) || !candidateProcessProfilePasses(report.Process) ||
 		!validConcurrentGrep(report.ConcurrentGrep) ||
 		!report.Fixture.InventoryComplete || !report.Fixture.InventoryReconciled || report.Fixture.GeneratedMarkdownFiles <= 0 ||
+		report.MutationCycles != resourceMutationCycles || report.MutationOperations != resourceMutationCycles*resourceMutationOperations ||
+		!mutationEvidencePasses(report.MutationEvidence) ||
 		report.Fixture.GeneratedMarkdownFiles != report.Fixture.InventoryMarkdownFiles || report.Fixture.GeneratedBytes <= 0 ||
 		report.Fixture.GeneratedBytes != report.Fixture.InventoryBytes || !validResourceWorkload(report.Workload) ||
 		!validResourceBoundaries(report.Boundaries) ||
@@ -1814,7 +1843,7 @@ func observePostGCResources(ctx context.Context, pid int, options resourceProbeO
 }
 
 func observeResourceIdle(ctx context.Context, session *sdk.ClientSession, pid, descriptorCount, baselineFD int, dbPath string, options resourceProbeOptions, sampler resourceSampler, control *resourceControl) (idleResourceReport, error) {
-	return observeResourceIdleExpected(ctx, session, pid, descriptorCount, baselineFD, dbPath, options, sampler, control, resourceConcurrentWarmupCalls+resourceMeasuredCalls+resourceConcurrentProbeCalls)
+	return observeResourceIdleExpected(ctx, session, pid, descriptorCount, baselineFD, dbPath, options, sampler, control, resourceExpectedToolCallRows)
 }
 
 func observeResourceIdleExpected(ctx context.Context, session *sdk.ClientSession, pid, descriptorCount, baselineFD int, dbPath string, options resourceProbeOptions, sampler resourceSampler, control *resourceControl, expectedToolCallRows int) (idleResourceReport, error) {

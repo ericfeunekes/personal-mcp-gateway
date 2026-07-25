@@ -32,20 +32,26 @@ Tool calls should be stateless. They may accept path-like arguments and an expli
 
 ## Current Implementation
 
-The accepted Obsidian core-retrieval slice implements:
+The accepted Obsidian server implements the five-tool core-retrieval slice plus
+the five-tool mutation delta:
 
 - `resolve`
 - shallow `ls`
 - bounded single-note `read`
 - aggregate-budgeted `read_many`
 - deterministic content `grep`
+- mutation-scoped `stat`
+- complete-value `write`
+- structured exact-context `edit`
+- absent-destination `move`
+- permanent `delete`
 - stdio mode
 - loopback HTTP mode with `/mcp`, `/healthz`, and `/readyz`
 - SQLite-backed structured telemetry for MCP calls, HTTP requests, and gateway lifecycle events
 - local request, argument, path, telemetry-event, and tool-operation budgets
-- explicit MCP impact annotations that advertise all five tools as read-only,
-  non-destructive, and closed-world; the implementation and vault confinement
-  remain the enforcement boundary
+- explicit MCP impact annotations: the original five tools and `stat` are
+  read-only, while `write`, `edit`, `move`, and `delete` are destructive; all
+  ten tools are closed-world and the mutation delta is precondition-idempotent
 - `launchd` supervision with a measured idle footprint and automatic recovery
   after a forced tunnel-process exit
 

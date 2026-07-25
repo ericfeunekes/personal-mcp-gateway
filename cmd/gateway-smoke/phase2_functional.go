@@ -5,7 +5,7 @@ import (
 	"personal-mcp-gateway/internal/tools/obsidian"
 )
 
-const functionalReportSchema = "personal-mcp-gateway.functional.v3"
+const functionalReportSchema = "personal-mcp-gateway.functional.v4"
 
 type functionalToolCallCounts struct {
 	Resolve  int `json:"resolve"`
@@ -13,6 +13,11 @@ type functionalToolCallCounts struct {
 	Read     int `json:"read"`
 	ReadMany int `json:"read_many"`
 	Grep     int `json:"grep"`
+	Stat     int `json:"stat"`
+	Write    int `json:"write"`
+	Edit     int `json:"edit"`
+	Move     int `json:"move"`
+	Delete   int `json:"delete"`
 }
 
 func (c *functionalToolCallCounts) add(tool string) {
@@ -30,11 +35,21 @@ func (c *functionalToolCallCounts) add(tool string) {
 		c.ReadMany++
 	case obsidian.ToolGrep:
 		c.Grep++
+	case obsidian.ToolStat:
+		c.Stat++
+	case obsidian.ToolWrite:
+		c.Write++
+	case obsidian.ToolEdit:
+		c.Edit++
+	case obsidian.ToolMove:
+		c.Move++
+	case obsidian.ToolDelete:
+		c.Delete++
 	}
 }
 
 func (c functionalToolCallCounts) total() int {
-	return c.Resolve + c.LS + c.Read + c.ReadMany + c.Grep
+	return c.Resolve + c.LS + c.Read + c.ReadMany + c.Grep + c.Stat + c.Write + c.Edit + c.Move + c.Delete
 }
 
 func functionalCoverage(value any) obsidian.Coverage {
@@ -58,8 +73,11 @@ func functionalReportEvidencePasses(report smokeReport) bool {
 		vaultAggregateProfilePasses(report.CurrentVault) && vaultAggregateProfilePasses(report.SyntheticVault) &&
 		report.SyntheticVault.InventoryComplete && report.SyntheticVault.MarkdownFileCount == 3 && report.SyntheticVault.MarkdownByteCount > 0 &&
 		candidateProcessProfilePasses(report.CurrentProcess) && candidateProcessProfilePasses(report.SyntheticProcess) &&
-		report.ToolCalls.Resolve == 2 && report.ToolCalls.LS == 3 && report.ToolCalls.Read == 1 &&
+		report.ToolCalls.Resolve == 4 && report.ToolCalls.LS == 3 && report.ToolCalls.Read == 3 &&
 		report.ToolCalls.Grep == 1 && report.ToolCalls.ReadMany == report.SyntheticReadManyPages && report.ToolCalls.ReadMany >= 2 &&
+		report.ToolCalls.Stat == 8 && report.ToolCalls.Write == 10 && report.ToolCalls.Edit == 4 && report.ToolCalls.Move == 2 && report.ToolCalls.Delete == 2 &&
+		report.SyntheticEmptyDirectoryStat &&
+		mutationEvidencePasses(report.SyntheticMutation) && report.SyntheticHTTPMutation &&
 		report.SDKResultCount == report.ToolCalls.total() && report.MaxStructuredResultBytes > 0 &&
 		report.MaxStructuredResultBytes <= obsidian.MaxStructuredResultBytes &&
 		report.MaxClientLatencyMicroseconds >= 0 && report.MaxClientLatencyMicroseconds < limits.ToolOperationTimeout.Microseconds() &&
@@ -73,7 +91,14 @@ func functionalBehaviorPasses(report smokeReport) bool {
 		report.SyntheticNoDuplicates && report.SyntheticFullEquivalence &&
 		report.SyntheticReadSelected && report.SyntheticGrepMatchCount == 3 &&
 		report.SyntheticReadManyPages >= 2 && report.SyntheticReadManyContinued &&
-		report.SyntheticRetrievalEquivalent && report.SyntheticTelemetrySanitized &&
-		report.SDKResultCount >= 8 && report.MaxSDKResultBytes > 0 &&
+		report.SyntheticRetrievalEquivalent && report.SyntheticTelemetrySanitized && report.SyntheticEmptyDirectoryStat &&
+		mutationEvidencePasses(report.SyntheticMutation) && report.SyntheticHTTPMutation &&
+		report.SDKResultCount >= 39 && report.MaxSDKResultBytes > 0 &&
 		report.MaxSDKResultBytes <= obsidian.MaxSDKResultBytes
+}
+
+func mutationEvidencePasses(evidence syntheticMutationEvidence) bool {
+	return evidence.CreateAbsent && evidence.ReplaceFingerprint && evidence.MultiReplacement && evidence.MoveAbsent &&
+		evidence.DeletePermanent && evidence.FollowOnObserved && evidence.CollisionRefused && evidence.StaleRefused &&
+		evidence.PatchRefused && evidence.DeniedRefused && evidence.ResidueFree
 }

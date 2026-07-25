@@ -260,15 +260,22 @@ The mutation merge and release candidate must prove all of the following:
   directory plus create, complete replacement, structured multi-replacement
   patch, move, and permanent delete. Follow-on `stat` and `resolve` observe the
   canonical committed state.
-- Negative calls cover stale fingerprints, create and destination collisions,
-  missing or ambiguous patch matches, overlapping or mixed-encoding patches,
-  denied paths and kinds, non-empty directory deletion, size limits,
-  cancellation, timeout, I/O failure, same-inode in-place source changes,
-  directory-membership changes, and hostile name races injected before final
-  revalidation without mutating the target or non-target fixture state. A
-  separate checkpoint demonstrates and documents the accepted unprotected
-  interval after helper-owned final revalidation without asserting a no-effect
-  rejection.
+- The public SDK stdio and Streamable HTTP journeys retain representative
+  adapter proof for stale fingerprints, create collision, missing patch
+  context, and denied traversal, with a follow-on fingerprint proving no
+  effect. The deterministic adapter tests own ambiguous and overlapping
+  matches, mixed/non-canonical encodings, aggregate patch limits, and result
+  limits. The issue #6 `fsx` and helper suites remain the authoritative
+  production-boundary injection proof for destination collision, denied kinds,
+  non-empty directory deletion, cancellation, timeout, I/O failure,
+  same-inode in-place source changes, directory-membership changes, and hostile
+  name races before final revalidation. Those lower-boundary cases are not
+  redundantly replayed through every MCP transport; public schema, descriptor,
+  error-translation, and telemetry tests bind the adapter to that foundation.
+  Every refusal cell proves unchanged target and non-target fixture state. A
+  separate foundation checkpoint demonstrates and documents the accepted
+  unprotected interval after helper-owned final revalidation without asserting
+  a no-effect rejection.
 - Exact-candidate functional reports retain operation outcomes and bounded safe
   counts without path, destination, content, patch value, fingerprint, cursor,
   or host identity. Performance and resource reports retain the accepted
@@ -277,6 +284,11 @@ The mutation merge and release candidate must prove all of the following:
   heap/RSS/FD/CPU thresholds, retain no mutation authority or content-bearing
   residue, and show no continuing
   resource or vault-activity growth after quiescence.
+- Representative successful and refused mutations are persisted through the
+  real SQLite sink, then both indexed columns and independently decoded
+  `body_json` are checked for raw source paths, destination paths, content,
+  patch values, and fingerprints. The built stdio functional journey performs
+  the equivalent JSONL non-disclosure check.
 - Release fake reports and cross-report validation use the same accepted
   baseline plus five-tool mutation delta. A report that omits the mutation
   delta cannot satisfy the mutation candidate gate.
@@ -374,7 +386,34 @@ or private manifest fields. The installed drills establish a representative
 activation transaction, not power-loss durability, sleep/wake recovery,
 multi-day soak behavior, every prompt formulation, or future-vault performance.
 
-### Current accepted five-tool Phase 2 proof
+### Current local ten-tool mutation-candidate proof
+
+On 2026-07-25, `make test` passed the complete local candidate matrix for the
+five-tool retrieval baseline plus `stat`, `write`, structured `edit`, `move`,
+and permanent `delete`. The ordinary package set included the 71-second Darwin
+mutation-foundation suite; the built-gateway smoke suite passed in 34 seconds;
+and the release-script suite passed in 215 seconds.
+
+The exact-candidate functional v4 report runs a disposable create, stat,
+complete replacement, multi-replacement edit, move, readback, permanent delete,
+and final resolve journey through both stdio and Streamable HTTP on the built
+gateway executable. It also proves collision, stale-fingerprint, missing-patch-
+context, and denied-path refusals without changing any fixture content.
+Performance v6 and resource v8 each run three additional 14-call disposable
+mutation cycles, require 42 mutation operations, compare complete fixture name,
+kind, size, and content-digest snapshots for residue/non-target isolation,
+verify exact descriptor and telemetry quiescence, and retain only bounded counts
+and boolean outcomes. Cross-report
+and release-fake validation require the same ten-tool grammar and reject the
+prior five-tool report schemas. The current-vault performance and cold-start
+probes remain read-only.
+
+This is local connector-facing proof against generated disposable vaults. It is
+not an installed-service mutation, authenticated ChatGPT discovery, deployment,
+release acceptance, or personal-vault destructive journey. Those steps remain
+separately authorized release work under the mutation cell above.
+
+### Historical accepted five-tool Phase 2 proof
 
 On 2026-07-17, implementation commit `d74fcd3ba1b1`, installed candidate hash
 prefix `2de6c5f23082`, and release prefix `725425303f84` passed `make test`, the

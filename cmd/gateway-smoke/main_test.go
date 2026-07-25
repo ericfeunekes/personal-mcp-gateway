@@ -84,7 +84,8 @@ func TestRunReportJSONIsOneSanitizedAggregate(t *testing.T) {
 		!report.SyntheticSecondProgress || !report.SyntheticNoDuplicates ||
 		!report.SyntheticFullEquivalence || !report.SyntheticReadSelected || report.SyntheticGrepMatchCount != 3 ||
 		report.SyntheticReadManyPages < 2 || !report.SyntheticReadManyContinued || !report.SyntheticRetrievalEquivalent ||
-		!report.SyntheticTelemetrySanitized || report.SDKResultCount < 8 || report.MaxSDKResultBytes <= 0 ||
+		!report.SyntheticTelemetrySanitized || !report.SyntheticEmptyDirectoryStat || !mutationEvidencePasses(report.SyntheticMutation) ||
+		!report.SyntheticHTTPMutation || report.SDKResultCount < 39 || report.MaxSDKResultBytes <= 0 ||
 		!functionalBehaviorPasses(report) || !functionalReportEvidencePasses(report) {
 		t.Fatalf("report = %#v", report)
 	}
@@ -1263,11 +1264,13 @@ func passingResourceGateReport() resourceReport {
 	const baselineRSS = int64(16 * 1024 * 1024)
 	const baselineHeap = uint64(1024 * 1024)
 	report := resourceReport{
-		ReportKind:       reportKindResource,
-		ReportSchema:     resourceReportSchema,
-		SchemaVersion:    resourceReportVersion,
-		ToolSurface:      candidateToolSurface,
-		DescriptorCount:  candidateDescriptorCount,
+		ReportKind:      reportKindResource,
+		ReportSchema:    resourceReportSchema,
+		SchemaVersion:   resourceReportVersion,
+		ToolSurface:     candidateToolSurface,
+		DescriptorCount: candidateDescriptorCount,
+		MutationCycles:  resourceMutationCycles, MutationOperations: resourceMutationCycles * resourceMutationOperations,
+		MutationEvidence: syntheticMutationEvidence{CreateAbsent: true, ReplaceFingerprint: true, MultiReplacement: true, MoveAbsent: true, DeletePermanent: true, FollowOnObserved: true, CollisionRefused: true, StaleRefused: true, PatchRefused: true, DeniedRefused: true, ResidueFree: true},
 		Cold:             coldResourceReport{FreshProcessCount: 10, MaxSDKResultBytes: 1, MaxStructuredBytes: 1},
 		CandidateRuntime: candidateRuntimeProfile{GoVersion: "go1.26.1", GOOS: "darwin", GOARCH: "amd64"},
 		Machine:          machineProfile{LogicalCPUCount: 8, GOMAXPROCS: 8},
@@ -1333,9 +1336,9 @@ func passingResourceGateReport() resourceReport {
 			NoGrepActivity:            true,
 			DescriptorCountAfter:      candidateDescriptorCount,
 			DescriptorsUnchanged:      true,
-			ExpectedToolCallRows:      resourceConcurrentWarmupCalls + resourceMeasuredCalls + resourceConcurrentProbeCalls,
-			ToolCallRowsBefore:        resourceConcurrentWarmupCalls + resourceMeasuredCalls + resourceConcurrentProbeCalls,
-			ToolCallRowsAfter:         resourceConcurrentWarmupCalls + resourceMeasuredCalls + resourceConcurrentProbeCalls,
+			ExpectedToolCallRows:      resourceExpectedToolCallRows,
+			ToolCallRowsBefore:        resourceExpectedToolCallRows,
+			ToolCallRowsAfter:         resourceExpectedToolCallRows,
 		},
 	}
 	for index := range report.Batches {

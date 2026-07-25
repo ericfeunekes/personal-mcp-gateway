@@ -24,7 +24,7 @@ func exactToolGrammar(tools []*sdk.Tool, surface toolSurface) bool {
 	}
 	byName := make(map[string]*sdk.Tool, len(tools))
 	for _, tool := range tools {
-		if tool == nil || byName[tool.Name] != nil || !exactReadOnlyAnnotations(tool.Annotations) {
+		if tool == nil || byName[tool.Name] != nil || !exactToolAnnotations(tool.Name, tool.Annotations) {
 			return false
 		}
 		byName[tool.Name] = tool
@@ -33,7 +33,12 @@ func exactToolGrammar(tools []*sdk.Tool, surface toolSurface) bool {
 		byName[obsidian.ToolLS] == nil || byName[obsidian.ToolLS].Description != obsidian.LSDescription ||
 		byName[obsidian.ToolRead] == nil || byName[obsidian.ToolRead].Description != obsidian.ReadDescription ||
 		byName[obsidian.ToolReadMany] == nil || byName[obsidian.ToolReadMany].Description != obsidian.ReadManyDescription ||
-		byName[obsidian.ToolGrep] == nil || byName[obsidian.ToolGrep].Description != obsidian.GrepDescription {
+		byName[obsidian.ToolGrep] == nil || byName[obsidian.ToolGrep].Description != obsidian.GrepDescription ||
+		byName[obsidian.ToolStat] == nil || byName[obsidian.ToolStat].Description != obsidian.StatDescription ||
+		byName[obsidian.ToolWrite] == nil || byName[obsidian.ToolWrite].Description != obsidian.WriteDescription ||
+		byName[obsidian.ToolEdit] == nil || byName[obsidian.ToolEdit].Description != obsidian.EditDescription ||
+		byName[obsidian.ToolMove] == nil || byName[obsidian.ToolMove].Description != obsidian.MoveDescription ||
+		byName[obsidian.ToolDelete] == nil || byName[obsidian.ToolDelete].Description != obsidian.DeleteDescription {
 		return false
 	}
 	if surface == candidateToolSurface {
@@ -80,7 +85,7 @@ func exactToolGrammar(tools []*sdk.Tool, surface toolSurface) bool {
 		return false
 	}
 	grep, ok := normalizedSchema(byName[obsidian.ToolGrep].InputSchema)
-	return ok && closedObjectGrammar(grep,
+	if !ok || !(closedObjectGrammar(grep,
 		[]string{"base", "case_sensitive", "context_lines", "cursor", "limit", "max_bytes", "max_files", "path", "pattern", "regex"},
 		[]string{"pattern"}) &&
 		stringBounds(property(grep, "pattern"), 1, 4096) && property(grep, "path")["default"] == "." &&
@@ -88,12 +93,96 @@ func exactToolGrammar(tools []*sdk.Tool, surface toolSurface) bool {
 		integerGrammar(property(grep, "context_lines"), 1, 0, 3) &&
 		integerGrammar(property(grep, "limit"), 50, 1, 200) &&
 		integerGrammar(property(grep, "max_files"), 10_000, 1, 50_000) &&
-		integerGrammar(property(grep, "max_bytes"), 268_435_456, 1, 1_073_741_824)
+		integerGrammar(property(grep, "max_bytes"), 268_435_456, 1, 1_073_741_824)) {
+		return false
+	}
+	stat, ok := normalizedSchema(byName[obsidian.ToolStat].InputSchema)
+	if !ok || !closedObjectGrammar(stat, []string{"base", "path"}, []string{"path"}) {
+		return false
+	}
+	write, ok := normalizedSchema(byName[obsidian.ToolWrite].InputSchema)
+	if !ok || !closedObjectGrammar(write, []string{"base", "encoding", "path", "precondition", "value"}, []string{"encoding", "path", "precondition", "value"}) ||
+		!mutationEncodingGrammar(property(write, "encoding")) || !mutationPreconditionGrammar(property(write, "precondition"), true) {
+		return false
+	}
+	edit, ok := normalizedSchema(byName[obsidian.ToolEdit].InputSchema)
+	if !ok || !closedObjectGrammar(edit, []string{"base", "encoding", "fingerprint", "path", "replacements"}, []string{"encoding", "fingerprint", "path", "replacements"}) ||
+		!fingerprintGrammar(property(edit, "fingerprint")) || !mutationEncodingGrammar(property(edit, "encoding")) {
+		return false
+	}
+	replacements := property(edit, "replacements")
+	item, itemOK := replacements["items"].(map[string]any)
+	if replacements["type"] != "array" || number(replacements, "minItems") != 1 || number(replacements, "maxItems") != obsidian.MutationMaxReplacements ||
+		!itemOK || !closedObjectGrammar(item, []string{"new", "old"}, []string{"new", "old"}) || !stringBounds(property(item, "old"), 1, -1) {
+		return false
+	}
+	move, ok := normalizedSchema(byName[obsidian.ToolMove].InputSchema)
+	if !ok || !closedObjectGrammar(move, []string{"base", "destination", "destination_precondition", "fingerprint", "source"}, []string{"destination", "destination_precondition", "fingerprint", "source"}) ||
+		!fingerprintGrammar(property(move, "fingerprint")) || !mutationPreconditionGrammar(property(move, "destination_precondition"), false) {
+		return false
+	}
+	deleteInput, ok := normalizedSchema(byName[obsidian.ToolDelete].InputSchema)
+	return ok && closedObjectGrammar(deleteInput, []string{"base", "fingerprint", "path"}, []string{"fingerprint", "path"}) &&
+		fingerprintGrammar(property(deleteInput, "fingerprint"))
 }
 
-func exactReadOnlyAnnotations(annotations *sdk.ToolAnnotations) bool {
-	return annotations != nil && annotations.ReadOnlyHint && annotations.DestructiveHint != nil && !*annotations.DestructiveHint &&
-		annotations.OpenWorldHint != nil && !*annotations.OpenWorldHint
+func exactToolAnnotations(name string, annotations *sdk.ToolAnnotations) bool {
+	if annotations == nil || annotations.DestructiveHint == nil || annotations.OpenWorldHint == nil || *annotations.OpenWorldHint {
+		return false
+	}
+	switch name {
+	case obsidian.ToolResolve, obsidian.ToolLS, obsidian.ToolRead, obsidian.ToolReadMany, obsidian.ToolGrep, obsidian.ToolReadDocument:
+		return annotations.ReadOnlyHint && !*annotations.DestructiveHint && !annotations.IdempotentHint && annotations.Title == ""
+	case obsidian.ToolStat:
+		return annotations.ReadOnlyHint && !*annotations.DestructiveHint && annotations.IdempotentHint && annotations.Title == ""
+	case obsidian.ToolWrite, obsidian.ToolEdit, obsidian.ToolMove, obsidian.ToolDelete:
+		return !annotations.ReadOnlyHint && *annotations.DestructiveHint && annotations.IdempotentHint && annotations.Title == ""
+	default:
+		return false
+	}
+}
+
+func mutationEncodingGrammar(schema map[string]any) bool {
+	values, ok := stringSlice(schema["enum"])
+	return ok && schema["type"] == "string" && reflect.DeepEqual(values, []string{obsidian.MutationEncodingUTF8, obsidian.MutationEncodingBase64})
+}
+
+func fingerprintGrammar(schema map[string]any) bool {
+	return stringBounds(schema, 43, 43)
+}
+
+func mutationPreconditionGrammar(schema map[string]any, allowFingerprint bool) bool {
+	variants, ok := schema["oneOf"].([]any)
+	want := 1
+	if allowFingerprint {
+		want = 2
+	}
+	if !ok || len(variants) != want {
+		return false
+	}
+	seenAbsent, seenFingerprint := false, false
+	for _, raw := range variants {
+		variant, ok := raw.(map[string]any)
+		if !ok {
+			return false
+		}
+		kind, _ := property(variant, "kind")["const"].(string)
+		switch kind {
+		case obsidian.MutationPreconditionAbsent:
+			if seenAbsent || !closedObjectGrammar(variant, []string{"kind"}, []string{"kind"}) {
+				return false
+			}
+			seenAbsent = true
+		case obsidian.MutationPreconditionFingerprint:
+			if !allowFingerprint || seenFingerprint || !closedObjectGrammar(variant, []string{"fingerprint", "kind"}, []string{"fingerprint", "kind"}) || !fingerprintGrammar(property(variant, "fingerprint")) {
+				return false
+			}
+			seenFingerprint = true
+		default:
+			return false
+		}
+	}
+	return seenAbsent && (!allowFingerprint || seenFingerprint)
 }
 
 func normalizedSchema(value any) (map[string]any, bool) {

@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	performanceReportSchema    = "personal-mcp-gateway.performance.v4"
+	performanceReportSchema    = "personal-mcp-gateway.performance.v6"
 	phase2SyntheticFileCount   = 50
 	phase2SyntheticFileBytes   = 5_120
 	phase2SyntheticCorpusBytes = phase2SyntheticFileCount * phase2SyntheticFileBytes
@@ -24,6 +24,8 @@ const (
 	phase2BroadGrepBound       = 2 * time.Second
 	phase2PerformanceNeedle    = "phase2-candidate-performance-needle"
 	phase2BroadNegativeSamples = 5
+	phase2MutationCycles       = 3
+	phase2MutationOperations   = 14
 )
 
 type broadGrepObservation struct {
@@ -65,6 +67,9 @@ type phase2PerformanceEvidence struct {
 	syntheticCorpus     vaultAggregateProfile
 	syntheticRead       performanceMetrics
 	syntheticGrep       performanceMetrics
+	mutationCycles      int
+	mutationOperations  int
+	mutationEvidence    syntheticMutationEvidence
 	broadCurrentGrep    broadGrepObservation
 	broadNegativeGrep   broadNegativeObservation
 	syntheticProcess    candidateProcessProfile
@@ -90,7 +95,7 @@ func probePhase2Performance(ctx context.Context, gatewayBin, currentVaultRoot st
 	if err != nil {
 		return phase2PerformanceEvidence{}, err
 	}
-	syntheticCorpus, syntheticRead, syntheticGrep, syntheticProcess, err := probeSyntheticRetrievalPerformance(ctx, gatewayBin)
+	syntheticCorpus, syntheticRead, syntheticGrep, mutationCycles, mutationOperations, mutationEvidence, syntheticProcess, err := probeSyntheticRetrievalPerformance(ctx, gatewayBin)
 	if err != nil {
 		return phase2PerformanceEvidence{}, err
 	}
@@ -104,26 +109,26 @@ func probePhase2Performance(ctx context.Context, gatewayBin, currentVaultRoot st
 	}
 	return phase2PerformanceEvidence{
 		runtime: runtimeProfile, machine: machine, currentVault: currentVault, syntheticCorpus: syntheticCorpus,
-		syntheticRead: syntheticRead, syntheticGrep: syntheticGrep, broadCurrentGrep: broad, broadNegativeGrep: negative,
+		syntheticRead: syntheticRead, syntheticGrep: syntheticGrep, mutationCycles: mutationCycles, mutationOperations: mutationOperations, mutationEvidence: mutationEvidence, broadCurrentGrep: broad, broadNegativeGrep: negative,
 		syntheticProcess: syntheticProcess, currentVaultProcess: currentProcess,
 	}, nil
 }
 
-func probeSyntheticRetrievalPerformance(ctx context.Context, gatewayBin string) (vaultAggregateProfile, performanceMetrics, performanceMetrics, candidateProcessProfile, error) {
+func probeSyntheticRetrievalPerformance(ctx context.Context, gatewayBin string) (vaultAggregateProfile, performanceMetrics, performanceMetrics, int, int, syntheticMutationEvidence, candidateProcessProfile, error) {
 	fixture, err := newPhase2SyntheticFixture()
 	if err != nil {
-		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, candidateProcessProfile{}, err
+		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, 0, 0, syntheticMutationEvidence{}, candidateProcessProfile{}, err
 	}
 	defer os.RemoveAll(fixture.root)
 	profile, err := inspectVaultAggregate(ctx, fixture.root)
 	if err != nil || !profile.InventoryComplete || profile.MarkdownFileCount != phase2SyntheticFileCount || profile.MarkdownByteCount != phase2SyntheticCorpusBytes {
-		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, candidateProcessProfile{}, errors.New("phase 2 synthetic aggregate inventory failed")
+		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, 0, 0, syntheticMutationEvidence{}, candidateProcessProfile{}, errors.New("phase 2 synthetic aggregate inventory failed")
 	}
 
 	process, err := connectCandidateProcessHandle(ctx, exec.Command(gatewayBin,
 		"stdio", "--obsidian-root", fixture.root, "--telemetry", "off"), io.Discard)
 	if err != nil {
-		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, candidateProcessProfile{}, err
+		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, 0, 0, syntheticMutationEvidence{}, candidateProcessProfile{}, err
 	}
 	closed := false
 	defer func() {
@@ -132,11 +137,11 @@ func probeSyntheticRetrievalPerformance(ctx context.Context, gatewayBin string) 
 		}
 	}()
 	if count, err := requireExactToolList(ctx, process.session); err != nil || count != candidateDescriptorCount {
-		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, candidateProcessProfile{}, errors.New("phase 2 synthetic descriptor gate failed")
+		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, 0, 0, syntheticMutationEvidence{}, candidateProcessProfile{}, errors.New("phase 2 synthetic descriptor gate failed")
 	}
 	tracker, err := startCandidateProcessTracker(ctx, process, systemResourceSampler{})
 	if err != nil {
-		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, candidateProcessProfile{}, err
+		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, 0, 0, syntheticMutationEvidence{}, candidateProcessProfile{}, err
 	}
 
 	readOperation := func() (operationSample, error) {
@@ -167,35 +172,44 @@ func probeSyntheticRetrievalPerformance(ctx context.Context, gatewayBin string) 
 
 	for warmup := 0; warmup < performanceWarmups; warmup++ {
 		if _, err := readOperation(); err != nil {
-			return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, candidateProcessProfile{}, err
+			return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, 0, 0, syntheticMutationEvidence{}, candidateProcessProfile{}, err
 		}
 		if _, err := grepOperation(); err != nil {
-			return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, candidateProcessProfile{}, err
+			return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, 0, 0, syntheticMutationEvidence{}, candidateProcessProfile{}, err
 		}
 	}
 	if err := tracker.sample(ctx); err != nil {
-		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, candidateProcessProfile{}, err
+		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, 0, 0, syntheticMutationEvidence{}, candidateProcessProfile{}, err
 	}
 	readMetrics, err := collectPerformanceMetrics(readOperation, performanceSamples)
 	if err != nil || !phase2SyntheticReadMetricsPass(readMetrics) {
-		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, candidateProcessProfile{}, errors.New("phase 2 synthetic read performance gate failed")
+		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, 0, 0, syntheticMutationEvidence{}, candidateProcessProfile{}, errors.New("phase 2 synthetic read performance gate failed")
 	}
 	if err := tracker.sample(ctx); err != nil {
-		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, candidateProcessProfile{}, err
+		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, 0, 0, syntheticMutationEvidence{}, candidateProcessProfile{}, err
 	}
 	grepMetrics, err := collectPerformanceMetrics(grepOperation, performanceSamples)
 	if err != nil || !phase2SyntheticGrepMetricsPass(grepMetrics) {
-		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, candidateProcessProfile{}, errors.New("phase 2 synthetic grep performance gate failed")
+		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, 0, 0, syntheticMutationEvidence{}, candidateProcessProfile{}, errors.New("phase 2 synthetic grep performance gate failed")
+	}
+	cycleReport := smokeReport{}
+	for cycle := 0; cycle < phase2MutationCycles; cycle++ {
+		if _, err := probeSyntheticMutation(ctx, process.session, fixture.root, &cycleReport); err != nil {
+			return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, 0, 0, syntheticMutationEvidence{}, candidateProcessProfile{}, errors.New("phase 2 synthetic mutation cycle failed")
+		}
+	}
+	if cycleReport.ToolCalls.total() != phase2MutationCycles*phase2MutationOperations {
+		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, 0, 0, syntheticMutationEvidence{}, candidateProcessProfile{}, errors.New("phase 2 synthetic mutation operation count drifted")
 	}
 	if err := tracker.sample(ctx); err != nil {
-		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, candidateProcessProfile{}, err
+		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, 0, 0, syntheticMutationEvidence{}, candidateProcessProfile{}, err
 	}
 	processProfile, err := tracker.finish(ctx, process)
 	if err != nil {
-		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, candidateProcessProfile{}, err
+		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, 0, 0, syntheticMutationEvidence{}, candidateProcessProfile{}, err
 	}
 	closed = true
-	return profile, readMetrics, grepMetrics, processProfile, nil
+	return profile, readMetrics, grepMetrics, phase2MutationCycles, cycleReport.ToolCalls.total(), cycleReport.SyntheticMutation, processProfile, nil
 }
 
 func probeBroadCurrentVaultGrep(ctx context.Context, gatewayBin, root string, inventory vaultAggregateProfile) (broadGrepObservation, candidateProcessProfile, error) {
@@ -407,6 +421,8 @@ func phase2PerformanceEvidencePasses(report performanceReport) bool {
 		report.SyntheticCorpus.InventoryComplete != true || report.SyntheticCorpus.MarkdownFileCount != phase2SyntheticFileCount ||
 		report.SyntheticCorpus.MarkdownByteCount != phase2SyntheticCorpusBytes ||
 		!phase2SyntheticReadMetricsPass(report.SyntheticRead) || !phase2SyntheticGrepMetricsPass(report.SyntheticGrep) ||
+		report.MutationCycles != phase2MutationCycles || report.MutationOperations != phase2MutationCycles*phase2MutationOperations ||
+		!mutationEvidencePasses(report.MutationEvidence) ||
 		!broadGrepObservationPasses(report.BroadCurrentGrep, report.CurrentVault) ||
 		!broadNegativeObservationPasses(report.BroadNegativeGrep, report.CurrentVault) {
 		return false

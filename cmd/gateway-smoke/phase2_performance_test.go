@@ -215,6 +215,8 @@ func passingPhase2PerformanceReportShape() performanceReport {
 		CurrentVault:     vaultAggregateProfile{InventoryPolicy: markdownInventoryPolicy, InventoryComplete: true, StoppedBy: "scope", MarkdownFileCount: 1, MarkdownByteCount: 1},
 		SyntheticCorpus:  vaultAggregateProfile{InventoryPolicy: markdownInventoryPolicy, InventoryComplete: true, StoppedBy: "scope", MarkdownFileCount: phase2SyntheticFileCount, MarkdownByteCount: phase2SyntheticCorpusBytes},
 		SyntheticRead:    metric(1, phase2SyntheticFileBytes, 1), SyntheticGrep: metric(phase2SyntheticFileCount, phase2SyntheticCorpusBytes, 1),
+		MutationCycles: phase2MutationCycles, MutationOperations: phase2MutationCycles * phase2MutationOperations,
+		MutationEvidence: syntheticMutationEvidence{CreateAbsent: true, ReplaceFingerprint: true, MultiReplacement: true, MoveAbsent: true, DeletePermanent: true, FollowOnObserved: true, CollisionRefused: true, StaleRefused: true, PatchRefused: true, DeniedRefused: true, ResidueFree: true},
 		BroadCurrentGrep: broadGrepObservation{LatencyMicroseconds: 1, SDKResultBytes: 1, StructuredBytes: 1, MatchCount: 1,
 			FilesScanned: 1, BytesScanned: 1, Continuation: "complete", StoppedBy: "scope", UsefulMatch: true,
 			CompletenessClaimed: true, CompletenessReconciled: true, UnderTwoSecondBound: true},

@@ -19,7 +19,7 @@ import (
 func TestExactCandidateToolGrammarRejectsAgentVisibleDrift(t *testing.T) {
 	tools := listedCandidateTools(t)
 	if !exactCandidateToolGrammar(tools) {
-		t.Fatal("exact temporary six-tool probe grammar was rejected")
+		t.Fatal("exact eleven-tool candidate grammar was rejected")
 	}
 	for _, mutation := range []struct {
 		name string
@@ -56,7 +56,7 @@ func TestExactCandidateToolGrammarRejectsAgentVisibleDrift(t *testing.T) {
 			changed := cloneTools(t, tools)
 			mutation.edit(changed)
 			if exactCandidateToolGrammar(changed) {
-				t.Fatal("drifted temporary probe grammar was accepted")
+				t.Fatal("drifted eleven-tool candidate grammar was accepted")
 			}
 		})
 	}

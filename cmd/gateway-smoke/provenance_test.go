@@ -471,14 +471,17 @@ func completeCandidateReports(expected candidateProvenance) []any {
 	functional := smokeReport{
 		ReportKind: reportKindFunctional, ReportSchema: functionalReportSchema, SchemaVersion: smokeReportVersion, Passed: true,
 		CandidateCommit: expected.Commit, CandidateSHA256: expected.CandidateSHA256, DependencySHA256: expected.DependencySHA256,
-		ToolCalls: functionalToolCallCounts{Resolve: 2, LS: 3, Read: 1, ReadMany: 2, Grep: 1},
-		ToolCount: candidateDescriptorCount, SDKResultCount: 9, MaxSDKResultBytes: 1, MaxStructuredResultBytes: 1,
+		ToolCalls: functionalToolCallCounts{Resolve: 4, LS: 3, Read: 3, ReadMany: 2, Grep: 1, Stat: 8, Write: 10, Edit: 4, Move: 2, Delete: 2},
+		ToolCount: candidateDescriptorCount, SDKResultCount: 39, MaxSDKResultBytes: 1, MaxStructuredResultBytes: 1,
 		MaxClientLatencyMicroseconds: 1, TotalFilesScanned: 1, TotalBytesScanned: 1, TotalSourceEntriesValidated: 1,
 		CurrentResolveExistingDir: true,
 		SyntheticCanonicalResolve: true, SyntheticPageCount: 2, SyntheticEntryCount: 3,
 		SyntheticSecondProgress: true, SyntheticNoDuplicates: true, SyntheticFullEquivalence: true,
 		SyntheticReadSelected: true, SyntheticGrepMatchCount: 3, SyntheticReadManyPages: 2,
 		SyntheticReadManyContinued: true, SyntheticRetrievalEquivalent: true, SyntheticTelemetrySanitized: true,
+		SyntheticEmptyDirectoryStat: true,
+		SyntheticMutation:           syntheticMutationEvidence{CreateAbsent: true, ReplaceFingerprint: true, MultiReplacement: true, MoveAbsent: true, DeletePermanent: true, FollowOnObserved: true, CollisionRefused: true, StaleRefused: true, PatchRefused: true, DeniedRefused: true, ResidueFree: true},
+		SyntheticHTTPMutation:       true,
 	}
 	profileShape := passingPhase2PerformanceReportShape()
 	functional.CandidateRuntime = profileShape.CandidateRuntime

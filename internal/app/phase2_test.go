@@ -224,7 +224,7 @@ func listPhase2Tools(t *testing.T, ctx context.Context, session *sdk.ClientSessi
 		byName[tool.Name] = tool
 	}
 	sort.Strings(got)
-	want := []string{obsidian.ToolGrep, obsidian.ToolLS, obsidian.ToolRead, obsidian.ToolReadMany, obsidian.ToolResolve}
+	want := []string{obsidian.ToolDelete, obsidian.ToolEdit, obsidian.ToolGrep, obsidian.ToolLS, obsidian.ToolMove, obsidian.ToolRead, obsidian.ToolReadMany, obsidian.ToolResolve, obsidian.ToolStat, obsidian.ToolWrite}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("tools = %#v, want exact Phase 2 surface %#v", got, want)
 	}
@@ -239,6 +239,11 @@ func assertPhase2ToolDescriptors(t *testing.T, tools map[string]*sdk.Tool) {
 		obsidian.ToolRead:     obsidian.ReadDescription,
 		obsidian.ToolReadMany: obsidian.ReadManyDescription,
 		obsidian.ToolGrep:     obsidian.GrepDescription,
+		obsidian.ToolStat:     obsidian.StatDescription,
+		obsidian.ToolWrite:    obsidian.WriteDescription,
+		obsidian.ToolEdit:     obsidian.EditDescription,
+		obsidian.ToolMove:     obsidian.MoveDescription,
+		obsidian.ToolDelete:   obsidian.DeleteDescription,
 	}
 	for name, wantDescription := range descriptions {
 		tool := tools[name]
@@ -248,7 +253,7 @@ func assertPhase2ToolDescriptors(t *testing.T, tools map[string]*sdk.Tool) {
 		if tool.Description != wantDescription {
 			t.Fatalf("%s description = %q, want %q", name, tool.Description, wantDescription)
 		}
-		assertExactReadOnlyAnnotations(t, tool)
+		assertExactToolAnnotations(t, tool)
 	}
 
 	resolve := schemaObject(t, tools[obsidian.ToolResolve].InputSchema)
@@ -307,14 +312,27 @@ func assertPhase2ToolDescriptors(t *testing.T, tools map[string]*sdk.Tool) {
 	assertIntegerContract(t, schemaProperty(t, grep, "limit"), 1, obsidian.MaxGrepLimit, obsidian.DefaultGrepLimit)
 	assertIntegerContract(t, schemaProperty(t, grep, "max_files"), 1, obsidian.MaxGrepMaxFiles, obsidian.DefaultGrepMaxFiles)
 	assertIntegerContract(t, schemaProperty(t, grep, "max_bytes"), 1, obsidian.MaxGrepMaxBytes, obsidian.DefaultGrepMaxBytes)
+
+	stat := schemaObject(t, tools[obsidian.ToolStat].InputSchema)
+	assertExactObjectGrammar(t, stat, []string{"base", "path"}, []string{"path"})
+	write := schemaObject(t, tools[obsidian.ToolWrite].InputSchema)
+	assertExactObjectGrammar(t, write, []string{"base", "encoding", "path", "precondition", "value"}, []string{"encoding", "path", "precondition", "value"})
+	edit := schemaObject(t, tools[obsidian.ToolEdit].InputSchema)
+	assertExactObjectGrammar(t, edit, []string{"base", "encoding", "fingerprint", "path", "replacements"}, []string{"encoding", "fingerprint", "path", "replacements"})
+	move := schemaObject(t, tools[obsidian.ToolMove].InputSchema)
+	assertExactObjectGrammar(t, move, []string{"base", "destination", "destination_precondition", "fingerprint", "source"}, []string{"destination", "destination_precondition", "fingerprint", "source"})
+	deleteSchema := schemaObject(t, tools[obsidian.ToolDelete].InputSchema)
+	assertExactObjectGrammar(t, deleteSchema, []string{"base", "fingerprint", "path"}, []string{"fingerprint", "path"})
 }
 
-func assertExactReadOnlyAnnotations(t *testing.T, tool *sdk.Tool) {
+func assertExactToolAnnotations(t *testing.T, tool *sdk.Tool) {
 	t.Helper()
 	annotations := tool.Annotations
-	if annotations == nil || !annotations.ReadOnlyHint || annotations.DestructiveHint == nil || *annotations.DestructiveHint ||
-		annotations.OpenWorldHint == nil || *annotations.OpenWorldHint || annotations.IdempotentHint || annotations.Title != "" {
-		t.Fatalf("%s annotations = %#v, want exact read-only/non-destructive/closed-world hints", tool.Name, annotations)
+	mutation := tool.Name == obsidian.ToolWrite || tool.Name == obsidian.ToolEdit || tool.Name == obsidian.ToolMove || tool.Name == obsidian.ToolDelete
+	mutationPhase := mutation || tool.Name == obsidian.ToolStat
+	if annotations == nil || annotations.ReadOnlyHint == mutation || annotations.DestructiveHint == nil || *annotations.DestructiveHint != mutation ||
+		annotations.OpenWorldHint == nil || *annotations.OpenWorldHint || annotations.IdempotentHint != mutationPhase || annotations.Title != "" {
+		t.Fatalf("%s annotations = %#v, want exact mutation-phase hints", tool.Name, annotations)
 	}
 }
 
