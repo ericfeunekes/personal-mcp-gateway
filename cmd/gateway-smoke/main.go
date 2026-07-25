@@ -241,6 +241,15 @@ type sqliteSnapshot struct {
 	persistedRows  int
 	parsedBodyRows int
 	toolCallRows   int
+	toolCallBodies []sqliteToolCallRow
+}
+
+type sqliteToolCallRow struct {
+	method    string
+	tool      string
+	outcome   string
+	errorCode string
+	body      map[string]any
 }
 
 type sqliteBurstTracker struct {
@@ -1299,7 +1308,7 @@ func inspectSQLite(ctx context.Context, dbPath string) (sqliteSnapshot, error) {
 		return sqliteSnapshot{}, errors.New("SQLite telemetry readback failed")
 	}
 	defer db.Close()
-	rows, err := db.QueryContext(ctx, `SELECT event, body_json FROM audit_events ORDER BY id`)
+	rows, err := db.QueryContext(ctx, `SELECT event, method, tool, outcome, error_code, body_json FROM audit_events ORDER BY id`)
 	if err != nil {
 		return sqliteSnapshot{}, errors.New("SQLite telemetry readback failed")
 	}
@@ -1308,7 +1317,8 @@ func inspectSQLite(ctx context.Context, dbPath string) (sqliteSnapshot, error) {
 	var snapshot sqliteSnapshot
 	for rows.Next() {
 		var event, bodyJSON string
-		if err := rows.Scan(&event, &bodyJSON); err != nil {
+		var method, tool, outcome, errorCode sql.NullString
+		if err := rows.Scan(&event, &method, &tool, &outcome, &errorCode, &bodyJSON); err != nil {
 			return sqliteSnapshot{}, errors.New("SQLite telemetry row was invalid")
 		}
 		snapshot.persistedRows++
@@ -1319,6 +1329,9 @@ func inspectSQLite(ctx context.Context, dbPath string) (sqliteSnapshot, error) {
 		snapshot.parsedBodyRows++
 		if event == "tool.call" {
 			snapshot.toolCallRows++
+			snapshot.toolCallBodies = append(snapshot.toolCallBodies, sqliteToolCallRow{
+				method: method.String, tool: tool.String, outcome: outcome.String, errorCode: errorCode.String, body: body,
+			})
 		}
 	}
 	if err := rows.Err(); err != nil {

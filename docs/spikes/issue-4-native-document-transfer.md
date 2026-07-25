@@ -15,17 +15,21 @@ production capture, validation, handoff, and transport path.
 
 ## Local evidence required before release
 
-- The fixture is a valid, renderable one-page PDF.
+- The fixture is a valid, renderable two-page PDF of exactly 49,999,999 raw
+  bytes, with terminal text and geometry on the final page.
 - Extracted text contains the byte-only nonce, and rendered visual inspection
   confirms the intended shape relationship.
 - The exact built candidate advertises six tools and returns the fixture with
   its URI, MIME type, PDF boundaries, and byte-only nonce unchanged.
-- A valid PDF exactly at the 512 KiB raw-byte boundary is accepted, while a
-  valid PDF one byte larger is rejected before transfer.
-- The canonical suite and exact candidate smoke/resource gates pass.
+- The exact production candidate accepts that fixture and rejects an actual
+  50,000,000-byte `.pdf` through `read_document` with `input_too_large`.
+- The candidate HTTP proof also exercises competing reads, a stalled client,
+  sanitized negative results, vault immutability, SQLite summary privacy, and
+  retry after each released admission.
+- The canonical suite and exact dual-transport candidate gate pass.
 
-The historical 512 KiB limit below belongs only to the disposable probe. The
-production PDF candidate limit is 49,999,999 raw bytes.
+The deleted disposable probe used a historical 512 KiB limit. It is not a
+release surface or valid current proof instruction.
 
 ## Live verdict
 
@@ -279,3 +283,25 @@ authorized release boundary and fresh
 authenticated journeys for a small text/visual PDF, a scanned visual/OCR PDF,
 and the exact near-ceiling PDF. Other official document families remain
 unsupported and keep Issue #4 open.
+
+## Closeout strengthening on 2026-07-25
+
+Schema v4 replaces synthetic ceiling and row-count-only assertions with
+candidate-boundary evidence. The actual HTTP candidate must reject a real
+50,000,000-byte `.pdf`, return exact sanitized errors for malformed,
+unsupported, hidden, and symlink inputs, leave the proof vault unchanged, and
+persist only decoded safe summaries whose indexed fields match their bodies.
+It also races two near-ceiling reads to prove one `document_busy` result and
+retry, then stalls a real response body, proves the server emits no failure
+before 29 seconds and does emit its sanitized write-failure signal before 34
+seconds, and requires client failure, payload/admission recovery, a fresh SDK
+session to the same candidate process to retry successfully, and a sanitized
+server-side serialization-failure signal. This is production-path proof for
+the PDF slice; it does not satisfy the remaining release or authenticated
+connector boundaries.
+
+The final schema-v4 focused HTTP gate passed in 64.11 seconds. From the same
+final implementation tree, `make test` passed and the complete stdio/HTTP
+capacity gate passed in 157.10 seconds. Both independent closeout audits then
+reported no remaining contract-blocking gap for the local PDF slice. No
+release, installation, connector refresh, or authenticated call was performed.

@@ -117,6 +117,8 @@ const (
 	ValueSelectorNotFound
 	ValueSelectorAmbiguous
 	ValueInvalidRegex
+	ValueDocumentBusy
+	ValueMalformedDocument
 )
 
 const (
@@ -417,7 +419,7 @@ func enumMetricName(v EnumMetric) (string, bool) {
 	return s, ok
 }
 func enumValueName(v EnumValue) (string, bool) {
-	names := map[EnumValue]string{ValueInvalidJSON: "invalid_json", ValueFile: "file", ValueDirectory: "directory", ValueSymlink: "symlink", ValueOther: "other", ValueScope: "scope", ValueResultLimit: "result_limit", ValueResponseLimit: "response_limit", ValueTimeout: "timeout", ValueCanceled: "canceled", ValueSourceChange: "source_change", ValueError: "error", ValueComplete: "complete", ValueCursor: "cursor", ValueRestart: "restart", ValueStable: "stable", ValueBestEffort: "best_effort", ValuePathDenied: "path_denied", ValueSymlinkDenied: "symlink_denied", ValueNotFound: "not_found", ValueNotDirectory: "not_directory", ValueLimitExceeded: "limit_exceeded", ValueInputTooLarge: "input_too_large", ValueCursorInvalid: "cursor_invalid", ValueCursorMismatch: "cursor_mismatch", ValueCursorStale: "cursor_stale", ValueResponseTooLarge: "response_too_large", ValueNull: "null", ValueString: "string", ValueBoolean: "boolean", ValueNumber: "number", ValueArray: "array", ValueObject: "object", ValueFileLimit: "file_limit", ValueByteLimit: "byte_limit", ValueContent: "content", ValueHeading: "heading", ValueBlock: "block", ValueFrontmatter: "frontmatter", ValueOutline: "outline", ValueUnsupportedFile: "unsupported_file", ValueInvalidUTF8: "invalid_utf8", ValueInvalidSelector: "invalid_selector", ValueSelectorNotFound: "selector_not_found", ValueSelectorAmbiguous: "selector_ambiguous", ValueInvalidRegex: "invalid_regex"}
+	names := map[EnumValue]string{ValueInvalidJSON: "invalid_json", ValueFile: "file", ValueDirectory: "directory", ValueSymlink: "symlink", ValueOther: "other", ValueScope: "scope", ValueResultLimit: "result_limit", ValueResponseLimit: "response_limit", ValueTimeout: "timeout", ValueCanceled: "canceled", ValueSourceChange: "source_change", ValueError: "error", ValueComplete: "complete", ValueCursor: "cursor", ValueRestart: "restart", ValueStable: "stable", ValueBestEffort: "best_effort", ValuePathDenied: "path_denied", ValueSymlinkDenied: "symlink_denied", ValueNotFound: "not_found", ValueNotDirectory: "not_directory", ValueLimitExceeded: "limit_exceeded", ValueInputTooLarge: "input_too_large", ValueCursorInvalid: "cursor_invalid", ValueCursorMismatch: "cursor_mismatch", ValueCursorStale: "cursor_stale", ValueResponseTooLarge: "response_too_large", ValueNull: "null", ValueString: "string", ValueBoolean: "boolean", ValueNumber: "number", ValueArray: "array", ValueObject: "object", ValueFileLimit: "file_limit", ValueByteLimit: "byte_limit", ValueContent: "content", ValueHeading: "heading", ValueBlock: "block", ValueFrontmatter: "frontmatter", ValueOutline: "outline", ValueUnsupportedFile: "unsupported_file", ValueInvalidUTF8: "invalid_utf8", ValueInvalidSelector: "invalid_selector", ValueSelectorNotFound: "selector_not_found", ValueSelectorAmbiguous: "selector_ambiguous", ValueInvalidRegex: "invalid_regex", ValueDocumentBusy: "document_busy", ValueMalformedDocument: "malformed_document"}
 	s, ok := names[v]
 	return s, ok
 }
@@ -440,7 +442,7 @@ func counterMetricAllowed(section SummarySection, metric CounterMetric) bool {
 		return metric == CounterRawBytes || metric == CounterLimit || metric == CounterUnknownKeyCount || metric == CounterUnknownKeyTooLarge ||
 			metric == CounterRequestCount || metric == CounterPatternBytes || metric == CounterMaxFiles || metric == CounterMaxBytes || metric == CounterContextLines
 	case SectionResult:
-		return metric == CounterEntryCount || metric == CounterFilesScanned || metric == CounterBytesScanned || metric == CounterResponseBytes ||
+		return metric == CounterRawBytes || metric == CounterEntryCount || metric == CounterFilesScanned || metric == CounterBytesScanned || metric == CounterResponseBytes ||
 			metric == CounterItemCount || metric == CounterItemErrorCount || metric == CounterMatchCount || metric == CounterRemainingCount || metric == CounterSourceEntriesValidated
 	default:
 		return false
@@ -478,7 +480,8 @@ func enumValueAllowed(metric EnumMetric, value EnumValue) bool {
 			value == ValueLimitExceeded || value == ValueInputTooLarge || value == ValueTimeout || value == ValueCanceled ||
 			value == ValueSourceChange || value == ValueCursorInvalid || value == ValueCursorMismatch || value == ValueCursorStale ||
 			value == ValueResponseTooLarge || value == ValueUnsupportedFile || value == ValueInvalidUTF8 || value == ValueInvalidSelector ||
-			value == ValueSelectorNotFound || value == ValueSelectorAmbiguous || value == ValueInvalidRegex
+			value == ValueSelectorNotFound || value == ValueSelectorAmbiguous || value == ValueInvalidRegex ||
+			value == ValueDocumentBusy || value == ValueMalformedDocument
 	case EnumSelectorKind:
 		return value == ValueContent || value == ValueHeading || value == ValueBlock || value == ValueFrontmatter || value == ValueOutline
 	default:

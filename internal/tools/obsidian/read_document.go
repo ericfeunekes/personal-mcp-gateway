@@ -25,7 +25,7 @@ import (
 
 const (
 	ToolReadDocument        = "read_document"
-	DocumentMaxBytes        = int64(49_999_999)
+	DocumentMaxBytes        = 49_999_999
 	documentChunkSize       = 256 << 10
 	documentMIMEPDF         = "application/pdf"
 	ReadDocumentDescription = "Return one supported vault document as its original native bytes for model-native reading. The PDF activation supports one explicit vault-relative .pdf path up to 49,999,999 bytes; other document formats remain unsupported."

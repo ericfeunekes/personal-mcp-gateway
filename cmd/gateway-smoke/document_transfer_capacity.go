@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,9 +31,12 @@ import (
 )
 
 const (
-	documentTransferCapacitySchema         = "personal-mcp-gateway.document-transfer-capacity.v3"
-	documentTransferCapacityVersion        = 3
+	documentTransferCapacitySchema         = "personal-mcp-gateway.document-transfer-capacity.v4"
+	documentTransferCapacityVersion        = 4
 	documentTransferAggregateRSSLimitBytes = int64(160 * 1024 * 1024)
+	documentBackpressureLowerBound         = 29 * time.Second
+	documentBackpressureUpperBound         = 34 * time.Second
+	documentSerializationFailureSignal     = "native document response write failed"
 )
 
 type documentTransferCheckpoint struct {
@@ -113,6 +117,99 @@ type documentTransferHTTPReport struct {
 	AllFDsRecovered              bool   `json:"all_fds_recovered"`
 	SQLiteToolCallRows           int    `json:"sqlite_tool_call_rows"`
 	SQLiteTelemetryValidated     bool   `json:"sqlite_telemetry_validated"`
+	FirstDisallowedSizeRejected  bool   `json:"first_disallowed_size_rejected"`
+	NegativeCallCount            int    `json:"negative_call_count"`
+	NegativeMatrixPassed         bool   `json:"negative_matrix_passed"`
+	VaultUnchanged               bool   `json:"vault_unchanged"`
+	ConcurrentAdmissionPassed    bool   `json:"concurrent_admission_passed"`
+	BusyErrorSanitized           bool   `json:"busy_error_sanitized"`
+	RetryAfterBusySucceeded      bool   `json:"retry_after_busy_succeeded"`
+	BackpressureDeadlinePassed   bool   `json:"backpressure_deadline_passed"`
+	BackpressureElapsedMicros    int64  `json:"backpressure_elapsed_microseconds"`
+	BackpressureRetrySucceeded   bool   `json:"backpressure_retry_succeeded"`
+	SerializationFailureObserved bool   `json:"serialization_failure_observed"`
+	TelemetryPrivacyValidated    bool   `json:"telemetry_privacy_validated"`
+	TelemetryValidationCode      string `json:"telemetry_validation_code"`
+}
+
+type stallingRoundTripper struct {
+	base    http.RoundTripper
+	mu      sync.Mutex
+	armed   bool
+	started chan struct{}
+	release chan struct{}
+}
+
+func (t *stallingRoundTripper) arm() (<-chan struct{}, chan<- struct{}) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.armed = true
+	t.started = make(chan struct{})
+	t.release = make(chan struct{})
+	return t.started, t.release
+}
+
+func (t *stallingRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	var body []byte
+	if request.Body != nil {
+		body, _ = io.ReadAll(request.Body)
+		_ = request.Body.Close()
+		request.Body = io.NopCloser(bytes.NewReader(body))
+	}
+	response, err := t.base.RoundTrip(request)
+	if err != nil {
+		return nil, err
+	}
+	t.mu.Lock()
+	armed := t.armed && request.Method == http.MethodPost && bytes.Contains(body, []byte(`"name":"read_document"`))
+	if armed {
+		t.armed = false
+		started, release := t.started, t.release
+		response.Body = &stalledResponseBody{ReadCloser: response.Body, started: started, release: release}
+	}
+	t.mu.Unlock()
+	return response, nil
+}
+
+type stalledResponseBody struct {
+	io.ReadCloser
+	started chan struct{}
+	release <-chan struct{}
+	once    sync.Once
+}
+
+type signalingBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+	signal chan struct{}
+	once   sync.Once
+}
+
+func newSignalingBuffer() *signalingBuffer {
+	return &signalingBuffer{signal: make(chan struct{})}
+}
+
+func (b *signalingBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	n, err := b.buffer.Write(p)
+	matched := strings.Contains(b.buffer.String(), documentSerializationFailureSignal)
+	b.mu.Unlock()
+	if matched {
+		b.once.Do(func() { close(b.signal) })
+	}
+	return n, err
+}
+
+func (b *signalingBuffer) containsSignal() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return strings.Contains(b.buffer.String(), documentSerializationFailureSignal)
+}
+
+func (b *stalledResponseBody) Read(p []byte) (int, error) {
+	b.once.Do(func() { close(b.started) })
+	<-b.release
+	return b.ReadCloser.Read(p)
 }
 
 type countingTransport struct {
@@ -441,7 +538,14 @@ func callExactHTTPDocumentTransfer(ctx context.Context, session *sdk.ClientSessi
 	started := time.Now()
 	result, err := session.CallTool(ctx, &sdk.CallToolParams{Name: obsidian.ToolReadDocument, Arguments: map[string]any{"path": path}})
 	latency := time.Since(started)
-	if err != nil || result == nil || result.IsError || len(result.Content) != 1 {
+	if err != nil {
+		return documentTransferCallEvidence{}, errors.New("HTTP document transfer capacity call failed")
+	}
+	return verifyExactHTTPDocumentResult(result, latency)
+}
+
+func verifyExactHTTPDocumentResult(result *sdk.CallToolResult, latency time.Duration) (documentTransferCallEvidence, error) {
+	if result == nil || result.IsError || len(result.Content) != 1 {
 		return documentTransferCallEvidence{}, errors.New("HTTP document transfer capacity call failed")
 	}
 	embedded, ok := result.Content[0].(*sdk.EmbeddedResource)
@@ -463,6 +567,155 @@ func callExactHTTPDocumentTransfer(ctx context.Context, session *sdk.ClientSessi
 	return documentTransferCallEvidence{
 		rawBytes: len(data), rawSHA256: hex.EncodeToString(digest[:]), structuredBytes: len(structured), latency: latency,
 	}, nil
+}
+
+func callExpectedDocumentError(ctx context.Context, session *sdk.ClientSession, path, code string, forbidden ...string) error {
+	result, err := session.CallTool(ctx, &sdk.CallToolParams{Name: obsidian.ToolReadDocument, Arguments: map[string]any{"path": path}})
+	if err != nil {
+		return errors.New("HTTP document rejection did not return a structured tool error")
+	}
+	return verifyDocumentErrorResult(result, code, forbidden...)
+}
+
+func verifyDocumentErrorResult(result *sdk.CallToolResult, code string, forbidden ...string) error {
+	if result == nil || !result.IsError || len(result.Content) != 1 {
+		return errors.New("HTTP document rejection did not return a structured tool error")
+	}
+	textContent, ok := result.Content[0].(*sdk.TextContent)
+	if !ok || textContent.Text != "Obsidian request failed; inspect the structured error." {
+		return errors.New("HTTP document rejection content was not sanitized")
+	}
+	encoded, err := json.Marshal(result.StructuredContent)
+	if err != nil {
+		return errors.New("HTTP document rejection structured content was invalid")
+	}
+	var output obsidian.ReadDocumentOutput
+	if json.Unmarshal(encoded, &output) != nil || output.OK || output.Error == nil || output.Error.Code != code || output.Error.Message == "" {
+		return errors.New("HTTP document rejection code changed")
+	}
+	resultText := string(encoded) + textContent.Text
+	for _, value := range forbidden {
+		if value != "" && strings.Contains(resultText, value) {
+			return errors.New("HTTP document rejection leaked private material")
+		}
+	}
+	if strings.Contains(resultText, "native-document") || strings.Contains(resultText, "obsidian://read-document/") {
+		return errors.New("HTTP document rejection exposed a native payload marker")
+	}
+	return nil
+}
+
+func vaultProofSnapshot(root string) (string, error) {
+	records := make([]string, 0, 8)
+	err := filepath.WalkDir(root, func(path string, _ os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil || relative == "." {
+			return err
+		}
+		if len(records) >= 32 {
+			return errors.New("document transfer vault snapshot exceeded its entry bound")
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		record := relative + "\x00" + info.Mode().String() + "\x00" + strconv.FormatInt(info.Size(), 10) + "\x00" + strconv.FormatInt(info.ModTime().UnixNano(), 10)
+		switch {
+		case info.Mode().IsRegular():
+			if info.Size() < 0 || info.Size() > int64(obsidian.RejectedDocumentBytes) {
+				return errors.New("document transfer vault snapshot file exceeded its byte bound")
+			}
+			file, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			contentHash := sha256.New()
+			read, copyErr := io.Copy(contentHash, io.LimitReader(file, int64(obsidian.RejectedDocumentBytes)+1))
+			closeErr := file.Close()
+			if copyErr != nil || closeErr != nil || read != info.Size() {
+				return errors.New("document transfer vault snapshot read failed")
+			}
+			record += "\x00sha256:" + hex.EncodeToString(contentHash.Sum(nil))
+		case info.Mode()&os.ModeSymlink != 0:
+			target, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			record += "\x00target:" + target
+		}
+		records = append(records, record)
+		return nil
+	})
+	if err != nil {
+		return "", errors.New("document transfer vault snapshot failed")
+	}
+	sort.Strings(records)
+	hash := sha256.New()
+	for _, record := range records {
+		_, _ = io.WriteString(hash, record+"\n")
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func validateDocumentTelemetry(snapshot sqliteSnapshot, expectedRows int, forbidden ...string) (bool, string) {
+	if snapshot.toolCallRows != expectedRows || snapshot.parsedBodyRows != snapshot.persistedRows || snapshot.persistedRows < snapshot.toolCallRows {
+		return false, "row_counts"
+	}
+	readCalls, resolveCalls, okCalls, errorCalls := 0, 0, 0, 0
+	errorCodes := make(map[string]int)
+	for _, row := range snapshot.toolCallBodies {
+		encoded, err := json.Marshal(row.body)
+		if err != nil {
+			return false, "body_encoding"
+		}
+		text := string(encoded)
+		for _, value := range forbidden {
+			if value != "" && strings.Contains(text, value) {
+				return false, "private_material"
+			}
+		}
+		if _, ok := row.body["summary"].(map[string]any); !ok {
+			summaryError, _ := row.body["summary_error"].(string)
+			return false, "safe_summary_" + row.tool + "_" + row.outcome + "_" + summaryError
+		}
+		if row.method != "tools/call" || row.body["method"] != row.method || row.body["tool"] != row.tool || row.body["outcome"] != row.outcome {
+			return false, "indexed_parity"
+		}
+		if bodyCode, _ := row.body["error_code"].(string); bodyCode != row.errorCode {
+			return false, "error_code_parity"
+		}
+		switch row.tool {
+		case obsidian.ToolReadDocument:
+			readCalls++
+		case obsidian.ToolResolve:
+			resolveCalls++
+		default:
+			return false, "tool_distribution"
+		}
+		switch row.outcome {
+		case "ok":
+			okCalls++
+		case "tool_error":
+			errorCalls++
+			errorCodes[row.errorCode]++
+		default:
+			return false, "outcome_distribution"
+		}
+	}
+	valid := readCalls == expectedRows-1 && resolveCalls == 1 && okCalls == 8 && errorCalls == 6 &&
+		errorCodes["document_busy"] == 1 && errorCodes["input_too_large"] == 1 && errorCodes["unsupported_file"] == 1 &&
+		errorCodes["malformed_document"] == 1 && errorCodes["path_denied"] == 1 && errorCodes["symlink_denied"] == 1
+	if !valid {
+		return false, "expected_distribution_r" + strconv.Itoa(readCalls) + "_z" + strconv.Itoa(resolveCalls) +
+			"_o" + strconv.Itoa(okCalls) + "_e" + strconv.Itoa(errorCalls) + "_busy" + strconv.Itoa(errorCodes["document_busy"]) +
+			"_large" + strconv.Itoa(errorCodes["input_too_large"]) + "_unsupported" + strconv.Itoa(errorCodes["unsupported_file"]) +
+			"_malformed" + strconv.Itoa(errorCodes["malformed_document"]) + "_path" + strconv.Itoa(errorCodes["path_denied"]) +
+			"_symlink" + strconv.Itoa(errorCodes["symlink_denied"])
+	}
+	return true, "ok"
 }
 
 func waitForHTTPReady(ctx context.Context, baseURL string) error {
@@ -492,6 +745,40 @@ func waitForHTTPReady(ctx context.Context, baseURL string) error {
 
 func probeExactHTTPDocumentTransfer(ctx context.Context, gatewayBin, root, path string, sampler resourceSampler) (documentTransferHTTPReport, error) {
 	report := documentTransferHTTPReport{EveryCallWithinTwoSeconds: true}
+	const privateSentinel = "closeout-private-sentinel"
+	negativeFixtures := []struct {
+		path string
+		code string
+	}{
+		{"closeout-first-disallowed.pdf", "input_too_large"},
+		{"closeout-unsupported.txt", "unsupported_file"},
+		{"closeout-malformed.pdf", "malformed_document"},
+		{".closeout-hidden.pdf", "path_denied"},
+		{"closeout-symlink.pdf", "symlink_denied"},
+	}
+	for _, fixture := range negativeFixtures {
+		defer os.Remove(filepath.Join(root, fixture.path))
+	}
+	disallowed, err := os.OpenFile(filepath.Join(root, negativeFixtures[0].path), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil || disallowed.Truncate(int64(obsidian.RejectedDocumentBytes)) != nil || disallowed.Close() != nil {
+		return report, errors.New("HTTP document rejection fixture setup failed")
+	}
+	if err := os.WriteFile(filepath.Join(root, negativeFixtures[1].path), []byte(privateSentinel), 0o600); err != nil {
+		return report, errors.New("HTTP document rejection fixture setup failed")
+	}
+	if err := os.WriteFile(filepath.Join(root, negativeFixtures[2].path), []byte("%PDF-1.7\n"+privateSentinel+"\n%%EOF\n"), 0o600); err != nil {
+		return report, errors.New("HTTP document rejection fixture setup failed")
+	}
+	if err := os.WriteFile(filepath.Join(root, negativeFixtures[3].path), []byte("%PDF-1.7\n"+privateSentinel+"\n%%EOF\n"), 0o600); err != nil {
+		return report, errors.New("HTTP document rejection fixture setup failed")
+	}
+	if err := os.Symlink(path, filepath.Join(root, negativeFixtures[4].path)); err != nil {
+		return report, errors.New("HTTP document rejection fixture setup failed")
+	}
+	vaultBefore, err := vaultProofSnapshot(root)
+	if err != nil {
+		return report, err
+	}
 	dbPath, cleanupDB, err := newPrivateSQLiteStore()
 	if err != nil {
 		return report, err
@@ -506,7 +793,8 @@ func probeExactHTTPDocumentTransfer(ctx context.Context, gatewayBin, root, path 
 		return report, errors.New("HTTP document transfer listener reservation failed")
 	}
 	cmd := exec.Command(gatewayBin, "http", "--obsidian-root", root, "--addr", address, "--telemetry-db", dbPath)
-	cmd.Stderr = io.Discard
+	candidateStderr := newSignalingBuffer()
+	cmd.Stderr = candidateStderr
 	if err := cmd.Start(); err != nil || cmd.Process == nil || cmd.Process.Pid <= 0 {
 		return report, errors.New("HTTP document transfer candidate start failed")
 	}
@@ -534,8 +822,11 @@ func probeExactHTTPDocumentTransfer(ctx context.Context, gatewayBin, root, path 
 	if err != nil {
 		return report, err
 	}
+	baseTransport := &http.Transport{}
+	stallingTransport := &stallingRoundTripper{base: baseTransport}
+	httpClient := &http.Client{Transport: stallingTransport}
 	client := sdk.NewClient(&sdk.Implementation{Name: "document-transfer-capacity-http", Version: "v1"}, nil)
-	session, err := client.Connect(ctx, &sdk.StreamableClientTransport{Endpoint: baseURL + "/mcp"}, nil)
+	session, err := client.Connect(ctx, &sdk.StreamableClientTransport{Endpoint: baseURL + "/mcp", HTTPClient: httpClient, DisableStandaloneSSE: true}, nil)
 	if err != nil {
 		return report, errors.New("HTTP document transfer candidate connection failed")
 	}
@@ -568,6 +859,110 @@ func probeExactHTTPDocumentTransfer(ctx context.Context, gatewayBin, root, path 
 		report.EveryCallWithinTwoSeconds = report.EveryCallWithinTwoSeconds && call.latency < resourceCallTimeLimit
 		report.RawBytes, report.RawSHA256 = call.rawBytes, call.rawSHA256
 	}
+	type concurrentResult struct {
+		result  *sdk.CallToolResult
+		err     error
+		latency time.Duration
+	}
+	startConcurrent := make(chan struct{})
+	concurrent := make(chan concurrentResult, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			<-startConcurrent
+			started := time.Now()
+			result, callErr := session.CallTool(ctx, &sdk.CallToolParams{Name: obsidian.ToolReadDocument, Arguments: map[string]any{"path": path}})
+			concurrent <- concurrentResult{result: result, err: callErr, latency: time.Since(started)}
+		}()
+	}
+	close(startConcurrent)
+	successes, busy := 0, 0
+	for i := 0; i < 2; i++ {
+		outcome := <-concurrent
+		if outcome.err == nil {
+			if evidence, verifyErr := verifyExactHTTPDocumentResult(outcome.result, outcome.latency); verifyErr == nil && evidence.rawSHA256 == obsidian.DocumentFixtureSHA256 {
+				successes++
+				continue
+			}
+			if verifyDocumentErrorResult(outcome.result, "document_busy", privateSentinel, path) == nil {
+				busy++
+				report.BusyErrorSanitized = true
+				continue
+			}
+		}
+		return report, errors.New("HTTP document concurrent admission result changed")
+	}
+	report.ConcurrentAdmissionPassed = successes == 1 && busy == 1
+	if !report.ConcurrentAdmissionPassed {
+		return report, errors.New("HTTP document concurrent admission did not admit exactly one payload")
+	}
+	if retry, retryErr := callExactHTTPDocumentTransfer(ctx, session, path); retryErr != nil || retry.rawSHA256 != obsidian.DocumentFixtureSHA256 {
+		return report, errors.New("HTTP document retry after busy failed")
+	}
+	report.RetryAfterBusySucceeded = true
+	for _, fixture := range negativeFixtures {
+		if err := callExpectedDocumentError(ctx, session, fixture.path, fixture.code, privateSentinel, fixture.path, path); err != nil {
+			return report, err
+		}
+		report.NegativeCallCount++
+	}
+	report.FirstDisallowedSizeRejected = report.NegativeCallCount > 0
+	report.NegativeMatrixPassed = report.NegativeCallCount == len(negativeFixtures)
+	startedReading, releaseReading := stallingTransport.arm()
+	stalledResult := make(chan error, 1)
+	backpressureStarted := time.Now()
+	go func() {
+		stallCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		defer cancel()
+		_, callErr := session.CallTool(stallCtx, &sdk.CallToolParams{Name: obsidian.ToolReadDocument, Arguments: map[string]any{"path": path}})
+		stalledResult <- callErr
+	}()
+	select {
+	case <-startedReading:
+	case <-time.After(5 * time.Second):
+		close(releaseReading)
+		return report, errors.New("HTTP document stalled client did not reach response body")
+	}
+	select {
+	case <-candidateStderr.signal:
+		close(releaseReading)
+		return report, errors.New("HTTP document response deadline fired before its lower bound")
+	case <-time.After(documentBackpressureLowerBound):
+	case <-ctx.Done():
+		close(releaseReading)
+		return report, errors.New("HTTP document response deadline observation canceled")
+	}
+	select {
+	case <-candidateStderr.signal:
+		report.SerializationFailureObserved = true
+	case <-time.After(documentBackpressureUpperBound - documentBackpressureLowerBound):
+		close(releaseReading)
+		return report, errors.New("HTTP document response deadline exceeded its upper bound")
+	case <-ctx.Done():
+		close(releaseReading)
+		return report, errors.New("HTTP document response deadline observation canceled")
+	}
+	close(releaseReading)
+	stalledErr := <-stalledResult
+	report.BackpressureElapsedMicros = time.Since(backpressureStarted).Microseconds()
+	report.BackpressureDeadlinePassed = stalledErr != nil && report.BackpressureElapsedMicros >= documentBackpressureLowerBound.Microseconds() && report.BackpressureElapsedMicros < documentBackpressureUpperBound.Microseconds()
+	if !report.BackpressureDeadlinePassed {
+		return report, errors.New("HTTP document stalled client did not fail at the response deadline")
+	}
+	// A timed-out response is necessarily truncated, so that SDK session can no
+	// longer parse its JSON-RPC stream. Reconnect to the same stateless server
+	// and persistent audit sink to prove server-side payload/admission recovery.
+	_ = session.Close()
+	sessionClosed = true
+	recoveryClient := sdk.NewClient(&sdk.Implementation{Name: "document-transfer-capacity-http-recovery", Version: "v1"}, nil)
+	session, err = recoveryClient.Connect(ctx, &sdk.StreamableClientTransport{Endpoint: baseURL + "/mcp", HTTPClient: httpClient, DisableStandaloneSSE: true}, nil)
+	if err != nil {
+		return report, errors.New("HTTP document reconnect after stalled client failed")
+	}
+	sessionClosed = false
+	if retry, retryErr := callExactHTTPDocumentTransfer(ctx, session, path); retryErr != nil || retry.rawSHA256 != obsidian.DocumentFixtureSHA256 {
+		return report, errors.New("HTTP document retry after stalled client failed")
+	}
+	report.BackpressureRetrySucceeded = true
 	followup, _, isError, err := callResourceCandidate[obsidian.ResolveOutput](ctx, session, obsidian.ToolResolve, map[string]any{"path": "."})
 	report.FollowupSucceeded = err == nil && !isError && followup.OK && followup.Exists && followup.Type == "directory"
 	if !report.FollowupSucceeded {
@@ -586,12 +981,25 @@ func probeExactHTTPDocumentTransfer(ctx context.Context, gatewayBin, root, path 
 	// A readiness probe connection may finish closing after the SDK session is
 	// established. Fewer descriptors is recovery, while any increase is a leak.
 	report.AllFDsRecovered = postCall.fdCount <= baseline.fdCount
+	vaultAfter, err := vaultProofSnapshot(root)
+	if err != nil {
+		return report, err
+	}
+	report.VaultUnchanged = vaultAfter == vaultBefore
+	if !report.VaultUnchanged {
+		return report, errors.New("HTTP document proof changed the vault fixtures")
+	}
 	telemetry, err := inspectSQLite(ctx, dbPath)
 	if err != nil {
 		return report, err
 	}
 	report.SQLiteToolCallRows = telemetry.toolCallRows
-	report.SQLiteTelemetryValidated = telemetry.toolCallRows == 4 && telemetry.parsedBodyRows == telemetry.persistedRows && telemetry.persistedRows >= telemetry.toolCallRows
+	const expectedToolCallRows = 14
+	report.SQLiteTelemetryValidated = telemetry.toolCallRows == expectedToolCallRows && telemetry.parsedBodyRows == telemetry.persistedRows && telemetry.persistedRows >= telemetry.toolCallRows
+	report.TelemetryPrivacyValidated, report.TelemetryValidationCode = validateDocumentTelemetry(telemetry, expectedToolCallRows, privateSentinel, path, obsidian.DocumentFixtureNonce, "obsidian://read-document/")
+	if !report.SQLiteTelemetryValidated || !report.TelemetryPrivacyValidated {
+		return report, errors.New("HTTP document persisted telemetry proof failed")
+	}
 	if err := session.Close(); err != nil {
 		return report, errors.New("HTTP document transfer session close failed")
 	}
@@ -614,6 +1022,11 @@ func probeExactHTTPDocumentTransfer(ctx context.Context, gatewayBin, root, path 
 		<-waited
 		return report, errors.New("HTTP document transfer candidate stop timed out")
 	}
+	baseTransport.CloseIdleConnections()
+	report.SerializationFailureObserved = report.SerializationFailureObserved && candidateStderr.containsSignal()
+	if !report.SerializationFailureObserved {
+		return report, errors.New("HTTP document serialization failure was not retained operationally")
+	}
 	usage, err := waitedUsageFromProcessState(cmd.ProcessState)
 	if err != nil {
 		return report, err
@@ -635,14 +1048,17 @@ func documentTransferHTTPReportPasses(report documentTransferHTTPReport) bool {
 		report.HighWaterRSSBytes >= report.BaselineRSSBytes && report.HighWaterRSSDeltaBytes == nonnegativeDelta(report.HighWaterRSSBytes, report.BaselineRSSBytes) &&
 		report.HighWaterRSSDeltaBytes <= resourceRSSLimitBytes && report.HighWaterWithinBound &&
 		report.BaselineFDCount > 0 && report.PostCallFDCount > 0 && report.PostCallFDCount <= report.BaselineFDCount && report.AllFDsRecovered &&
-		report.SQLiteToolCallRows == 4 && report.SQLiteTelemetryValidated
+		report.FirstDisallowedSizeRejected && report.NegativeCallCount == 5 && report.NegativeMatrixPassed && report.VaultUnchanged &&
+		report.ConcurrentAdmissionPassed && report.BusyErrorSanitized && report.RetryAfterBusySucceeded &&
+		report.BackpressureDeadlinePassed && report.BackpressureElapsedMicros >= documentBackpressureLowerBound.Microseconds() &&
+		report.BackpressureElapsedMicros < documentBackpressureUpperBound.Microseconds() && report.BackpressureRetrySucceeded &&
+		report.SerializationFailureObserved && report.SQLiteToolCallRows == 14 && report.SQLiteTelemetryValidated && report.TelemetryPrivacyValidated && report.TelemetryValidationCode == "ok"
 }
 
 func probeDocumentTransferCapacity(ctx context.Context, gatewayBin, artifactPath string, provenance candidateProvenance, sampler resourceSampler) (documentTransferCapacityReport, error) {
 	report := documentTransferCapacityReport{
 		ReportKind: "document_transfer_capacity", ReportSchema: documentTransferCapacitySchema, SchemaVersion: documentTransferCapacityVersion,
 		CandidateCommit: provenance.Commit, CandidateSHA256: provenance.CandidateSHA256, DependencySHA256: provenance.DependencySHA256,
-		FirstDisallowedSizeRejected: !obsidian.DocumentSizeAllowed(obsidian.RejectedDocumentBytes),
 	}
 	var err error
 	if artifactPath == "" {
@@ -762,6 +1178,7 @@ func probeDocumentTransferCapacity(ctx context.Context, gatewayBin, artifactPath
 	if err != nil {
 		return report, err
 	}
+	report.FirstDisallowedSizeRejected = report.HTTP.FirstDisallowedSizeRejected
 	report.AggregateHighWaterUpperBoundBytes = maxInt64(report.HighWaterRSSBytes, report.HTTP.HighWaterRSSBytes) + report.ValidatorHighWaterRSSBytes
 	report.AggregateHighWaterWithinBound = report.AggregateHighWaterUpperBoundBytes <= documentTransferAggregateRSSLimitBytes
 	report.Passed = documentTransferCapacityReportPasses(report)

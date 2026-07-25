@@ -1353,7 +1353,7 @@ if has_argument --validate-report-set "$@"; then
   grep -q '"boundaries":' "${files[2]}" || exit 8
 	  grep -q '"batches":' "${files[2]}" || exit 8
 	  grep -q '"report_kind":"document_transfer_capacity"' "${files[3]}" || exit 8
-	  grep -q '"report_schema":"personal-mcp-gateway.document-transfer-capacity.v3"' "${files[3]}" || exit 8
+	  grep -q '"report_schema":"personal-mcp-gateway.document-transfer-capacity.v4"' "${files[3]}" || exit 8
 	  grep -q '"sequential_call_count":3' "${files[3]}" || exit 8
   for file in "${files[@]}"; do
     grep -q '"candidate_commit":"0123456789abcdef0123456789abcdef01234567"' "$file" || exit 8
@@ -1384,7 +1384,7 @@ elif has_argument --performance-json "$@"; then
   fi
 elif has_argument --document-transfer-json "$@"; then
   kind=document_transfer_capacity
-  schema_version=3
+	  schema_version=4
   artifact="$(argument --document-transfer-artifact "$@")"
   [[ -n "$artifact" ]] || exit 7
   : >"$artifact"
@@ -1417,7 +1417,7 @@ proof='"report_schema":"personal-mcp-gateway.functional.v3","candidate_runtime":
 	    fi
     ;;
   document_transfer_capacity)
-	    proof='"report_schema":"personal-mcp-gateway.document-transfer-capacity.v3","descriptor_count":6,"raw_bytes":49999999,"raw_sha256":"935d656fc945ea0c002af42af4ae62edfbf48f22aeb03872c7a4b51fe6beb69d","sequential_call_count":3,"call_within_two_seconds":true,"terminal_evidence_within_4096_bytes":true,"pdf_validator_accepted":true,"first_disallowed_size_rejected":true,"high_water_within_bound":true,"validator_high_water_rss_bytes":1,"aggregate_high_water_upper_bound_bytes":2,"aggregate_high_water_within_bound":true,"retained_heap_alloc_growth_within_bound":true,"retained_rss_window_growth_within_bound":true,"all_fds_recovered":true,"activity_quiescent":true,"followup_succeeded":true'
+	    proof='"report_schema":"personal-mcp-gateway.document-transfer-capacity.v4","descriptor_count":6,"raw_bytes":49999999,"raw_sha256":"935d656fc945ea0c002af42af4ae62edfbf48f22aeb03872c7a4b51fe6beb69d","sequential_call_count":3,"call_within_two_seconds":true,"terminal_evidence_within_4096_bytes":true,"pdf_validator_accepted":true,"first_disallowed_size_rejected":true,"high_water_within_bound":true,"validator_high_water_rss_bytes":1,"aggregate_high_water_upper_bound_bytes":2,"aggregate_high_water_within_bound":true,"retained_heap_alloc_growth_within_bound":true,"retained_rss_window_growth_within_bound":true,"all_fds_recovered":true,"activity_quiescent":true,"followup_succeeded":true'
 	    ;;
 esac
 printf '{"report_kind":"%s","schema_version":%s,"passed":true,"candidate_commit":"%s","candidate_sha256":"%s","dependency_sha256":"%s",%s}\n' "$kind" "$schema_version" 0123456789abcdef0123456789abcdef01234567 "$candidate_sha" "$dependency_sha" "$proof"

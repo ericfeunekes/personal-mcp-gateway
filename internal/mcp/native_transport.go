@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -139,7 +140,12 @@ func nativeDocumentHTTPHandler(next http.Handler, bridge *NativeDocumentBridge) 
 		}
 		ctx, cancel := context.WithTimeout(req.Context(), nativeDocumentResponseDeadline)
 		defer cancel()
-		_ = writeNativeDocumentPayload(ctx, w, frame, payload)
+		if err := writeNativeDocumentPayload(ctx, w, frame, payload); err != nil {
+			// The HTTP status may already have been committed, so retain a
+			// sanitized operational failure signal without recording request,
+			// path, token, payload, or returned bytes.
+			slog.Error("native document response write failed")
+		}
 	})
 }
 

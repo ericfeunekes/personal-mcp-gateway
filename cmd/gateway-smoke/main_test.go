@@ -1478,6 +1478,10 @@ func newSmokeSQLiteFixture(t *testing.T) string {
 	if _, err := db.Exec(`CREATE TABLE audit_events (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		event TEXT NOT NULL,
+		method TEXT,
+		tool TEXT,
+		outcome TEXT,
+		error_code TEXT,
 		body_json TEXT NOT NULL
 	)`); err != nil {
 		db.Close()

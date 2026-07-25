@@ -7,13 +7,13 @@ import (
 )
 
 const (
-	DocumentFixtureMaxBytes = 49_999_999
-	RejectedDocumentBytes   = 50_000_000
+	DocumentFixtureMaxBytes = DocumentMaxBytes
+	RejectedDocumentBytes   = DocumentMaxBytes + 1
 	DocumentFixtureNonce    = "NDX-7Q4M-9K2P-R8VC"
 	DocumentFixtureSHA256   = "935d656fc945ea0c002af42af4ae62edfbf48f22aeb03872c7a4b51fe6beb69d"
 )
 
-func DocumentSizeAllowed(size int) bool { return size > 0 && size <= DocumentFixtureMaxBytes }
+func DocumentSizeAllowed(size int) bool { return size > 0 && int64(size) <= DocumentMaxBytes }
 
 // GenerateDocumentCapacityFixture returns the exact synthetic PDF used by the
 // local capacity gate. It is test/proof data and is never exposed as a tool.

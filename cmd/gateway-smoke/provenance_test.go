@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"personal-mcp-gateway/internal/tools/obsidian"
 )
@@ -352,7 +353,11 @@ func passingDocumentCapacityReport(expected candidateProvenance) documentTransfe
 			RawSHA256: obsidian.DocumentFixtureSHA256, MaxCallLatencyMicroseconds: 1, EveryCallWithinTwoSeconds: true,
 			FollowupSucceeded: true, BaselineRSSBytes: 1, PostCallRSSBytes: 1, RetainedRSSGrowthWithinBound: true,
 			HighWaterRSSBytes: 1, HighWaterWithinBound: true, BaselineFDCount: 1, PostCallFDCount: 1, AllFDsRecovered: true,
-			SQLiteToolCallRows: 4, SQLiteTelemetryValidated: true,
+			SQLiteToolCallRows: 14, SQLiteTelemetryValidated: true, FirstDisallowedSizeRejected: true,
+			NegativeCallCount: 5, NegativeMatrixPassed: true, VaultUnchanged: true,
+			ConcurrentAdmissionPassed: true, BusyErrorSanitized: true, RetryAfterBusySucceeded: true,
+			BackpressureDeadlinePassed: true, BackpressureElapsedMicros: (30 * time.Second).Microseconds(),
+			BackpressureRetrySucceeded: true, SerializationFailureObserved: true, TelemetryPrivacyValidated: true, TelemetryValidationCode: "ok",
 		},
 	}
 }

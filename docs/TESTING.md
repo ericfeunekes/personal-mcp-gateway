@@ -164,7 +164,18 @@ The PDF activation candidate additionally runs an exact 49,999,999-byte gate.
 It generates and independently validates/renders a two-page PDF, makes three
 sequential native calls in one stdio session and three in one HTTP session,
 checks original SHA-256/MIME/terminal evidence, and launches the built candidate
-for both transports. Each transport retains the 64 MiB lifetime high-water and
+for both transports. The HTTP half additionally proves that one of two competing
+near-ceiling calls fails with sanitized `document_busy`, retry succeeds, an
+actual 50,000,000-byte `.pdf` and four other unsafe inputs return their exact
+structured errors without native content, and the vault is unchanged. A real
+stalled client must produce no server failure before 29 seconds, then hit the
+30-second response deadline and emit a sanitized operational write-failure
+signal before 34 seconds while the client body remains stalled. Only then does
+the harness release the client, verify client failure and payload/admission
+recovery, and permit a fresh SDK session to the same candidate process to retry
+successfully. (The timed-out response is deliberately truncated, so its
+original JSON-RPC client session is not reusable.) Each transport retains the
+64 MiB lifetime high-water and
 8 MiB retained-RSS limits. Stdio additionally proves blocking-GC cleanup,
 quiescence, exact FD recovery, same-session follow-up, and a 60-second idle
 window; HTTP proves same-session follow-up, no FD increase, and retained RSS
@@ -173,7 +184,11 @@ helper and requires the larger gateway high-water plus helper high-water to fit
 a conservative 160 MiB aggregate upper bound. The heavyweight local check is
 opt-in outside release. Its HTTP candidate uses a private default SQLite audit
 sink so the proof includes the production `statusRecorder` unwrap, telemetry
-cost, and four persisted tool-call rows:
+cost. Schema v4 requires 14 persisted tool-call rows, decoded safe summaries,
+indexed-field/body parity, the exact success/error distribution, and absence of
+fixture names, paths, nonce, native URI, and content sentinels. The fixture-vault
+before/after digest recursively binds paths, modes, sizes, modification times,
+regular-file bytes, and symlink targets:
 
 ```bash
 make build

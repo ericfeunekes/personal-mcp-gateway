@@ -660,6 +660,8 @@ func summaryErrorValue(value string) (localmcp.EnumValue, bool) {
 		"selector_not_found": localmcp.ValueSelectorNotFound,
 		"selector_ambiguous": localmcp.ValueSelectorAmbiguous,
 		"invalid_regex":      localmcp.ValueInvalidRegex,
+		"document_busy":      localmcp.ValueDocumentBusy,
+		"malformed_document": localmcp.ValueMalformedDocument,
 	}
 	result, ok := values[value]
 	return result, ok
