@@ -51,7 +51,9 @@ The local implementation derives registration, schemas, backend-ready names, and
 
 The 64 KiB encoded SDK result limit is the absolute context envelope for every Obsidian tool. Phase 2 retrieval may accept source/content work budgets up to 256 KiB, but it must page any larger selected work beneath that envelope with caller-carried cursors. Single-note Markdown parsing is capped at 8 MiB and 50,000 physical source lines so source-unit selection remains memory-bounded without another agent-facing option. `grep` keeps the 1 MiB materialization cap for regular expressions, while literal mode streams longer physical lines without retaining them whole and returns explicit bounded excerpts when line evidence would otherwise dominate the SDK envelope. Retrieval uses one shared coverage grammar; `grep` favors useful early pages and reports incomplete scope rather than continuing an expensive scan only to strengthen a completeness claim.
 
-Not implemented yet: `links`, `traverse`, `backlinks`, and `path_between`.
+Not implemented yet: `links`, `traverse`, `backlinks`, and `path_between`. The
+private vault-confined mutation foundation is implemented and proven locally on
+macOS; the public mutation tools and their MCP/connector proof remain pending.
 
 ## Stateless Path Model
 
@@ -101,5 +103,4 @@ The detailed schemas, limits, resolution rules, acceptance criteria, and perform
 - `GAP-OBS-008`: Descriptor-owned safe telemetry summaries are complete for the accepted five-tool core surface; summaries for links, traversal, backlinks, and path discovery are not implemented.
 - `GAP-OBS-009`: The accepted five-tool summaries have local JSONL/SQLite proof plus live model-driven `ls`, `grep`, and continued `read_many` telemetry; graph-tool summaries have not been proven.
 - `GAP-OBS-010`: Live request-local `backlinks` and `path_between` are not implemented for pre-activation benchmark and proof.
-- `GAP-OBS-011`: The mutation filesystem foundation and its exact-precondition, atomic-visibility, accepted-race, and staging-recovery proof are not implemented.
 - `GAP-OBS-012`: The public `stat`, `write`, structured `edit`, `move`, and permanent `delete` surface and its connector-facing proof are not implemented.
