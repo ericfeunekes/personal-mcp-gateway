@@ -5,7 +5,7 @@ import (
 	"personal-mcp-gateway/internal/tools/obsidian"
 )
 
-const functionalReportSchema = "personal-mcp-gateway.functional.v4"
+const functionalReportSchema = "personal-mcp-gateway.functional.v5"
 
 type functionalToolCallCounts struct {
 	Resolve  int `json:"resolve"`
@@ -75,9 +75,10 @@ func functionalReportEvidencePasses(report smokeReport) bool {
 		candidateProcessProfilePasses(report.CurrentProcess) && candidateProcessProfilePasses(report.SyntheticProcess) &&
 		report.ToolCalls.Resolve == 4 && report.ToolCalls.LS == 3 && report.ToolCalls.Read == 3 &&
 		report.ToolCalls.Grep == 1 && report.ToolCalls.ReadMany == report.SyntheticReadManyPages && report.ToolCalls.ReadMany >= 2 &&
-		report.ToolCalls.Stat == 8 && report.ToolCalls.Write == 10 && report.ToolCalls.Edit == 4 && report.ToolCalls.Move == 2 && report.ToolCalls.Delete == 2 &&
+		report.ToolCalls.Stat == 12 && report.ToolCalls.Write == 14 && report.ToolCalls.Edit == 14 && report.ToolCalls.Move == 2 && report.ToolCalls.Delete == 8 &&
 		report.SyntheticEmptyDirectoryStat &&
-		mutationEvidencePasses(report.SyntheticMutation) && report.SyntheticHTTPMutation &&
+		mutationEvidencePasses(report.SyntheticMutation) && mutationBoundaryEvidencePasses(report.SyntheticMutationBoundaries) &&
+		report.SyntheticHTTPMutation && report.SyntheticHTTPBoundaries &&
 		report.SDKResultCount == report.ToolCalls.total() && report.MaxStructuredResultBytes > 0 &&
 		report.MaxStructuredResultBytes <= obsidian.MaxStructuredResultBytes &&
 		report.MaxClientLatencyMicroseconds >= 0 && report.MaxClientLatencyMicroseconds < limits.ToolOperationTimeout.Microseconds() &&
@@ -92,8 +93,9 @@ func functionalBehaviorPasses(report smokeReport) bool {
 		report.SyntheticReadSelected && report.SyntheticGrepMatchCount == 3 &&
 		report.SyntheticReadManyPages >= 2 && report.SyntheticReadManyContinued &&
 		report.SyntheticRetrievalEquivalent && report.SyntheticTelemetrySanitized && report.SyntheticEmptyDirectoryStat &&
-		mutationEvidencePasses(report.SyntheticMutation) && report.SyntheticHTTPMutation &&
-		report.SDKResultCount >= 39 && report.MaxSDKResultBytes > 0 &&
+		mutationEvidencePasses(report.SyntheticMutation) && mutationBoundaryEvidencePasses(report.SyntheticMutationBoundaries) &&
+		report.SyntheticHTTPMutation && report.SyntheticHTTPBoundaries &&
+		report.SDKResultCount >= 63 && report.MaxSDKResultBytes > 0 &&
 		report.MaxSDKResultBytes <= obsidian.MaxSDKResultBytes
 }
 
@@ -101,4 +103,11 @@ func mutationEvidencePasses(evidence syntheticMutationEvidence) bool {
 	return evidence.CreateAbsent && evidence.ReplaceFingerprint && evidence.MultiReplacement && evidence.MoveAbsent &&
 		evidence.DeletePermanent && evidence.FollowOnObserved && evidence.CollisionRefused && evidence.StaleRefused &&
 		evidence.PatchRefused && evidence.DeniedRefused && evidence.ResidueFree
+}
+
+func mutationBoundaryEvidencePasses(evidence mutationBoundaryEvidence) bool {
+	return evidence.WriteAtLimit && evidence.WriteOverLimitRefused && evidence.EditAtLimit &&
+		evidence.EditResultOverLimitRefused && evidence.EditSourceOverLimitRefused &&
+		evidence.AmbiguousContextRefused && evidence.OverlappingContextRefused &&
+		evidence.ImmediateIsolationObserved && evidence.ResidueFree
 }

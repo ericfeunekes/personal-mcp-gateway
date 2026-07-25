@@ -105,7 +105,7 @@ func TestPhase2ResourceProbeExercisesBuiltTenToolCandidate(t *testing.T) {
 	}
 }
 
-func TestPhase2ResourceProbeAcceptedControlUsesFiveToolSurface(t *testing.T) {
+func TestPhase2ResourceProbeAcceptedControlUsesTenToolSurface(t *testing.T) {
 	candidate := buildAcceptedGatewayCandidate(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

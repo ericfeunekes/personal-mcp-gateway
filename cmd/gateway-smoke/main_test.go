@@ -85,7 +85,8 @@ func TestRunReportJSONIsOneSanitizedAggregate(t *testing.T) {
 		!report.SyntheticFullEquivalence || !report.SyntheticReadSelected || report.SyntheticGrepMatchCount != 3 ||
 		report.SyntheticReadManyPages < 2 || !report.SyntheticReadManyContinued || !report.SyntheticRetrievalEquivalent ||
 		!report.SyntheticTelemetrySanitized || !report.SyntheticEmptyDirectoryStat || !mutationEvidencePasses(report.SyntheticMutation) ||
-		!report.SyntheticHTTPMutation || report.SDKResultCount < 39 || report.MaxSDKResultBytes <= 0 ||
+		!mutationBoundaryEvidencePasses(report.SyntheticMutationBoundaries) || !report.SyntheticHTTPMutation ||
+		!report.SyntheticHTTPBoundaries || report.SDKResultCount < 63 || report.MaxSDKResultBytes <= 0 ||
 		!functionalBehaviorPasses(report) || !functionalReportEvidencePasses(report) {
 		t.Fatalf("report = %#v", report)
 	}
@@ -587,7 +588,7 @@ func TestDefaultResourceProbeContractIsFrozen(t *testing.T) {
 		IdleDuration:  60 * time.Second,
 		ControlTime:   5 * time.Second,
 	}
-	if !reflect.DeepEqual(got, want) || resourceReportVersion != 8 || resourceBatchCount != 3 || resourceBatchCalls != 100 ||
+	if !reflect.DeepEqual(got, want) || resourceReportVersion != 9 || resourceBatchCount != 3 || resourceBatchCalls != 100 ||
 		resourceHeapAllocGrowthLimitBytes != uint64(256*1024) || resourceRSSGrowthLimitBytes != int64(8*1024*1024) ||
 		resourceRSSLimitBytes != int64(64*1024*1024) {
 		t.Fatalf("resource probe defaults = %#v, version=%d batches=%d calls=%d heap=%d rss=%d hwm=%d", got, resourceReportVersion, resourceBatchCount, resourceBatchCalls, resourceHeapAllocGrowthLimitBytes, resourceRSSGrowthLimitBytes, resourceRSSLimitBytes)
@@ -1264,17 +1265,18 @@ func passingResourceGateReport() resourceReport {
 	const baselineRSS = int64(16 * 1024 * 1024)
 	const baselineHeap = uint64(1024 * 1024)
 	report := resourceReport{
-		ReportKind:      reportKindResource,
-		ReportSchema:    resourceReportSchema,
-		SchemaVersion:   resourceReportVersion,
-		ToolSurface:     candidateToolSurface,
-		DescriptorCount: candidateDescriptorCount,
-		MutationCycles:  resourceMutationCycles, MutationOperations: resourceMutationCycles * resourceMutationOperations,
-		MutationEvidence: syntheticMutationEvidence{CreateAbsent: true, ReplaceFingerprint: true, MultiReplacement: true, MoveAbsent: true, DeletePermanent: true, FollowOnObserved: true, CollisionRefused: true, StaleRefused: true, PatchRefused: true, DeniedRefused: true, ResidueFree: true},
-		Cold:             coldResourceReport{FreshProcessCount: 10, MaxSDKResultBytes: 1, MaxStructuredBytes: 1},
-		CandidateRuntime: candidateRuntimeProfile{GoVersion: "go1.26.1", GOOS: "darwin", GOARCH: "amd64"},
-		Machine:          machineProfile{LogicalCPUCount: 8, GOMAXPROCS: 8},
-		Vault:            vaultAggregateProfile{InventoryPolicy: markdownInventoryPolicy, InventoryComplete: true, StoppedBy: "scope"},
+		ReportKind:           reportKindResource,
+		ReportSchema:         resourceReportSchema,
+		SchemaVersion:        resourceReportVersion,
+		ToolSurface:          candidateToolSurface,
+		DescriptorCount:      candidateDescriptorCount,
+		MutationCycles:       resourceMutationCycles,
+		MutationJourneyCalls: resourceMutationCycles * resourceMutationJourneyCalls,
+		MutationEvidence:     syntheticMutationEvidence{CreateAbsent: true, ReplaceFingerprint: true, MultiReplacement: true, MoveAbsent: true, DeletePermanent: true, FollowOnObserved: true, CollisionRefused: true, StaleRefused: true, PatchRefused: true, DeniedRefused: true, ResidueFree: true},
+		Cold:                 coldResourceReport{FreshProcessCount: 10, MaxSDKResultBytes: 1, MaxStructuredBytes: 1},
+		CandidateRuntime:     candidateRuntimeProfile{GoVersion: "go1.26.1", GOOS: "darwin", GOARCH: "amd64"},
+		Machine:              machineProfile{LogicalCPUCount: 8, GOMAXPROCS: 8},
+		Vault:                vaultAggregateProfile{InventoryPolicy: markdownInventoryPolicy, InventoryComplete: true, StoppedBy: "scope"},
 		Fixture: resourceVaultReport{
 			GeneratedMarkdownFiles: 13, GeneratedBytes: 1, InventoryMarkdownFiles: 13, InventoryBytes: 1,
 			InventoryComplete: true, InventoryReconciled: true,

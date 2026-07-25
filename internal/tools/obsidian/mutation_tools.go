@@ -228,7 +228,7 @@ func applyMutationPatch(source []byte, encoding string, replacements []EditRepla
 			return nil, errMutationPatch
 		}
 		start := bytes.Index(source, old)
-		if start < 0 || bytes.Index(source[start+len(old):], old) >= 0 {
+		if start < 0 || bytes.Index(source[start+1:], old) >= 0 {
 			return nil, errMutationPatch
 		}
 		spans = append(spans, mutationSpan{start: start, end: start + len(old), replacement: newValue})

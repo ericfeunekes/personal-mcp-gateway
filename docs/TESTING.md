@@ -140,7 +140,7 @@ proofs in addition to `make test`:
 ```bash
 GOCACHE=$(pwd)/.gocache go test -race -count=1 ./internal/tools/obsidian ./internal/app
 GOCACHE=$(pwd)/.gocache go test -count=1 ./cmd/gateway-smoke -run '^TestPhase2PerformanceExactCandidate$' -v
-GOCACHE=$(pwd)/.gocache go test -count=1 ./cmd/gateway-smoke -run '^TestPhase2ResourceProbeExercisesBuiltFiveToolCandidate$' -v
+GOCACHE=$(pwd)/.gocache go test -count=1 ./cmd/gateway-smoke -run '^TestPhase2ResourceProbeExercisesBuiltTenToolCandidate$' -v
 ```
 
 The resource proof must observe overlapping request-local pools above one
@@ -159,10 +159,10 @@ uses the second-largest nonnegative baseline-window-to-batch-window delta. The
 raw checkpoints, blocking-GC acknowledgements, FD recovery, idle, workload,
 latency, boundary, and lifetime high-water gates remain independently required.
 Every report identifies its exact `tool_surface`: canonical release proof uses
-the six-tool `candidate` surface. The five-tool `accepted` surface is available
-only through explicit `--resource-control` with `--resource-json`; it exists for
-paired regression comparison and is rejected by canonical report-set
-validation.
+the eleven-tool `candidate` surface. The ten-tool default non-document surface
+is available only through explicit `--resource-control` with `--resource-json`;
+it exists for paired regression comparison and is rejected by canonical
+report-set validation.
 
 The PDF activation candidate additionally runs an exact 49,999,999-byte gate.
 It generates and independently validates/renders a two-page PDF, makes three
@@ -386,26 +386,32 @@ or private manifest fields. The installed drills establish a representative
 activation transaction, not power-loss durability, sleep/wake recovery,
 multi-day soak behavior, every prompt formulation, or future-vault performance.
 
-### Current local ten-tool mutation-candidate proof
+### Current local eleven-tool combined-candidate proof
 
-On 2026-07-25, `make test` passed the complete local candidate matrix for the
-five-tool retrieval baseline plus `stat`, `write`, structured `edit`, `move`,
-and permanent `delete`. The ordinary package set included the 71-second Darwin
+On 2026-07-26, the rebased candidate combines the five-tool retrieval baseline,
+`stat`, `write`, structured `edit`, `move`, permanent `delete`, and the
+activation-gated `read_document` PDF candidate. The default non-document
+surface therefore has ten tools and the activation candidate has eleven. The
+ordinary package set includes the Darwin
 mutation-foundation suite; the built-gateway smoke suite passed in 34 seconds;
 and the release-script suite passed in 215 seconds.
 
-The exact-candidate functional v4 report runs a disposable create, stat,
+The exact-candidate functional v5 report runs a disposable create, stat,
 complete replacement, multi-replacement edit, move, readback, permanent delete,
 and final resolve journey through both stdio and Streamable HTTP on the built
 gateway executable. It also proves collision, stale-fingerprint, missing-patch-
-context, and denied-path refusals without changing any fixture content.
-Performance v6 and resource v8 each run three additional 14-call disposable
-mutation cycles, require 42 mutation operations, compare complete fixture name,
+context, overlapping and ambiguous patch context, exact and one-byte-over
+512 KiB write limits, exact and one-byte-over 8 MiB edit limits, and denied-path
+refusals through both transports. Every refusal is followed immediately by a
+complete vault snapshot; traversal also verifies an explicit outside-root
+sentinel. Performance v7 and resource v9 each run three additional 14-call
+disposable mutation journeys, require 42 journey calls (27 mutation-tool calls
+and 15 read-only `stat`/`read`/`resolve` observations), compare complete fixture name,
 kind, size, and content-digest snapshots for residue/non-target isolation,
 verify exact descriptor and telemetry quiescence, and retain only bounded counts
 and boolean outcomes. Cross-report
-and release-fake validation require the same ten-tool grammar and reject the
-prior five-tool report schemas. The current-vault performance and cold-start
+and release-fake validation require the same eleven-tool candidate grammar and
+reject the prior report schemas. The current-vault performance and cold-start
 probes remain read-only.
 
 This is local connector-facing proof against generated disposable vaults. It is

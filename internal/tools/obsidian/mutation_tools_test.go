@@ -37,6 +37,9 @@ func TestApplyMutationPatchRequiresUniqueNonOverlappingMatches(t *testing.T) {
 			t.Fatalf("applyMutationPatch(%#v) unexpectedly succeeded", replacements)
 		}
 	}
+	if _, err := applyMutationPatch([]byte("aaa"), MutationEncodingUTF8, []EditReplacement{{Old: "aa", New: "x"}}); !errors.Is(err, errMutationPatch) {
+		t.Fatalf("overlapping ambiguous match err = %v, want invalid patch", err)
+	}
 }
 
 func TestDecodeMutationValueRejectsNonCanonicalOrInvalidUTF8(t *testing.T) {

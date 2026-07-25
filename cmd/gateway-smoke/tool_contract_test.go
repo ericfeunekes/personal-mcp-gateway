@@ -65,7 +65,7 @@ func TestExactCandidateToolGrammarRejectsAgentVisibleDrift(t *testing.T) {
 func TestExactAcceptedToolGrammarRejectsTemporaryProbeAndSchemaDrift(t *testing.T) {
 	tools := listedAcceptedTools(t)
 	if !exactAcceptedToolGrammar(tools) {
-		t.Fatal("exact accepted five-tool grammar was rejected")
+		t.Fatal("exact default ten-tool non-document grammar was rejected")
 	}
 	withProbe := cloneTools(t, tools)
 	for _, tool := range listedCandidateTools(t) {

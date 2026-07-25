@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	performanceReportSchema    = "personal-mcp-gateway.performance.v6"
+	performanceReportSchema    = "personal-mcp-gateway.performance.v7"
 	phase2SyntheticFileCount   = 50
 	phase2SyntheticFileBytes   = 5_120
 	phase2SyntheticCorpusBytes = phase2SyntheticFileCount * phase2SyntheticFileBytes
@@ -25,7 +25,7 @@ const (
 	phase2PerformanceNeedle    = "phase2-candidate-performance-needle"
 	phase2BroadNegativeSamples = 5
 	phase2MutationCycles       = 3
-	phase2MutationOperations   = 14
+	phase2MutationJourneyCalls = 14
 )
 
 type broadGrepObservation struct {
@@ -61,19 +61,19 @@ type broadNegativeObservation struct {
 }
 
 type phase2PerformanceEvidence struct {
-	runtime             candidateRuntimeProfile
-	machine             machineProfile
-	currentVault        vaultAggregateProfile
-	syntheticCorpus     vaultAggregateProfile
-	syntheticRead       performanceMetrics
-	syntheticGrep       performanceMetrics
-	mutationCycles      int
-	mutationOperations  int
-	mutationEvidence    syntheticMutationEvidence
-	broadCurrentGrep    broadGrepObservation
-	broadNegativeGrep   broadNegativeObservation
-	syntheticProcess    candidateProcessProfile
-	currentVaultProcess candidateProcessProfile
+	runtime              candidateRuntimeProfile
+	machine              machineProfile
+	currentVault         vaultAggregateProfile
+	syntheticCorpus      vaultAggregateProfile
+	syntheticRead        performanceMetrics
+	syntheticGrep        performanceMetrics
+	mutationCycles       int
+	mutationJourneyCalls int
+	mutationEvidence     syntheticMutationEvidence
+	broadCurrentGrep     broadGrepObservation
+	broadNegativeGrep    broadNegativeObservation
+	syntheticProcess     candidateProcessProfile
+	currentVaultProcess  candidateProcessProfile
 }
 
 type phase2SyntheticFixture struct {
@@ -95,7 +95,7 @@ func probePhase2Performance(ctx context.Context, gatewayBin, currentVaultRoot st
 	if err != nil {
 		return phase2PerformanceEvidence{}, err
 	}
-	syntheticCorpus, syntheticRead, syntheticGrep, mutationCycles, mutationOperations, mutationEvidence, syntheticProcess, err := probeSyntheticRetrievalPerformance(ctx, gatewayBin)
+	syntheticCorpus, syntheticRead, syntheticGrep, mutationCycles, mutationJourneyCalls, mutationEvidence, syntheticProcess, err := probeSyntheticRetrievalPerformance(ctx, gatewayBin)
 	if err != nil {
 		return phase2PerformanceEvidence{}, err
 	}
@@ -109,7 +109,7 @@ func probePhase2Performance(ctx context.Context, gatewayBin, currentVaultRoot st
 	}
 	return phase2PerformanceEvidence{
 		runtime: runtimeProfile, machine: machine, currentVault: currentVault, syntheticCorpus: syntheticCorpus,
-		syntheticRead: syntheticRead, syntheticGrep: syntheticGrep, mutationCycles: mutationCycles, mutationOperations: mutationOperations, mutationEvidence: mutationEvidence, broadCurrentGrep: broad, broadNegativeGrep: negative,
+		syntheticRead: syntheticRead, syntheticGrep: syntheticGrep, mutationCycles: mutationCycles, mutationJourneyCalls: mutationJourneyCalls, mutationEvidence: mutationEvidence, broadCurrentGrep: broad, broadNegativeGrep: negative,
 		syntheticProcess: syntheticProcess, currentVaultProcess: currentProcess,
 	}, nil
 }
@@ -198,8 +198,8 @@ func probeSyntheticRetrievalPerformance(ctx context.Context, gatewayBin string) 
 			return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, 0, 0, syntheticMutationEvidence{}, candidateProcessProfile{}, errors.New("phase 2 synthetic mutation cycle failed")
 		}
 	}
-	if cycleReport.ToolCalls.total() != phase2MutationCycles*phase2MutationOperations {
-		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, 0, 0, syntheticMutationEvidence{}, candidateProcessProfile{}, errors.New("phase 2 synthetic mutation operation count drifted")
+	if cycleReport.ToolCalls.total() != phase2MutationCycles*phase2MutationJourneyCalls {
+		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, 0, 0, syntheticMutationEvidence{}, candidateProcessProfile{}, errors.New("phase 2 synthetic mutation journey call count drifted")
 	}
 	if err := tracker.sample(ctx); err != nil {
 		return vaultAggregateProfile{}, performanceMetrics{}, performanceMetrics{}, 0, 0, syntheticMutationEvidence{}, candidateProcessProfile{}, err
@@ -421,7 +421,7 @@ func phase2PerformanceEvidencePasses(report performanceReport) bool {
 		report.SyntheticCorpus.InventoryComplete != true || report.SyntheticCorpus.MarkdownFileCount != phase2SyntheticFileCount ||
 		report.SyntheticCorpus.MarkdownByteCount != phase2SyntheticCorpusBytes ||
 		!phase2SyntheticReadMetricsPass(report.SyntheticRead) || !phase2SyntheticGrepMetricsPass(report.SyntheticGrep) ||
-		report.MutationCycles != phase2MutationCycles || report.MutationOperations != phase2MutationCycles*phase2MutationOperations ||
+		report.MutationCycles != phase2MutationCycles || report.MutationJourneyCalls != phase2MutationCycles*phase2MutationJourneyCalls ||
 		!mutationEvidencePasses(report.MutationEvidence) ||
 		!broadGrepObservationPasses(report.BroadCurrentGrep, report.CurrentVault) ||
 		!broadNegativeObservationPasses(report.BroadNegativeGrep, report.CurrentVault) {

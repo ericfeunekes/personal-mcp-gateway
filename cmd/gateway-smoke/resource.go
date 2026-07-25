@@ -26,8 +26,8 @@ import (
 )
 
 const (
-	resourceReportSchema              = "personal-mcp-gateway.resource.v8"
-	resourceReportVersion             = 8
+	resourceReportSchema              = "personal-mcp-gateway.resource.v9"
+	resourceReportVersion             = 9
 	resourceColdProcesses             = 10
 	resourceBatchCount                = 3
 	resourceBatchCalls                = 100
@@ -38,7 +38,7 @@ const (
 	resourceConcurrentProbeCalls      = 3
 	resourceMutationCycles            = 3
 	resourceMutationWarmupCycles      = 1
-	resourceMutationOperations        = 14
+	resourceMutationJourneyCalls      = 14
 	resourceHeapAllocGrowthLimitBytes = uint64(256 * 1024)
 	resourceRSSGrowthLimitBytes       = int64(8 * 1024 * 1024)
 	resourceRSSLimitBytes             = int64(64 * 1024 * 1024)
@@ -55,7 +55,7 @@ const (
 )
 
 const resourceConcurrentGrepContentBytes = resourceConcurrentGrepFileBytes + len("resource-concurrent-hit\n") + 1
-const resourceExpectedToolCallRows = resourceConcurrentWarmupCalls + (resourceMutationWarmupCycles+resourceMutationCycles)*resourceMutationOperations + resourceMeasuredCalls + resourceConcurrentProbeCalls
+const resourceExpectedToolCallRows = resourceConcurrentWarmupCalls + (resourceMutationWarmupCycles+resourceMutationCycles)*resourceMutationJourneyCalls + resourceMeasuredCalls + resourceConcurrentProbeCalls
 
 type resourceReport struct {
 	ReportKind                         string                    `json:"report_kind"`
@@ -89,7 +89,7 @@ type resourceReport struct {
 	Idle                               idleResourceReport        `json:"idle"`
 	ConcurrentGrep                     concurrentGrepReport      `json:"concurrent_grep"`
 	MutationCycles                     int                       `json:"mutation_cycles"`
-	MutationOperations                 int                       `json:"mutation_operations"`
+	MutationJourneyCalls               int                       `json:"mutation_journey_calls"`
 	MutationEvidence                   syntheticMutationEvidence `json:"mutation_evidence"`
 }
 
@@ -946,25 +946,25 @@ func probeCandidateResources(ctx context.Context, gatewayBin, root string, optio
 			return resourceReport{}, errors.New("candidate resource mutation cycle failed")
 		}
 	}
-	if mutationReport.ToolCalls.total() != resourceMutationCycles*resourceMutationOperations {
-		return resourceReport{}, errors.New("candidate resource mutation operation count drifted")
+	if mutationReport.ToolCalls.total() != resourceMutationCycles*resourceMutationJourneyCalls {
+		return resourceReport{}, errors.New("candidate resource mutation journey call count drifted")
 	}
 	report := resourceReport{
-		ReportKind:         reportKindResource,
-		ReportSchema:       resourceReportSchema,
-		SchemaVersion:      resourceReportVersion,
-		ToolSurface:        options.ToolSurface,
-		DescriptorCount:    descriptorCount,
-		CandidateRuntime:   runtimeProfile,
-		Machine:            machineProfile,
-		Vault:              vaultProfile,
-		Fixture:            fixture.generated,
-		Cold:               cold,
-		Baseline:           baseline,
-		MutationCycles:     resourceMutationCycles,
-		MutationOperations: mutationReport.ToolCalls.total(),
-		MutationEvidence:   mutationReport.SyntheticMutation,
-		Batches:            make([]resourceBatchReport, 0, resourceBatchCount),
+		ReportKind:           reportKindResource,
+		ReportSchema:         resourceReportSchema,
+		SchemaVersion:        resourceReportVersion,
+		ToolSurface:          options.ToolSurface,
+		DescriptorCount:      descriptorCount,
+		CandidateRuntime:     runtimeProfile,
+		Machine:              machineProfile,
+		Vault:                vaultProfile,
+		Fixture:              fixture.generated,
+		Cold:                 cold,
+		Baseline:             baseline,
+		MutationCycles:       resourceMutationCycles,
+		MutationJourneyCalls: mutationReport.ToolCalls.total(),
+		MutationEvidence:     mutationReport.SyntheticMutation,
+		Batches:              make([]resourceBatchReport, 0, resourceBatchCount),
 	}
 	workload := newResourceWorkloadAccumulator()
 	for batchIndex := 0; batchIndex < resourceBatchCount; batchIndex++ {
@@ -1197,7 +1197,7 @@ func resourceReportPassesForSurface(report resourceReport, expectedColdProcesses
 		!vaultAggregateProfilePasses(report.Vault) || !candidateProcessProfilePasses(report.Process) ||
 		!validConcurrentGrep(report.ConcurrentGrep) ||
 		!report.Fixture.InventoryComplete || !report.Fixture.InventoryReconciled || report.Fixture.GeneratedMarkdownFiles <= 0 ||
-		report.MutationCycles != resourceMutationCycles || report.MutationOperations != resourceMutationCycles*resourceMutationOperations ||
+		report.MutationCycles != resourceMutationCycles || report.MutationJourneyCalls != resourceMutationCycles*resourceMutationJourneyCalls ||
 		!mutationEvidencePasses(report.MutationEvidence) ||
 		report.Fixture.GeneratedMarkdownFiles != report.Fixture.InventoryMarkdownFiles || report.Fixture.GeneratedBytes <= 0 ||
 		report.Fixture.GeneratedBytes != report.Fixture.InventoryBytes || !validResourceWorkload(report.Workload) ||
@@ -1247,7 +1247,7 @@ func orderedNonnegativeDurations(p50, p95, maximum int64) bool {
 }
 
 func idleResourceReportPasses(report idleResourceReport, baselineFD, descriptorCount int, surface toolSurface) bool {
-	return idleResourceReportPassesExpected(report, baselineFD, descriptorCount, surface, resourceConcurrentWarmupCalls+resourceMeasuredCalls+resourceConcurrentProbeCalls)
+	return idleResourceReportPassesExpected(report, baselineFD, descriptorCount, surface, resourceExpectedToolCallRows)
 }
 
 func idleResourceReportPassesExpected(report idleResourceReport, baselineFD, descriptorCount int, surface toolSurface, expectedToolCallRows int) bool {
