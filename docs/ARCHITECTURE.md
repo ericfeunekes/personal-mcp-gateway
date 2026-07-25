@@ -36,7 +36,7 @@ The chosen public namespace shape is the MCP server name, not dotted tool names.
 
 The initial deployable unit is the Obsidian MCP server process. The same backend module is started in either stdio mode for local smoke tests or HTTP mode for OpenAI tunnel integration. Do not build separate stdio and HTTP server implementations. Future integrations may share internal gateway code, but they should become separately named MCP server entries before they become model-visible.
 
-Use `github.com/modelcontextprotocol/go-sdk` as the MCP implementation layer. The backend should construct one MCP server shape and expose it through `mcp.StdioTransport` or `mcp.NewStreamableHTTPHandler`; direct JSON-RPC protocol code belongs outside the initial design.
+Use `github.com/modelcontextprotocol/go-sdk` as the MCP implementation layer. The backend constructs one MCP server shape and exposes it through stdio or Streamable HTTP. One narrowly scoped exception replaces only marked `read_document` tool-result frames after the SDK has performed dispatch and typed output construction: it incrementally emits the SDK-compatible embedded-resource JSON shape from an immutable one-shot payload. Ordinary frames remain byte-for-byte on the SDK path, native batches are rejected before dispatch, and this exception must not become a general JSON-RPC implementation.
 
 ## Domains
 
@@ -131,6 +131,7 @@ clear-only, lock-held administrative effects. The adapters that invoke
 - No multi-user authorization model until a real non-personal consumer appears.
 - No unrelated integration tools inside the `obsidian` server.
 - No custom MCP protocol implementation unless the official SDK blocks a proven tunnel or ChatGPT compatibility requirement.
+- The native-document serializer is the only current protocol contingency. It accepts only process-private one-shot payload markers and cannot dereference paths, URLs, or generic resources.
 
 ## Current Gaps
 

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"personal-mcp-gateway/internal/tools/obsidian"
 )
@@ -102,20 +103,52 @@ func TestValidateReportSetRequiresOneMatchingReportPerMode(t *testing.T) {
 	functional := write("functional.json", reports[0])
 	performance := write("performance.json", reports[1])
 	resource := write("resource.json", reports[2])
-	if err := validateReportSet([]string{functional, performance, resource}, expected); err != nil {
-		t.Fatalf("valid report set rejected: %v", err)
+	if err := validateReportSet([]string{functional, performance, resource}, expected); err == nil {
+		t.Fatal("report set without document proof was accepted")
+	}
+	document := write("document.json", reports[3])
+	if err := validateReportSet([]string{functional, performance, resource, document}, expected); err != nil {
+		t.Fatalf("valid document-bound report set rejected: %v", err)
+	}
+	validateCore := func(paths []string) error {
+		return validateReportSet(append(paths, document), expected)
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*documentTransferCapacityReport)
+	}{
+		{name: "document stale schema", mutate: func(report *documentTransferCapacityReport) { report.SchemaVersion-- }},
+		{name: "document aggregate drift", mutate: func(report *documentTransferCapacityReport) { report.AggregateHighWaterUpperBoundBytes++ }},
+		{name: "document aggregate breach", mutate: func(report *documentTransferCapacityReport) {
+			report.AggregateHighWaterUpperBoundBytes = documentTransferAggregateRSSLimitBytes + 1
+			report.AggregateHighWaterWithinBound = true
+		}},
+		{name: "document HTTP evidence drift", mutate: func(report *documentTransferCapacityReport) { report.HTTP.SequentialCallCount-- }},
+		{name: "document HTTP retained RSS drift", mutate: func(report *documentTransferCapacityReport) { report.HTTP.PostCallRSSBytes++ }},
+		{name: "document missing stdio checkpoints", mutate: func(report *documentTransferCapacityReport) { report.PostCall = report.PostCall[:2] }},
+		{name: "document stdio high-water drift", mutate: func(report *documentTransferCapacityReport) { report.HighWaterRSSDeltaBytes++ }},
+		{name: "document terminal offset drift", mutate: func(report *documentTransferCapacityReport) { report.NonceOffset = 0 }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			report := passingDocumentCapacityReport(expected)
+			test.mutate(&report)
+			invalid := write(test.name+".json", report)
+			if err := validateReportSet([]string{functional, performance, resource, invalid}, expected); err == nil {
+				t.Fatal("invalid document report was accepted")
+			}
+		})
 	}
 
 	t.Run("cross-report drift", func(t *testing.T) {
 		report := reports[2].(resourceReport)
 		report.DependencySHA256 = strings.Repeat("4", 64)
 		drifted := write("drifted.json", report)
-		if err := validateReportSet([]string{functional, performance, drifted}, expected); err == nil {
+		if err := validateCore([]string{functional, performance, drifted}); err == nil {
 			t.Fatal("cross-report drift was accepted")
 		}
 	})
 	t.Run("duplicate mode", func(t *testing.T) {
-		if err := validateReportSet([]string{functional, performance, performance}, expected); err == nil {
+		if err := validateCore([]string{functional, performance, performance}); err == nil {
 			t.Fatal("duplicate report mode was accepted")
 		}
 	})
@@ -123,7 +156,7 @@ func TestValidateReportSetRequiresOneMatchingReportPerMode(t *testing.T) {
 		report := reports[2].(resourceReport)
 		report.Passed = false
 		failed := write("failed.json", report)
-		if err := validateReportSet([]string{functional, performance, failed}, expected); err == nil {
+		if err := validateCore([]string{functional, performance, failed}); err == nil {
 			t.Fatal("failed report was accepted")
 		}
 	})
@@ -131,7 +164,7 @@ func TestValidateReportSetRequiresOneMatchingReportPerMode(t *testing.T) {
 		report := reports[2].(resourceReport)
 		report.SchemaVersion--
 		stale := write("stale.json", report)
-		if err := validateReportSet([]string{functional, performance, stale}, expected); err == nil {
+		if err := validateCore([]string{functional, performance, stale}); err == nil {
 			t.Fatal("stale report schema was accepted")
 		}
 	})
@@ -147,7 +180,7 @@ func TestValidateReportSetRequiresOneMatchingReportPerMode(t *testing.T) {
 			report := reports[2].(resourceReport)
 			test.mutate(&report)
 			invalid := write(test.name+".json", report)
-			if err := validateReportSet([]string{functional, performance, invalid}, expected); err == nil {
+			if err := validateCore([]string{functional, performance, invalid}); err == nil {
 				t.Fatal("invalid report tuple was accepted")
 			}
 		})
@@ -156,7 +189,7 @@ func TestValidateReportSetRequiresOneMatchingReportPerMode(t *testing.T) {
 		report := reports[1].(performanceReport)
 		report.SchemaVersion = 2
 		stale := write("performance-v2.json", report)
-		if err := validateReportSet([]string{functional, stale, resource}, expected); err == nil {
+		if err := validateCore([]string{functional, stale, resource}); err == nil {
 			t.Fatal("version-two performance report was accepted")
 		}
 	})
@@ -164,7 +197,7 @@ func TestValidateReportSetRequiresOneMatchingReportPerMode(t *testing.T) {
 		report := reports[0].(smokeReport)
 		report.SchemaVersion = 2
 		stale := write("functional-v2.json", report)
-		if err := validateReportSet([]string{stale, performance, resource}, expected); err == nil {
+		if err := validateCore([]string{stale, performance, resource}); err == nil {
 			t.Fatal("version-two functional report was accepted")
 		}
 	})
@@ -173,7 +206,7 @@ func TestValidateReportSetRequiresOneMatchingReportPerMode(t *testing.T) {
 		if err := os.WriteFile(malformed, []byte("{}{}"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := validateReportSet([]string{functional, performance, malformed}, expected); err == nil {
+		if err := validateCore([]string{functional, performance, malformed}); err == nil {
 			t.Fatal("malformed report was accepted")
 		}
 	})
@@ -182,7 +215,7 @@ func TestValidateReportSetRequiresOneMatchingReportPerMode(t *testing.T) {
 			ReportKind: reportKindResource, ReportSchema: resourceReportSchema, SchemaVersion: resourceReportVersion, Passed: true,
 			CandidateCommit: expected.Commit, CandidateSHA256: expected.CandidateSHA256, DependencySHA256: expected.DependencySHA256,
 		})
-		if err := validateReportSet([]string{functional, performance, headerOnly}, expected); err == nil {
+		if err := validateCore([]string{functional, performance, headerOnly}); err == nil {
 			t.Fatal("header-only proof was accepted")
 		}
 	})
@@ -197,7 +230,7 @@ func TestValidateReportSetRequiresOneMatchingReportPerMode(t *testing.T) {
 		}
 		delete(object, "tool_count")
 		missing := write("missing.json", object)
-		if err := validateReportSet([]string{missing, performance, resource}, expected); err == nil {
+		if err := validateCore([]string{missing, performance, resource}); err == nil {
 			t.Fatal("missing proof field was accepted")
 		}
 	})
@@ -211,7 +244,7 @@ func TestValidateReportSetRequiresOneMatchingReportPerMode(t *testing.T) {
 		if err := os.WriteFile(duplicate, data, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := validateReportSet([]string{duplicate, performance, resource}, expected); err == nil {
+		if err := validateCore([]string{duplicate, performance, resource}); err == nil {
 			t.Fatal("duplicate proof field was accepted")
 		}
 	})
@@ -219,7 +252,7 @@ func TestValidateReportSetRequiresOneMatchingReportPerMode(t *testing.T) {
 		report := reports[0].(smokeReport)
 		report.MaxSDKResultBytes = obsidian.MaxSDKResultBytes + 1
 		oversized := write("oversized-functional.json", report)
-		if err := validateReportSet([]string{oversized, performance, resource}, expected); err == nil {
+		if err := validateCore([]string{oversized, performance, resource}); err == nil {
 			t.Fatal("oversized functional result was accepted")
 		}
 	})
@@ -227,7 +260,7 @@ func TestValidateReportSetRequiresOneMatchingReportPerMode(t *testing.T) {
 		report := reports[0].(smokeReport)
 		report.ToolCalls.Read = 0
 		drifted := write("functional-evidence-drift.json", report)
-		if err := validateReportSet([]string{drifted, performance, resource}, expected); err == nil {
+		if err := validateCore([]string{drifted, performance, resource}); err == nil {
 			t.Fatal("functional evidence drift was accepted")
 		}
 	})
@@ -235,7 +268,7 @@ func TestValidateReportSetRequiresOneMatchingReportPerMode(t *testing.T) {
 		report := reports[1].(performanceReport)
 		report.SyntheticCorpus.MarkdownByteCount--
 		drifted := write("performance-evidence-drift.json", report)
-		if err := validateReportSet([]string{functional, drifted, resource}, expected); err == nil {
+		if err := validateCore([]string{functional, drifted, resource}); err == nil {
 			t.Fatal("performance evidence drift was accepted")
 		}
 	})
@@ -257,7 +290,7 @@ func TestValidateReportSetRequiresOneMatchingReportPerMode(t *testing.T) {
 			report := reports[1].(performanceReport)
 			test.mutate(&report)
 			invalid := write(test.name+".json", report)
-			if err := validateReportSet([]string{functional, invalid, resource}, expected); err == nil {
+			if err := validateCore([]string{functional, invalid, resource}); err == nil {
 				t.Fatal("incoherent performance metric was accepted")
 			}
 		})
@@ -266,7 +299,7 @@ func TestValidateReportSetRequiresOneMatchingReportPerMode(t *testing.T) {
 		report := reports[2].(resourceReport)
 		report.Boundaries.CallCount--
 		drifted := write("resource-evidence-drift.json", report)
-		if err := validateReportSet([]string{functional, performance, drifted}, expected); err == nil {
+		if err := validateCore([]string{functional, performance, drifted}); err == nil {
 			t.Fatal("resource evidence drift was accepted")
 		}
 	})
@@ -281,10 +314,52 @@ func TestValidateReportSetRequiresOneMatchingReportPerMode(t *testing.T) {
 		}
 		object["unexpected"] = json.RawMessage("true")
 		unknown := write("unknown.json", object)
-		if err := validateReportSet([]string{unknown, performance, resource}, expected); err == nil {
+		if err := validateCore([]string{unknown, performance, resource}); err == nil {
 			t.Fatal("unknown report field was accepted")
 		}
 	})
+}
+
+func passingDocumentCapacityReport(expected candidateProvenance) documentTransferCapacityReport {
+	shape := passingPhase2PerformanceReportShape()
+	idle := passingResourceGateReport().Idle
+	idle.ExpectedToolCallRows = 4
+	idle.ToolCallRowsBefore = 4
+	idle.ToolCallRowsAfter = 4
+	idle.DescriptorCountAfter = candidateDescriptorCount
+	return documentTransferCapacityReport{
+		ReportKind: reportKindDocument, ReportSchema: documentTransferCapacitySchema, SchemaVersion: documentTransferCapacityVersion, Passed: true,
+		CandidateCommit: expected.Commit, CandidateSHA256: expected.CandidateSHA256, DependencySHA256: expected.DependencySHA256,
+		CandidateRuntime: shape.CandidateRuntime, Machine: shape.Machine, DescriptorCount: candidateDescriptorCount,
+		RawBytes: obsidian.DocumentFixtureMaxBytes, RawSHA256: obsidian.DocumentFixtureSHA256, EncodedWireBytes: obsidian.DocumentFixtureMaxBytes + 1,
+		EncodedWireFrames: 1, StructuredResultBytes: 1, CallLatencyMicroseconds: 1, SequentialCallCount: 3, CallWithinTwoSeconds: true,
+		NonceOffset: obsidian.DocumentFixtureMaxBytes - 1, FinalPageObjectOffset: obsidian.DocumentFixtureMaxBytes - 2,
+		VisualEvidenceOffset: obsidian.DocumentFixtureMaxBytes - 3, TerminalEvidenceWithin4096Bytes: true,
+		ArtifactSHA256: obsidian.DocumentFixtureSHA256, PDFValidatorAccepted: true,
+		TerminalTextExtractionPassed: true, RenderedFinalPageSHA256: strings.Repeat("4", 64), RenderedGeometryPassed: true,
+		FixtureLeakageCheckPassed: true, FirstDisallowedSizeRejected: true,
+		Baseline: documentTransferCheckpoint{ElapsedMicroseconds: 1, Memory: resourceMemoryReport{HeapAllocBytes: 1}, RSSBytes: 1, FDCount: 7},
+		PostCall: []documentTransferCheckpoint{
+			{ElapsedMicroseconds: 2, Memory: resourceMemoryReport{HeapAllocBytes: 1}, RSSBytes: 1, FDCount: 7},
+			{ElapsedMicroseconds: 3, Memory: resourceMemoryReport{HeapAllocBytes: 1}, RSSBytes: 1, FDCount: 7},
+			{ElapsedMicroseconds: 4, Memory: resourceMemoryReport{HeapAllocBytes: 1}, RSSBytes: 1, FDCount: 7},
+		},
+		GCAcknowledgementCount: 4, HighWaterWithinBound: true, HighWaterRSSBytes: 1,
+		ValidatorHighWaterRSSBytes: 1, AggregateHighWaterUpperBoundBytes: 2, AggregateHighWaterWithinBound: true,
+		RetainedHeapAllocGrowthWithinBound: true, RetainedRSSWindowGrowthWithinBound: true, AllFDsRecovered: true,
+		ActivityQuiescent: true, FollowupSucceeded: true, Idle: idle,
+		HTTP: documentTransferHTTPReport{
+			DescriptorCount: candidateDescriptorCount, SequentialCallCount: 3, RawBytes: obsidian.DocumentFixtureMaxBytes,
+			RawSHA256: obsidian.DocumentFixtureSHA256, MaxCallLatencyMicroseconds: 1, EveryCallWithinTwoSeconds: true,
+			FollowupSucceeded: true, BaselineRSSBytes: 1, PostCallRSSBytes: 1, RetainedRSSGrowthWithinBound: true,
+			HighWaterRSSBytes: 1, HighWaterWithinBound: true, BaselineFDCount: 1, PostCallFDCount: 1, AllFDsRecovered: true,
+			SQLiteToolCallRows: 14, SQLiteTelemetryValidated: true, FirstDisallowedSizeRejected: true,
+			NegativeCallCount: 5, NegativeMatrixPassed: true, VaultUnchanged: true,
+			ConcurrentAdmissionPassed: true, BusyErrorSanitized: true, RetryAfterBusySucceeded: true,
+			BackpressureDeadlinePassed: true, BackpressureElapsedMicros: (30 * time.Second).Microseconds(),
+			BackpressureRetrySucceeded: true, SerializationFailureObserved: true, TelemetryPrivacyValidated: true, TelemetryValidationCode: "ok",
+		},
+	}
 }
 
 func TestPrivateCandidateSnapshotPinsBytesPermissionsAndCleanup(t *testing.T) {
@@ -397,7 +472,7 @@ func completeCandidateReports(expected candidateProvenance) []any {
 		ReportKind: reportKindFunctional, ReportSchema: functionalReportSchema, SchemaVersion: smokeReportVersion, Passed: true,
 		CandidateCommit: expected.Commit, CandidateSHA256: expected.CandidateSHA256, DependencySHA256: expected.DependencySHA256,
 		ToolCalls: functionalToolCallCounts{Resolve: 2, LS: 3, Read: 1, ReadMany: 2, Grep: 1},
-		ToolCount: 5, SDKResultCount: 9, MaxSDKResultBytes: 1, MaxStructuredResultBytes: 1,
+		ToolCount: candidateDescriptorCount, SDKResultCount: 9, MaxSDKResultBytes: 1, MaxStructuredResultBytes: 1,
 		MaxClientLatencyMicroseconds: 1, TotalFilesScanned: 1, TotalBytesScanned: 1, TotalSourceEntriesValidated: 1,
 		CurrentResolveExistingDir: true,
 		SyntheticCanonicalResolve: true, SyntheticPageCount: 2, SyntheticEntryCount: 3,
@@ -477,7 +552,7 @@ func completeCandidateReports(expected candidateProvenance) []any {
 	resource.CandidateCommit = expected.Commit
 	resource.CandidateSHA256 = expected.CandidateSHA256
 	resource.DependencySHA256 = expected.DependencySHA256
-	return []any{functional, performance, resource}
+	return []any{functional, performance, resource, passingDocumentCapacityReport(expected)}
 }
 
 func provenanceFromArgs(t *testing.T, args []string) (string, candidateProvenance) {

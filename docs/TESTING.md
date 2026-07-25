@@ -26,6 +26,7 @@ Proof must match the claim. This repo handles personal data, so green unit tests
 | Local release transaction lifecycle | Executable state/event matrix plus process tests for locking, crash-boundary reconciliation, exact-hash accept/rollback, first-install unload, recovery-artifact retention, and installed-service pending-to-terminal journeys | Any change to release, update, rollback, acceptance, or supervised-runtime activation behavior |
 | Obsidian server tool names in ChatGPT | Live smoke test through OpenAI Secure MCP Tunnel | Before treating connector compatibility as settled |
 | Minimal machine impact | Local process observation for idle CPU, memory, file descriptors, startup behavior, and no whole-vault startup scan | Before always-on usage |
+| Native document transfer | Exact repeated stdio and HTTP calls through the candidate serializer, original-byte/MIME identity, malformed/spoof/source-change negatives, response deadlines, one-shot cleanup, and authenticated tunnel/model journeys | Adding a format or changing capture, validation, handoff, or transport |
 
 ## Expected Commands
 
@@ -142,6 +143,65 @@ The resource proof must observe overlapping request-local pools above one
 eight-worker ceiling, bounded active and reserved work, cancellation isolation,
 immediate FD/vault quiescence, and a successful same-session follow-up.
 
+## Retained Resource Gate
+
+Resource report schema v8 preserves the unchanged 256 KiB retained-heap, 8 MiB
+retained-RSS, and 64 MiB lifetime high-water limits. The three post-GC batch
+heap deltas are measured from the aligned baseline, and the retained value is
+their second-largest nonnegative delta; a heap breach must therefore persist in
+at least two batches. For RSS, each baseline and batch stabilization window is
+the maximum of its immediate, five-second, and 30-second samples, and the gate
+uses the second-largest nonnegative baseline-window-to-batch-window delta. The
+raw checkpoints, blocking-GC acknowledgements, FD recovery, idle, workload,
+latency, boundary, and lifetime high-water gates remain independently required.
+Every report identifies its exact `tool_surface`: canonical release proof uses
+the six-tool `candidate` surface. The five-tool `accepted` surface is available
+only through explicit `--resource-control` with `--resource-json`; it exists for
+paired regression comparison and is rejected by canonical report-set
+validation.
+
+The PDF activation candidate additionally runs an exact 49,999,999-byte gate.
+It generates and independently validates/renders a two-page PDF, makes three
+sequential native calls in one stdio session and three in one HTTP session,
+checks original SHA-256/MIME/terminal evidence, and launches the built candidate
+for both transports. The HTTP half additionally proves that one of two competing
+near-ceiling calls fails with sanitized `document_busy`, retry succeeds, an
+actual 50,000,000-byte `.pdf` and four other unsafe inputs return their exact
+structured errors without native content, and the vault is unchanged. A real
+stalled client must produce no server failure before 29 seconds, then hit the
+30-second response deadline and emit a sanitized operational write-failure
+signal before 34 seconds while the client body remains stalled. Only then does
+the harness release the client, verify client failure and payload/admission
+recovery, and permit a fresh SDK session to the same candidate process to retry
+successfully. (The timed-out response is deliberately truncated, so its
+original JSON-RPC client session is not reusable.) Each transport retains the
+64 MiB lifetime high-water and
+8 MiB retained-RSS limits. Stdio additionally proves blocking-GC cleanup,
+quiescence, exact FD recovery, same-session follow-up, and a 60-second idle
+window; HTTP proves same-session follow-up, no FD increase, and retained RSS
+after 30 seconds. The report separately measures the bytes-only validator
+helper and requires the larger gateway high-water plus helper high-water to fit
+a conservative 160 MiB aggregate upper bound. The heavyweight local check is
+opt-in outside release. Its HTTP candidate uses a private default SQLite audit
+sink so the proof includes the production `statusRecorder` unwrap, telemetry
+cost. Schema v4 requires 14 persisted tool-call rows, decoded safe summaries,
+indexed-field/body parity, the exact success/error distribution, and absence of
+fixture names, paths, nonce, native URI, and content sentinels. The fixture-vault
+before/after digest recursively binds paths, modes, sizes, modification times,
+regular-file bytes, and symlink targets:
+
+```bash
+make build
+ISSUE4_EXACT_DOCUMENT_GATE=1 GOCACHE=$(pwd)/.gocache \
+  go test -count=1 ./cmd/gateway-smoke \
+  -run '^TestExactNativeDocumentCapacityCandidate$' -v
+```
+
+`make release` runs the same document-capacity report unconditionally against
+the exact candidate SHA before installation. Its fixture is written only in
+the private release-report directory; validator backing is unlinked before any
+document bytes are written.
+
 ## Mutation Phase Proof Contract
 
 This section is the acceptance bar for a future mutation implementation, not a
@@ -198,7 +258,6 @@ boundary and subprocess interruption before and after commit. A post-commit
 failure may report an uncertain outcome, but it must never expose partial bytes,
 silently overwrite a collision, leave content-bearing residue, or trigger an
 automatic replay.
-
 ## Test Data Rules
 
 - Use generated fixture vaults in tests.
@@ -284,7 +343,7 @@ multi-day soak behavior, every prompt formulation, or future-vault performance.
 
 On 2026-07-17, implementation commit `d74fcd3ba1b1`, installed candidate hash
 prefix `2de6c5f23082`, and release prefix `725425303f84` passed `make test`, the
-exact-candidate functional v3, performance v3, resource v5, and cross-report
+exact-candidate functional v3, performance v3, historical resource v5, and cross-report
 gates, and the installed pending-release readiness checks. Authenticated Chrome
 Refresh then showed exactly `grep`, `ls`, `read`, `read_many`, and `resolve`, all
 read-only.
@@ -305,9 +364,9 @@ hash remained installed, and the LaunchAgent and tunnel were live and ready.
 The current-vault report covered 7,257 Markdown files totaling approximately
 292 MiB. Current-vault p95 latency ranged from approximately 1.3 to 3.5 ms;
 synthetic `read` and `grep` p95 were 7.4 ms and 72.1 ms, and measured 10,000-file
-strata remained below 44 ms. Resource v5 recorded 8,884,224 bytes maximum
-high-water RSS growth, 2,371,584 bytes stabilized 30-second RSS growth, 185,240
-bytes heap growth, exact descriptor recovery after 312 calls, and zero CPU,
+strata remained below 44 ms. Historical Resource v5 recorded 8,884,224 bytes
+maximum high-water RSS growth, 2,371,584 bytes stabilized 30-second RSS growth,
+185,240 bytes heap growth, exact descriptor recovery after 312 calls, and zero CPU,
 tool-call, or vault-activity growth during the 60-second idle window. No prompt,
 pattern, note identity, path, content, cursor value, or cursor hash is retained
 in this record.
@@ -411,9 +470,10 @@ CPU/RSS/FD teardown.
 The accepted installed binary also passed resource-report schema v2. Ten fresh
 processes had 23,963 us startup p50, 36,572 us startup p95/max, 2,184 us first
 call p50, and 4,679 us first-call p95/max. One long-lived process completed
-three exact 100-call batches with four blocking-GC acknowledgements. Maximum
-post-GC heap allocation growth from the aligned baseline was 73,488 bytes;
-maximum stabilized 30-second RSS growth was 3,969,024 bytes; waited lifetime
+three exact 100-call batches with four blocking-GC acknowledgements. Historical
+single-batch maximum post-GC heap allocation growth from the aligned baseline
+was 73,488 bytes; historical maximum stabilized 30-second RSS growth was
+3,969,024 bytes; waited lifetime
 high-water growth was 4,464,640 bytes; and every sample recovered to exactly 14
 file descriptors. During the 60-second idle window, CPU delta was zero, RSS did
 not grow, tool-call rows stayed at 301, vault activity stayed at 527 with zero
@@ -434,6 +494,7 @@ Run the same sanitized gates against a built candidate with:
 go run ./cmd/gateway-smoke --gateway-bin <candidate> --obsidian-root <vault> --report-json
 go run ./cmd/gateway-smoke --gateway-bin <candidate> --obsidian-root <vault> --performance-json
 go run ./cmd/gateway-smoke --gateway-bin <candidate> --obsidian-root <vault> --resource-json
+go run ./cmd/gateway-smoke --gateway-bin <accepted-control> --obsidian-root <vault> --resource-json --resource-control
 ```
 
 ## Codex Temp-Profile Proof

@@ -67,7 +67,7 @@ func functionalReportEvidencePasses(report smokeReport) bool {
 }
 
 func functionalBehaviorPasses(report smokeReport) bool {
-	return report.ToolCount == 5 && report.CurrentResolveExistingDir &&
+	return report.ToolCount == candidateDescriptorCount && report.CurrentResolveExistingDir &&
 		report.SyntheticCanonicalResolve && report.SyntheticPageCount >= 2 &&
 		report.SyntheticEntryCount == 3 && report.SyntheticSecondProgress &&
 		report.SyntheticNoDuplicates && report.SyntheticFullEquivalence &&

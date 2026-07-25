@@ -351,12 +351,12 @@ func TestLocalReleaseInstallsExactCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Count(string(logData), "go:run ./cmd/gateway-smoke"); got != 4 ||
+	if got := strings.Count(string(logData), "go:run ./cmd/gateway-smoke"); got != 5 ||
 		!strings.Contains(string(logData), "--report-json") || !strings.Contains(string(logData), "--performance-json") ||
-		!strings.Contains(string(logData), "--resource-json") || !strings.Contains(string(logData), "--validate-report-set") ||
-		strings.Count(string(logData), "--candidate-commit 0123456789abcdef0123456789abcdef01234567") != 4 ||
-		strings.Count(string(logData), "--candidate-sha256 "+string(candidateIdentity)) != 4 ||
-		strings.Count(string(logData), "--dependency-sha256 "+string(dependencyIdentity)) != 4 {
+		!strings.Contains(string(logData), "--document-transfer-json") || !strings.Contains(string(logData), "--resource-json") || !strings.Contains(string(logData), "--validate-report-set") ||
+		strings.Count(string(logData), "--candidate-commit 0123456789abcdef0123456789abcdef01234567") != 5 ||
+		strings.Count(string(logData), "--candidate-sha256 "+string(candidateIdentity)) != 5 ||
+		strings.Count(string(logData), "--dependency-sha256 "+string(dependencyIdentity)) != 5 {
 		t.Fatalf("candidate smoke calls = %q", logData)
 	}
 	assertFileContains(t, logFile, "launchctl:kickstart -k")
@@ -475,8 +475,8 @@ func TestLocalReleaseStopsBeforeActivationWhenResourceSmokeFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Count(string(logData), "go:run ./cmd/gateway-smoke"); got != 3 ||
-		!strings.Contains(string(logData), "--performance-json") || !strings.Contains(string(logData), "--resource-json") {
+	if got := strings.Count(string(logData), "go:run ./cmd/gateway-smoke"); got != 4 ||
+		!strings.Contains(string(logData), "--performance-json") || !strings.Contains(string(logData), "--document-transfer-json") || !strings.Contains(string(logData), "--resource-json") {
 		t.Fatalf("candidate smoke calls = %q", logData)
 	}
 }
@@ -756,6 +756,7 @@ func TestLocalReleaseRejectsMalformedOrDriftedReportSetBeforeActivation(t *testi
 	}{
 		{name: "malformed", options: releaseOptions{previous: true, malformedReport: true}},
 		{name: "cross-report drift", options: releaseOptions{previous: true, crossReportDrift: true}},
+		{name: "accepted resource surface", options: releaseOptions{previous: true, acceptedResourceSurface: true}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			harness := newLocalReleaseHarness(t, test.options)
@@ -1173,6 +1174,7 @@ type releaseOptions struct {
 	mutateDependencyDuringSmoke bool
 	malformedReport             bool
 	crossReportDrift            bool
+	acceptedResourceSurface     bool
 	largePrivateSmokeArtifact   bool
 	oversizedFunctionalReport   bool
 }
@@ -1326,25 +1328,33 @@ if has_argument --validate-report-set "$@"; then
     if (( positional )); then files+=("$value"); fi
     [[ "$value" == --validate-report-set ]] && positional=1
   done
-  [[ ${#files[@]} -eq 3 ]] || exit 7
+  [[ ${#files[@]} -eq 4 ]] || exit 7
   grep -q '"report_kind":"functional"' "${files[0]}" || exit 8
   grep -q '"report_schema":"personal-mcp-gateway.functional.v3"' "${files[0]}" || exit 8
-  grep -q '"tool_count":5' "${files[0]}" || exit 8
+  grep -q '"tool_count":6' "${files[0]}" || exit 8
   grep -q '"synthetic_retrieval_equivalent":true' "${files[0]}" || exit 8
   grep -q '"report_kind":"performance"' "${files[1]}" || exit 8
 	  grep -q '"report_schema":"personal-mcp-gateway.performance.v3"' "${files[1]}" || exit 8
-  grep -q '"descriptor_count":5' "${files[1]}" || exit 8
+	grep -q '"descriptor_count":6' "${files[1]}" || exit 8
   grep -q '"synthetic_grep":' "${files[1]}" || exit 8
   grep -q '"current_sqlite":' "${files[1]}" || exit 8
 	  grep -q '"report_kind":"resource"' "${files[2]}" || exit 8
-	  grep -q '"report_schema":"personal-mcp-gateway.resource.v5"' "${files[2]}" || exit 8
-  grep -q '"descriptor_count":5' "${files[2]}" || exit 8
-	  grep -q '"measured_call_count":312' "${files[2]}" || exit 8
+	  grep -q '"report_schema":"personal-mcp-gateway.resource.v8"' "${files[2]}" || exit 8
+	grep -q '"tool_surface":"candidate"' "${files[2]}" || exit 8
+	grep -q '"descriptor_count":6' "${files[2]}" || exit 8
+	  grep -q '"measured_call_count":313' "${files[2]}" || exit 8
+	  grep -q '"retained_heap_alloc_growth_bytes":' "${files[2]}" || exit 8
+	  grep -q '"retained_rss_window_growth_bytes":' "${files[2]}" || exit 8
+	  ! grep -q '"max_heap_alloc_growth_bytes":' "${files[2]}" || exit 8
+	  ! grep -q '"max_rss_after_30_seconds_growth_bytes":' "${files[2]}" || exit 8
   grep -q '"fixture":' "${files[2]}" || exit 8
   grep -q '"process":' "${files[2]}" || exit 8
   grep -q '"cold":' "${files[2]}" || exit 8
   grep -q '"boundaries":' "${files[2]}" || exit 8
-  grep -q '"batches":' "${files[2]}" || exit 8
+	  grep -q '"batches":' "${files[2]}" || exit 8
+	  grep -q '"report_kind":"document_transfer_capacity"' "${files[3]}" || exit 8
+	  grep -q '"report_schema":"personal-mcp-gateway.document-transfer-capacity.v4"' "${files[3]}" || exit 8
+	  grep -q '"sequential_call_count":3' "${files[3]}" || exit 8
   for file in "${files[@]}"; do
     grep -q '"candidate_commit":"0123456789abcdef0123456789abcdef01234567"' "$file" || exit 8
     grep -q "\"candidate_sha256\":\"$candidate_sha\"" "$file" || exit 8
@@ -1372,9 +1382,15 @@ elif has_argument --performance-json "$@"; then
     printf 'hostile runtime-secret\n' >&2
     exit 8
   fi
+elif has_argument --document-transfer-json "$@"; then
+  kind=document_transfer_capacity
+	  schema_version=4
+  artifact="$(argument --document-transfer-artifact "$@")"
+  [[ -n "$artifact" ]] || exit 7
+  : >"$artifact"
 elif has_argument --resource-json "$@"; then
   kind=resource
-  schema_version=5
+  schema_version=8
   if [[ "${CROSS_REPORT_DRIFT:-0}" == 1 ]]; then dependency_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; fi
     if [ "${FAIL_PERFORMANCE_SMOKE:-0}" = 1 ]; then
       exit 8
@@ -1389,14 +1405,20 @@ else
 fi
 case "$kind" in
   functional)
-    proof='"report_schema":"personal-mcp-gateway.functional.v3","candidate_runtime":{"go_version":"go1.0","goos":"darwin","goarch":"arm64"},"machine":{"logical_cpu_count":1,"gomaxprocs":1},"current_vault":{"inventory_policy":"obsidian_markdown_v1","inventory_complete":true,"markdown_file_count":1,"markdown_byte_count":1,"stopped_by":"scope"},"synthetic_vault":{"inventory_policy":"obsidian_markdown_v1","inventory_complete":true,"markdown_file_count":3,"markdown_byte_count":3,"stopped_by":"scope"},"current_process":{},"synthetic_process":{},"tool_calls":{"resolve":2,"ls":3,"read":1,"read_many":2,"grep":1},"tool_count":5,"sdk_result_count":9,"max_sdk_result_bytes":1,"max_structured_result_bytes":1,"max_client_latency_microseconds":1,"total_files_scanned":1,"total_bytes_scanned":1,"total_source_entries_validated":1,"current_resolve_existing_directory":true,"synthetic_canonical_resolve":true,"synthetic_page_count":2,"synthetic_entry_count":3,"synthetic_second_page_progress":true,"synthetic_no_duplicates":true,"synthetic_full_equivalence":true,"synthetic_read_selected":true,"synthetic_grep_match_count":3,"synthetic_read_many_pages":2,"synthetic_read_many_continued":true,"synthetic_retrieval_equivalent":true,"synthetic_telemetry_sanitized":true'
+proof='"report_schema":"personal-mcp-gateway.functional.v3","candidate_runtime":{"go_version":"go1.0","goos":"darwin","goarch":"arm64"},"machine":{"logical_cpu_count":1,"gomaxprocs":1},"current_vault":{"inventory_policy":"obsidian_markdown_v1","inventory_complete":true,"markdown_file_count":1,"markdown_byte_count":1,"stopped_by":"scope"},"synthetic_vault":{"inventory_policy":"obsidian_markdown_v1","inventory_complete":true,"markdown_file_count":3,"markdown_byte_count":3,"stopped_by":"scope"},"current_process":{},"synthetic_process":{},"tool_calls":{"resolve":2,"ls":3,"read":1,"read_many":2,"grep":1},"tool_count":6,"sdk_result_count":9,"max_sdk_result_bytes":1,"max_structured_result_bytes":1,"max_client_latency_microseconds":1,"total_files_scanned":1,"total_bytes_scanned":1,"total_source_entries_validated":1,"current_resolve_existing_directory":true,"synthetic_canonical_resolve":true,"synthetic_page_count":2,"synthetic_entry_count":3,"synthetic_second_page_progress":true,"synthetic_no_duplicates":true,"synthetic_full_equivalence":true,"synthetic_read_selected":true,"synthetic_grep_match_count":3,"synthetic_read_many_pages":2,"synthetic_read_many_continued":true,"synthetic_retrieval_equivalent":true,"synthetic_telemetry_sanitized":true'
     ;;
   performance)
-	    proof='"report_schema":"personal-mcp-gateway.performance.v3","candidate_runtime":{"go_version":"go1.0","goos":"darwin","goarch":"arm64"},"machine":{"logical_cpu_count":1,"gomaxprocs":1},"current_vault":{"inventory_policy":"obsidian_markdown_v1","inventory_complete":true,"markdown_file_count":1,"markdown_byte_count":1,"stopped_by":"scope"},"synthetic_corpus":{"inventory_policy":"obsidian_markdown_v1","inventory_complete":true,"markdown_file_count":50,"markdown_byte_count":256000,"stopped_by":"scope"},"descriptor_count":5,"cardinality_bucket":"2_10","resolve_cached":{},"ls_first_limit_1":{},"ls_continued_limit_1":{},"ls_first_limit_100":{},"synthetic_read":{},"synthetic_grep":{},"broad_current_grep":{},"synthetic_process":{},"current_vault_process":{},"stratified":[],"current_sqlite":{},"stratified_sqlite":{},"sqlite_degradation":{},"cancellation":{}'
+	    proof='"report_schema":"personal-mcp-gateway.performance.v3","candidate_runtime":{"go_version":"go1.0","goos":"darwin","goarch":"arm64"},"machine":{"logical_cpu_count":1,"gomaxprocs":1},"current_vault":{"inventory_policy":"obsidian_markdown_v1","inventory_complete":true,"markdown_file_count":1,"markdown_byte_count":1,"stopped_by":"scope"},"synthetic_corpus":{"inventory_policy":"obsidian_markdown_v1","inventory_complete":true,"markdown_file_count":50,"markdown_byte_count":256000,"stopped_by":"scope"},"descriptor_count":6,"cardinality_bucket":"2_10","resolve_cached":{},"ls_first_limit_1":{},"ls_continued_limit_1":{},"ls_first_limit_100":{},"synthetic_read":{},"synthetic_grep":{},"broad_current_grep":{},"synthetic_process":{},"current_vault_process":{},"stratified":[],"current_sqlite":{},"stratified_sqlite":{},"sqlite_degradation":{},"cancellation":{}'
     ;;
   resource)
-	    proof='"report_schema":"personal-mcp-gateway.resource.v5","descriptor_count":5,"candidate_runtime":{"go_version":"go1.0","goos":"darwin","goarch":"arm64"},"machine":{"logical_cpu_count":1,"gomaxprocs":1},"vault":{"inventory_policy":"obsidian_markdown_v1","inventory_complete":true,"markdown_file_count":1,"markdown_byte_count":1,"stopped_by":"scope"},"fixture":{"generated_markdown_files":1,"generated_bytes":1,"inventory_markdown_files":1,"inventory_bytes":1,"inventory_complete":true,"inventory_reconciled":true},"process":{"baseline_cpu_microseconds":1,"final_cpu_microseconds":2,"cpu_delta_microseconds":1,"lifetime_cpu_microseconds":2,"baseline_rss_bytes":1,"final_rss_bytes":1,"max_observed_rss_bytes":1,"high_water_rss_bytes":1,"baseline_fd_count":1,"final_fd_count":1,"max_observed_fd_count":1,"fds_recovered":true},"workload":{"batch_count":3,"calls_per_batch":100,"calls_per_tool_per_batch":20,"mixed_call_count":300,"boundary_call_count":12,"measured_call_count":312,"tool_calls":{"resolve":60,"ls":60,"read":65,"read_many":60,"grep":67},"max_client_latency_microseconds":1,"max_sdk_result_bytes":1,"max_structured_bytes":1,"max_files_scanned":1,"max_bytes_scanned":1,"max_source_entries_validated":1,"every_call_within_two_seconds":true,"every_sdk_result_within_64kib":true},"boundaries":{"call_count":12,"near_8mib_structural_accepted":true,"dense_50000_decoy_rejected":true,"dense_50000_block_accepted":true,"over_8mib_error_code":"input_too_large","over_50000_lines_error_code":"input_too_large","grep_exact_matching_error_code":"response_too_large","grep_exact_nonmatching_accepted":true,"grep_exact_context_error_code":"response_too_large","grep_exact_unicode_error_code":"response_too_large","grep_exact_zero_width_error_code":"response_too_large","grep_exact_invalid_utf8_error_code":"invalid_utf8","grep_over_1mib_error_code":"input_too_large","every_call_within_two_seconds":true,"every_sdk_result_within_64kib":true},"cold":{},"baseline":{},"high_water_rss_bytes":1,"high_water_rss_delta_bytes":0,"high_water_within_bound":true,"max_heap_alloc_growth_bytes":0,"heap_alloc_growth_within_bound":true,"max_rss_after_30_seconds_growth_bytes":0,"rss_after_30_seconds_growth_within_bound":true,"gc_acknowledgement_count":4,"all_fds_recovered":true,"batches":[],"idle":{}'
+	    proof='"report_schema":"personal-mcp-gateway.resource.v8","tool_surface":"candidate","descriptor_count":6,"candidate_runtime":{"go_version":"go1.0","goos":"darwin","goarch":"arm64"},"machine":{"logical_cpu_count":1,"gomaxprocs":1},"vault":{"inventory_policy":"obsidian_markdown_v1","inventory_complete":true,"markdown_file_count":1,"markdown_byte_count":1,"stopped_by":"scope"},"fixture":{"generated_markdown_files":1,"generated_bytes":1,"inventory_markdown_files":1,"inventory_bytes":1,"inventory_complete":true,"inventory_reconciled":true},"process":{"baseline_cpu_microseconds":1,"final_cpu_microseconds":2,"cpu_delta_microseconds":1,"lifetime_cpu_microseconds":2,"baseline_rss_bytes":1,"final_rss_bytes":1,"max_observed_rss_bytes":1,"high_water_rss_bytes":1,"baseline_fd_count":1,"final_fd_count":1,"max_observed_fd_count":1,"fds_recovered":true},"workload":{"batch_count":3,"calls_per_batch":100,"calls_per_tool_per_batch":20,"mixed_call_count":300,"boundary_call_count":13,"measured_call_count":313,"tool_calls":{"resolve":60,"ls":60,"read":65,"read_many":60,"grep":68},"max_client_latency_microseconds":1,"max_sdk_result_bytes":1,"max_structured_bytes":1,"max_files_scanned":1,"max_bytes_scanned":1,"max_source_entries_validated":1,"every_call_within_two_seconds":true,"every_sdk_result_within_64kib":true},"boundaries":{"call_count":13,"batch_number":1,"ran_after_baseline":true,"ran_before_blocking_gc":true,"near_8mib_structural_accepted":true,"dense_50000_decoy_rejected":true,"dense_50000_block_accepted":true,"over_8mib_error_code":"input_too_large","over_50000_lines_error_code":"input_too_large","grep_exact_matching_accepted":true,"grep_exact_nonmatching_accepted":true,"grep_exact_context_accepted":true,"grep_exact_unicode_accepted":true,"grep_exact_zero_width_error_code":"response_too_large","grep_exact_invalid_utf8_error_code":"invalid_utf8","grep_over_1mib_literal_match_accepted":true,"grep_over_1mib_regex_error_code":"input_too_large","every_call_within_two_seconds":true,"every_sdk_result_within_64kib":true},"cold":{},"baseline":{},"high_water_rss_bytes":1,"high_water_rss_delta_bytes":0,"high_water_within_bound":true,"retained_heap_alloc_growth_bytes":0,"retained_heap_alloc_growth_within_bound":true,"retained_rss_window_growth_bytes":0,"retained_rss_window_growth_within_bound":true,"gc_acknowledgement_count":4,"all_fds_recovered":true,"batches":[],"idle":{}'
+	    if [[ "${ACCEPTED_RESOURCE_SURFACE:-0}" == 1 ]]; then
+	      proof="${proof//\"tool_surface\":\"candidate\",\"descriptor_count\":6/\"tool_surface\":\"accepted\",\"descriptor_count\":5}"
+	    fi
     ;;
+  document_transfer_capacity)
+	    proof='"report_schema":"personal-mcp-gateway.document-transfer-capacity.v4","descriptor_count":6,"raw_bytes":49999999,"raw_sha256":"935d656fc945ea0c002af42af4ae62edfbf48f22aeb03872c7a4b51fe6beb69d","sequential_call_count":3,"call_within_two_seconds":true,"terminal_evidence_within_4096_bytes":true,"pdf_validator_accepted":true,"first_disallowed_size_rejected":true,"high_water_within_bound":true,"validator_high_water_rss_bytes":1,"aggregate_high_water_upper_bound_bytes":2,"aggregate_high_water_within_bound":true,"retained_heap_alloc_growth_within_bound":true,"retained_rss_window_growth_within_bound":true,"all_fds_recovered":true,"activity_quiescent":true,"followup_succeeded":true'
+	    ;;
 esac
 printf '{"report_kind":"%s","schema_version":%s,"passed":true,"candidate_commit":"%s","candidate_sha256":"%s","dependency_sha256":"%s",%s}\n' "$kind" "$schema_version" 0123456789abcdef0123456789abcdef01234567 "$candidate_sha" "$dependency_sha" "$proof"
 if [[ "$kind" == functional && "${REPLACE_RESTORE_CANDIDATE:-0}" == 1 ]]; then
@@ -1486,6 +1508,7 @@ exec "$REAL_INSTALL" "$@"
 		"MUTATE_DEPENDENCY="+boolString(options.mutateDependencyDuringSmoke),
 		"MALFORMED_REPORT="+boolString(options.malformedReport),
 		"CROSS_REPORT_DRIFT="+boolString(options.crossReportDrift),
+		"ACCEPTED_RESOURCE_SURFACE="+boolString(options.acceptedResourceSurface),
 		"LARGE_PRIVATE_SMOKE_ARTIFACT="+boolString(options.largePrivateSmokeArtifact),
 		"PRIVATE_SMOKE_ARTIFACT="+filepath.Join(repo, "private-smoke-artifact"),
 		"OVERSIZED_FUNCTIONAL_REPORT="+boolString(options.oversizedFunctionalReport),

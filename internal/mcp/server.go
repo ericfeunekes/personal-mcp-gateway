@@ -71,19 +71,44 @@ func registerDescriptor(server *sdk.Server, descriptor ToolDescriptor) (err erro
 }
 
 func RunStdio(ctx context.Context, server *sdk.Server) error {
+	return runStdio(ctx, server, nil)
+}
+
+// RunStdioWithNativeDocuments attaches the process-owned one-shot bridge to
+// stdio without changing ordinary SDK frames.
+func RunStdioWithNativeDocuments(ctx context.Context, server *sdk.Server, bridge *NativeDocumentBridge) error {
+	return runStdio(ctx, server, bridge)
+}
+
+func runStdio(ctx context.Context, server *sdk.Server, bridge *NativeDocumentBridge) error {
+	writer := io.WriteCloser(nopWriteCloser{Writer: os.Stdout})
+	reader := io.ReadCloser(newLineLimitReadCloser(os.Stdin, limits.StdioMessageBytes))
+	if bridge != nil {
+		bounded, err := newPollWriteCloser(os.Stdout, nativeDocumentResponseDeadline)
+		if err != nil {
+			return fmt.Errorf("native document stdio writer: %w", err)
+		}
+		writer = &nativeDocumentWriter{ctx: ctx, writer: bounded, bridge: bridge, closer: bounded}
+		reader = newNativeDocumentLineReader(os.Stdin, limits.StdioMessageBytes)
+	}
 	return server.Run(ctx, &sdk.IOTransport{
-		Reader: newLineLimitReadCloser(os.Stdin, limits.StdioMessageBytes),
-		Writer: nopWriteCloser{Writer: os.Stdout},
+		Reader: reader,
+		Writer: writer,
 	})
 }
 
 func StreamableHTTPHandler(server *sdk.Server) http.Handler {
-	return sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server {
+	return StreamableHTTPHandlerWithNativeDocuments(server, nil)
+}
+
+func StreamableHTTPHandlerWithNativeDocuments(server *sdk.Server, bridge *NativeDocumentBridge) http.Handler {
+	handler := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server {
 		return server
 	}, &sdk.StreamableHTTPOptions{
 		JSONResponse: true,
 		Stateless:    true,
 	})
+	return nativeDocumentHTTPHandler(handler, bridge)
 }
 
 var errMessageTooLarge = errors.New("mcp message too large")

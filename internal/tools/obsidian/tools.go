@@ -51,6 +51,27 @@ func Descriptors(vault *fsx.Vault) ([]localmcp.ToolDescriptor, error) {
 	return DescriptorsWithGrepActivity(vault, nil)
 }
 
+// DescriptorsWithNativeDocuments adds the activation-gated native document
+// tool using the process-owned one-shot transport bridge.
+func DescriptorsWithNativeDocuments(vault *fsx.Vault, bridge *localmcp.NativeDocumentBridge, grepActivity *fsx.SchedulerActivity, hooks *GrepTestHooks, validators ...DocumentValidator) ([]localmcp.ToolDescriptor, error) {
+	descriptors, err := descriptorsWithGrepTestHooks(vault, grepActivity, hooks)
+	if err != nil {
+		return descriptors, err
+	}
+	if bridge == nil {
+		return nil, errors.New("native document bridge is required")
+	}
+	var validator DocumentValidator
+	if len(validators) > 0 {
+		validator = validators[0]
+	}
+	document, err := readDocumentDescriptor(vault, bridge, newDocumentByteGate(DocumentMaxBytes), validator)
+	if err != nil {
+		return nil, err
+	}
+	return append(descriptors, document), nil
+}
+
 // DescriptorsWithGrepActivity is private wiring for the inherited exact
 // resource probe; normal callers use Descriptors and pay no observer cost.
 func DescriptorsWithGrepActivity(vault *fsx.Vault, grepActivity *fsx.SchedulerActivity) ([]localmcp.ToolDescriptor, error) {
@@ -122,7 +143,8 @@ func descriptorsWithGrepTestHooks(vault *fsx.Vault, grepActivity *fsx.SchedulerA
 	if err != nil {
 		return nil, err
 	}
-	return []localmcp.ToolDescriptor{resolve, ls, read, readMany, grep}, nil
+	descriptors := []localmcp.ToolDescriptor{resolve, ls, read, readMany, grep}
+	return descriptors, nil
 }
 
 func readOnlyToolAnnotations() *sdk.ToolAnnotations {
@@ -638,6 +660,8 @@ func summaryErrorValue(value string) (localmcp.EnumValue, bool) {
 		"selector_not_found": localmcp.ValueSelectorNotFound,
 		"selector_ambiguous": localmcp.ValueSelectorAmbiguous,
 		"invalid_regex":      localmcp.ValueInvalidRegex,
+		"document_busy":      localmcp.ValueDocumentBusy,
+		"malformed_document": localmcp.ValueMalformedDocument,
 	}
 	result, ok := values[value]
 	return result, ok

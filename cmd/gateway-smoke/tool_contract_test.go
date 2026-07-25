@@ -19,7 +19,7 @@ import (
 func TestExactCandidateToolGrammarRejectsAgentVisibleDrift(t *testing.T) {
 	tools := listedCandidateTools(t)
 	if !exactCandidateToolGrammar(tools) {
-		t.Fatal("exact five-tool grammar was rejected")
+		t.Fatal("exact temporary six-tool probe grammar was rejected")
 	}
 	for _, mutation := range []struct {
 		name string
@@ -56,19 +56,55 @@ func TestExactCandidateToolGrammarRejectsAgentVisibleDrift(t *testing.T) {
 			changed := cloneTools(t, tools)
 			mutation.edit(changed)
 			if exactCandidateToolGrammar(changed) {
-				t.Fatal("drifted five-tool grammar was accepted")
+				t.Fatal("drifted temporary probe grammar was accepted")
 			}
 		})
 	}
 }
 
+func TestExactAcceptedToolGrammarRejectsTemporaryProbeAndSchemaDrift(t *testing.T) {
+	tools := listedAcceptedTools(t)
+	if !exactAcceptedToolGrammar(tools) {
+		t.Fatal("exact accepted five-tool grammar was rejected")
+	}
+	withProbe := cloneTools(t, tools)
+	for _, tool := range listedCandidateTools(t) {
+		if tool.Name == obsidian.ToolReadDocument {
+			withProbe = append(withProbe, tool)
+		}
+	}
+	if exactAcceptedToolGrammar(withProbe) {
+		t.Fatal("accepted grammar included the temporary probe")
+	}
+	changed := cloneTools(t, tools)
+	for _, tool := range changed {
+		if tool.Name == obsidian.ToolGrep {
+			tool.Description = "drifted"
+		}
+	}
+	if exactAcceptedToolGrammar(changed) {
+		t.Fatal("drifted accepted grammar was accepted")
+	}
+}
+
 func listedCandidateTools(t *testing.T) []*sdk.Tool {
+	return listedTools(t, true)
+}
+
+func listedAcceptedTools(t *testing.T) []*sdk.Tool {
+	return listedTools(t, false)
+}
+
+func listedTools(t *testing.T, includeProbe bool) []*sdk.Tool {
 	t.Helper()
 	vault, err := fsx.NewVault(testutil.FixtureVault(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	descriptors, err := obsidian.Descriptors(vault)
+	if includeProbe {
+		descriptors, err = obsidian.DescriptorsWithNativeDocuments(vault, localmcp.NewNativeDocumentBridge(), nil, nil)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

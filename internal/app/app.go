@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -18,10 +19,11 @@ import (
 )
 
 type App struct {
-	cfg    config.Config
-	vault  *fsx.Vault
-	server *sdk.Server
-	log    *audit.Logger
+	cfg       config.Config
+	vault     *fsx.Vault
+	server    *sdk.Server
+	documents *localmcp.NativeDocumentBridge
+	log       *audit.Logger
 }
 
 func New(cfg config.Config, log *audit.Logger) (*App, error) {
@@ -52,8 +54,23 @@ func newWithGrepTestHooks(cfg config.Config, log *audit.Logger, activity *fsx.Ac
 	if err != nil {
 		return nil, err
 	}
-	descriptors, err := obsidian.DescriptorsWithGrepTestHooks(vault, grepActivity, hooks)
+	var documents *localmcp.NativeDocumentBridge
+	var descriptors []localmcp.ToolDescriptor
+	if obsidian.DocumentReadingCandidateEnabled() {
+		documents = localmcp.NewNativeDocumentBridge()
+		executable, executableErr := os.Executable()
+		if executableErr != nil {
+			_ = documents.Close()
+			return nil, executableErr
+		}
+		descriptors, err = obsidian.DescriptorsWithNativeDocuments(vault, documents, grepActivity, hooks, obsidian.NewPDFValidatorProcess(executable))
+	} else {
+		descriptors, err = obsidian.DescriptorsWithGrepTestHooks(vault, grepActivity, hooks)
+	}
 	if err != nil {
+		if documents != nil {
+			_ = documents.Close()
+		}
 		return nil, err
 	}
 	server, toolNames, err := localmcp.NewServer(log, string(cfg.Mode), descriptors)
@@ -70,10 +87,11 @@ func newWithGrepTestHooks(cfg config.Config, log *audit.Logger, activity *fsx.Ac
 	}
 
 	return &App{
-		cfg:    cfg,
-		vault:  vault,
-		server: server,
-		log:    log,
+		cfg:       cfg,
+		vault:     vault,
+		server:    server,
+		documents: documents,
+		log:       log,
 	}, nil
 }
 
@@ -81,11 +99,26 @@ func (a *App) Server() *sdk.Server {
 	return a.server
 }
 
+func (a *App) NativeDocuments() *localmcp.NativeDocumentBridge { return a.documents }
+
+func (a *App) Close() error {
+	if a.documents == nil {
+		return nil
+	}
+	return a.documents.Close()
+}
+
 func (a *App) HTTPHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/healthz", a.auditHTTP("healthz", http.HandlerFunc(a.health)))
 	mux.Handle("/readyz", a.auditHTTP("readyz", http.HandlerFunc(a.ready)))
-	mux.Handle("/mcp", a.auditHTTP("mcp", limitRequestBody(limits.HTTPRequestBodyBytes, localmcp.StreamableHTTPHandler(a.server))))
+	var handler http.Handler
+	if a.documents != nil {
+		handler = localmcp.StreamableHTTPHandlerWithNativeDocuments(a.server, a.documents)
+	} else {
+		handler = localmcp.StreamableHTTPHandler(a.server)
+	}
+	mux.Handle("/mcp", a.auditHTTP("mcp", limitRequestBody(limits.HTTPRequestBodyBytes, handler)))
 	return mux
 }
 
@@ -192,6 +225,8 @@ type statusRecorder struct {
 	status int
 	wrote  bool
 }
+
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 func (r *statusRecorder) WriteHeader(status int) {
 	if r.wrote {

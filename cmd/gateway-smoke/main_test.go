@@ -78,7 +78,7 @@ func TestRunReportJSONIsOneSanitizedAggregate(t *testing.T) {
 		t.Fatalf("report contained trailing JSON: %v", err)
 	}
 	if !report.Passed || report.ReportKind != reportKindFunctional || report.SchemaVersion != smokeReportVersion ||
-		!validGitOID(report.CandidateCommit) || !validDigest(report.CandidateSHA256) || !validDigest(report.DependencySHA256) || report.ToolCount != 5 ||
+		!validGitOID(report.CandidateCommit) || !validDigest(report.CandidateSHA256) || !validDigest(report.DependencySHA256) || report.ToolCount != candidateDescriptorCount ||
 		!report.CurrentResolveExistingDir || !report.SyntheticCanonicalResolve ||
 		report.SyntheticPageCount < 2 || report.SyntheticEntryCount != 3 ||
 		!report.SyntheticSecondProgress || !report.SyntheticNoDuplicates ||
@@ -147,7 +147,7 @@ func TestRunPerformanceJSONIsBoundedAndSanitized(t *testing.T) {
 	}
 	if !report.Passed || report.ReportKind != reportKindPerformance || report.SchemaVersion != performanceReportVersion ||
 		!validGitOID(report.CandidateCommit) || !validDigest(report.CandidateSHA256) || !validDigest(report.DependencySHA256) ||
-		report.DescriptorCount != 5 || report.CardinalityBucket != "2_10" || !performanceReportEvidencePasses(report) {
+		report.DescriptorCount != candidateDescriptorCount || report.CardinalityBucket != "2_10" || !performanceReportEvidencePasses(report) {
 		t.Fatalf("report header = %#v", report)
 	}
 	for name, metrics := range map[string]performanceMetrics{
@@ -286,6 +286,18 @@ func TestRunRejectsResourceJSONCombinedWithAnotherJSONMode(t *testing.T) {
 	}
 }
 
+func TestRunRejectsResourceControlOutsideResourceJSON(t *testing.T) {
+	for _, mode := range [][]string{nil, {"--report-json"}, {"--performance-json"}} {
+		var stdout, stderr bytes.Buffer
+		args := []string{"--gateway-bin", "candidate", "--obsidian-root", "vault", "--resource-control"}
+		args = append(args, mode...)
+		err := run(args, &stdout, &stderr)
+		if err == nil || err.Error() != "--resource-control requires --resource-json" {
+			t.Fatalf("args=%q error=%v", args, err)
+		}
+	}
+}
+
 func TestProbeCandidateResourcesUsesFreshProcessesAndEmitsOnlySanitizedAggregates(t *testing.T) {
 	candidate := buildGatewayCandidate(t)
 	vault := filepath.Join(t.TempDir(), "resource-private-vault")
@@ -302,6 +314,7 @@ func TestProbeCandidateResourcesUsesFreshProcessesAndEmitsOnlySanitizedAggregate
 	defer cancel()
 	sampler := &fixedResourceSampler{}
 	report, err := probeCandidateResources(ctx, candidate, vault, resourceProbeOptions{
+		ToolSurface:   candidateToolSurface,
 		ColdProcesses: 2,
 		Stabilize5:    time.Millisecond,
 		Stabilize30:   2 * time.Millisecond,
@@ -315,14 +328,14 @@ func TestProbeCandidateResourcesUsesFreshProcessesAndEmitsOnlySanitizedAggregate
 	report.CandidateCommit = strings.Repeat("a", 40)
 	report.CandidateSHA256 = strings.Repeat("b", 64)
 	report.DependencySHA256 = strings.Repeat("c", 64)
-	if !report.Passed || report.SchemaVersion != resourceReportVersion || report.DescriptorCount != 5 || report.Cold.FreshProcessCount != 2 ||
+	if !report.Passed || report.SchemaVersion != resourceReportVersion || report.DescriptorCount != candidateDescriptorCount || report.Cold.FreshProcessCount != 2 ||
 		len(report.Batches) != resourceBatchCount || report.Baseline.MeasuredCallCount != 0 ||
 		!report.Baseline.GCAcknowledged || !report.Baseline.FDRecoveredAtEverySample ||
 		report.Baseline.Memory.HeapAllocBytes == 0 || report.Baseline.Memory.HeapSysBytes == 0 ||
 		report.GCAcknowledgementCount != resourceBatchCount+1 || !report.HighWaterWithinBound ||
-		!report.HeapAllocGrowthWithinBound || !report.RSSAfter30SecondsGrowthWithinBound || !report.AllFDsRecovered ||
+		!report.RetainedHeapAllocGrowthWithinBound || !report.RetainedRSSWindowGrowthWithinBound || !report.AllFDsRecovered ||
 		!report.Idle.CPUWithinBound || !report.Idle.FDsRecovered || !report.Idle.NoExtraToolCalls ||
-		!report.Idle.NoVaultActivity || !report.Idle.DescriptorsUnchanged || report.Idle.DescriptorCountAfter != 5 {
+		!report.Idle.NoVaultActivity || !report.Idle.DescriptorsUnchanged || report.Idle.DescriptorCountAfter != candidateDescriptorCount {
 		t.Fatalf("resource report = %#v", report)
 	}
 	for _, batch := range report.Batches {
@@ -375,7 +388,7 @@ func TestObserveResourceIdleRejectsRealCandidateLSActivity(t *testing.T) {
 	}
 	relativeRepresentative := "representative"
 	sampler := &idleInterferenceSampler{started: make(chan struct{})}
-	options := resourceProbeOptions{IdleDuration: 150 * time.Millisecond, ControlTime: 2 * time.Second}
+	options := resourceProbeOptions{ToolSurface: candidateToolSurface, IdleDuration: 150 * time.Millisecond, ControlTime: 2 * time.Second}
 	type result struct {
 		report idleResourceReport
 		err    error
@@ -448,6 +461,7 @@ func TestSystemResourceSamplerAgainstBuiltCandidate(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	report, err := probeCandidateResources(ctx, candidate, vault, resourceProbeOptions{
+		ToolSurface:   candidateToolSurface,
 		ColdProcesses: 2,
 		Stabilize5:    25 * time.Millisecond,
 		Stabilize30:   50 * time.Millisecond,
@@ -457,9 +471,9 @@ func TestSystemResourceSamplerAgainstBuiltCandidate(t *testing.T) {
 	if err != nil && err.Error() != "candidate resource gate failed" {
 		t.Fatalf("%v: %#v", err, report)
 	}
-	if report.Cold.FreshProcessCount != 2 || report.DescriptorCount != 5 || report.Baseline.MeasuredCallCount != 0 ||
+	if report.Cold.FreshProcessCount != 2 || report.DescriptorCount != candidateDescriptorCount || report.Baseline.MeasuredCallCount != 0 ||
 		report.GCAcknowledgementCount != resourceBatchCount+1 || !report.HighWaterWithinBound ||
-		!report.HeapAllocGrowthWithinBound || !report.RSSAfter30SecondsGrowthWithinBound || !report.AllFDsRecovered ||
+		!report.RetainedHeapAllocGrowthWithinBound || !report.RetainedRSSWindowGrowthWithinBound || !report.AllFDsRecovered ||
 		!report.Idle.CPUWithinBound || !report.Idle.FDsRecovered ||
 		!report.Idle.NoExtraToolCalls || !report.Idle.NoVaultActivity || !report.Idle.DescriptorsUnchanged {
 		t.Fatalf("resource report = %#v", report)
@@ -565,45 +579,145 @@ func requestGCReply(t *testing.T, reply string) (resourceMemorySnapshot, error) 
 func TestDefaultResourceProbeContractIsFrozen(t *testing.T) {
 	got := defaultResourceProbeOptions()
 	want := resourceProbeOptions{
+		ToolSurface:   candidateToolSurface,
 		ColdProcesses: 10,
 		Stabilize5:    5 * time.Second,
 		Stabilize30:   30 * time.Second,
 		IdleDuration:  60 * time.Second,
 		ControlTime:   5 * time.Second,
 	}
-	if !reflect.DeepEqual(got, want) || resourceReportVersion != 6 || resourceBatchCount != 3 || resourceBatchCalls != 100 ||
+	if !reflect.DeepEqual(got, want) || resourceReportVersion != 8 || resourceBatchCount != 3 || resourceBatchCalls != 100 ||
 		resourceHeapAllocGrowthLimitBytes != uint64(256*1024) || resourceRSSGrowthLimitBytes != int64(8*1024*1024) ||
 		resourceRSSLimitBytes != int64(64*1024*1024) {
 		t.Fatalf("resource probe defaults = %#v, version=%d batches=%d calls=%d heap=%d rss=%d hwm=%d", got, resourceReportVersion, resourceBatchCount, resourceBatchCalls, resourceHeapAllocGrowthLimitBytes, resourceRSSGrowthLimitBytes, resourceRSSLimitBytes)
 	}
 }
 
-func TestAlignedB0GrowthTruthTable(t *testing.T) {
+func TestRetainedGrowthTruthTable(t *testing.T) {
 	for _, test := range []struct {
-		name     string
-		heap     [3]uint64
-		rss      [3]int64
-		wantHeap uint64
-		wantRSS  int64
+		name       string
+		heap       [3]uint64
+		rssWindows [3][3]int64
+		wantHeap   uint64
+		wantRSS    int64
 	}{
-		{name: "flat", heap: [3]uint64{100, 100, 100}, rss: [3]int64{100, 100, 100}},
-		{name: "decline", heap: [3]uint64{99, 98, 97}, rss: [3]int64{99, 98, 97}},
-		{name: "b1 maximum", heap: [3]uint64{120, 110, 105}, rss: [3]int64{120, 110, 105}, wantHeap: 20, wantRSS: 20},
-		{name: "b2 maximum and b3 recovery", heap: [3]uint64{110, 130, 105}, rss: [3]int64{110, 130, 105}, wantHeap: 30, wantRSS: 30},
-		{name: "b3 maximum", heap: [3]uint64{110, 120, 140}, rss: [3]int64{110, 120, 140}, wantHeap: 40, wantRSS: 40},
+		{name: "flat", heap: [3]uint64{100, 100, 100}, rssWindows: [3][3]int64{{100, 100, 100}, {100, 100, 100}, {100, 100, 100}}},
+		{name: "decline", heap: [3]uint64{99, 98, 97}, rssWindows: [3][3]int64{{99, 98, 97}, {99, 98, 97}, {99, 98, 97}}},
+		{name: "one batch transient recovers", heap: [3]uint64{100 + resourceHeapAllocGrowthLimitBytes + 1, 100, 100}, rssWindows: [3][3]int64{{100 + resourceRSSGrowthLimitBytes + 1, 100, 100}, {100, 100, 100}, {100, 100, 100}}},
+		{name: "two batch retained breach", heap: [3]uint64{100 + resourceHeapAllocGrowthLimitBytes + 1, 100 + resourceHeapAllocGrowthLimitBytes + 1, 100}, rssWindows: [3][3]int64{{100 + resourceRSSGrowthLimitBytes + 1, 100, 100}, {100, 100 + resourceRSSGrowthLimitBytes + 1, 100}, {100, 100, 100}}, wantHeap: resourceHeapAllocGrowthLimitBytes + 1, wantRSS: resourceRSSGrowthLimitBytes + 1},
+		{name: "three batch retained breach", heap: [3]uint64{120, 130, 140}, rssWindows: [3][3]int64{{120, 100, 100}, {100, 130, 100}, {100, 100, 140}}, wantHeap: 30, wantRSS: 30},
+		{name: "async RSS checkpoint drop is stable", heap: [3]uint64{100, 100, 100}, rssWindows: [3][3]int64{{130, 100, 100}, {100, 120, 100}, {100, 100, 110}}, wantRSS: 20},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			baseline := resourceBaselineReport{Memory: resourceMemoryReport{HeapAllocBytes: 100}, RSSAfter30SecondsBytes: 100}
+			baseline := resourceBaselineReport{Memory: resourceMemoryReport{HeapAllocBytes: 100}, RSSImmediateBytes: 100, RSSAfter5SecondsBytes: 100, RSSAfter30SecondsBytes: 100}
 			batches := make([]resourceBatchReport, resourceBatchCount)
 			for index := range batches {
 				batches[index].Memory.HeapAllocBytes = test.heap[index]
-				batches[index].RSSAfter30SecondsBytes = test.rss[index]
+				batches[index].RSSImmediateBytes = test.rssWindows[index][0]
+				batches[index].RSSAfter5SecondsBytes = test.rssWindows[index][1]
+				batches[index].RSSAfter30SecondsBytes = test.rssWindows[index][2]
 			}
-			if got := maxHeapAllocGrowth(baseline, batches); got != test.wantHeap {
-				t.Fatalf("maxHeapAllocGrowth(%v) = %d, want %d", test.heap, got, test.wantHeap)
+			if got := retainedHeapAllocGrowth(baseline, batches); got != test.wantHeap {
+				t.Fatalf("retainedHeapAllocGrowth(%v) = %d, want %d", test.heap, got, test.wantHeap)
 			}
-			if got := maxRSSAfter30SecondsGrowth(baseline, batches); got != test.wantRSS {
-				t.Fatalf("maxRSSAfter30SecondsGrowth(%v) = %d, want %d", test.rss, got, test.wantRSS)
+			if got := retainedRSSWindowGrowth(baseline, batches); got != test.wantRSS {
+				t.Fatalf("retainedRSSWindowGrowth(%v) = %d, want %d", test.rssWindows, got, test.wantRSS)
+			}
+		})
+	}
+}
+
+func TestSanitizedRawV3CalibrationReplaysUnderRetainedGate(t *testing.T) {
+	const (
+		r0Commit = "685d5421f69d35a4495062bdb4804b103c79f3a8"
+		r0SHA    = "2ec703d8624df3c24608f7820fc9e50026b888028307e145b150ed9ca45c11c6"
+		r2Commit = "c9c671710c597de6cd2cff75a11f7cac0b6a91c1"
+		r2SHA    = "8df896c95dd2b30c2184776e685cfbc223d66c37534bfd2e8ccda0252099cda5"
+	)
+	if resourceHeapAllocGrowthLimitBytes != 256*1024 || resourceRSSGrowthLimitBytes != 8*1024*1024 {
+		t.Fatalf("retained limits changed: heap=%d rss=%d", resourceHeapAllocGrowthLimitBytes, resourceRSSGrowthLimitBytes)
+	}
+	tests := []struct {
+		name, label, commit, sha string
+		baselineHeap             uint64
+		baselineRSS              [3]int64
+		batchHeap                [3]uint64
+		batchRSS                 [3][3]int64
+		wantHeap                 uint64
+		wantRSS                  int64
+	}{
+		{
+			name: "r0-1", label: "r0", commit: r0Commit, sha: r0SHA,
+			baselineHeap: 1192848, baselineRSS: [3]int64{19005440, 19005440, 19005440},
+			batchHeap: [3]uint64{1340680, 1410840, 1458056},
+			batchRSS:  [3][3]int64{{20979712, 20979712, 17092608}, {21045248, 21045248, 21045248}, {21491712, 21491712, 21491712}},
+			wantHeap:  217992, wantRSS: 2039808,
+		},
+		{
+			name: "r0-2", label: "r0", commit: r0Commit, sha: r0SHA,
+			baselineHeap: 1193120, baselineRSS: [3]int64{17678336, 17678336, 10539008},
+			batchHeap: [3]uint64{1358072, 1416920, 1465304},
+			batchRSS:  [3][3]int64{{21299200, 21299200, 21299200}, {21565440, 21565440, 14135296}, {20369408, 20369408, 15249408}},
+			wantHeap:  223800, wantRSS: 3620864,
+		},
+		{
+			name: "r0-3", label: "r0", commit: r0Commit, sha: r0SHA,
+			baselineHeap: 1191488, baselineRSS: [3]int64{17231872, 17231872, 17231872},
+			batchHeap: [3]uint64{1335176, 1399328, 1441520},
+			batchRSS:  [3][3]int64{{21397504, 21397504, 13242368}, {20246528, 20246528, 20246528}, {21213184, 21213184, 21213184}},
+			wantHeap:  207840, wantRSS: 3981312,
+		},
+		{
+			name: "r2-1", label: "r2", commit: r2Commit, sha: r2SHA,
+			baselineHeap: 1206192, baselineRSS: [3]int64{17145856, 17145856, 17145856},
+			batchHeap: [3]uint64{1353240, 1405784, 1466024},
+			batchRSS:  [3][3]int64{{21483520, 21483520, 21483520}, {21876736, 21876736, 14057472}, {20852736, 20852736, 20852736}},
+			wantHeap:  199592, wantRSS: 4337664,
+		},
+		{
+			name: "r2-2", label: "r2", commit: r2Commit, sha: r2SHA,
+			baselineHeap: 1210552, baselineRSS: [3]int64{18522112, 18522112, 18522112},
+			batchHeap: [3]uint64{1356360, 1406680, 1432840},
+			batchRSS:  [3][3]int64{{21803008, 21803008, 13463552}, {21196800, 21196800, 21200896}, {21467136, 21467136, 14397440}},
+			wantHeap:  196128, wantRSS: 2945024,
+		},
+		{
+			name: "r2-3", label: "r2", commit: r2Commit, sha: r2SHA,
+			baselineHeap: 1207568, baselineRSS: [3]int64{17973248, 15179776, 15179776},
+			batchHeap: [3]uint64{1366264, 1399752, 1433864},
+			batchRSS:  [3][3]int64{{21233664, 21233664, 21233664}, {21524480, 21524480, 21524480}, {21745664, 21745664, 19095552}},
+			wantHeap:  192184, wantRSS: 3551232,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			wantCommit, wantSHA := r0Commit, r0SHA
+			if test.label == "r2" {
+				wantCommit, wantSHA = r2Commit, r2SHA
+			} else if test.label != "r0" {
+				t.Fatalf("unknown calibration candidate label %q", test.label)
+			}
+			if test.commit != wantCommit || test.sha != wantSHA {
+				t.Fatalf("calibration candidate identity changed: label=%s commit=%s sha=%s", test.label, test.commit, test.sha)
+			}
+			baseline := resourceBaselineReport{
+				Memory:            resourceMemoryReport{HeapAllocBytes: test.baselineHeap},
+				RSSImmediateBytes: test.baselineRSS[0], RSSAfter5SecondsBytes: test.baselineRSS[1], RSSAfter30SecondsBytes: test.baselineRSS[2],
+			}
+			batches := make([]resourceBatchReport, resourceBatchCount)
+			for index := range batches {
+				batches[index].Memory.HeapAllocBytes = test.batchHeap[index]
+				batches[index].RSSImmediateBytes = test.batchRSS[index][0]
+				batches[index].RSSAfter5SecondsBytes = test.batchRSS[index][1]
+				batches[index].RSSAfter30SecondsBytes = test.batchRSS[index][2]
+			}
+			replayed := deriveResourceReport(resourceReport{Baseline: baseline, Batches: batches})
+			gotHeap := replayed.RetainedHeapAllocGrowthBytes
+			gotRSS := replayed.RetainedRSSWindowGrowthBytes
+			if gotHeap != test.wantHeap || gotRSS != test.wantRSS ||
+				!replayed.RetainedHeapAllocGrowthWithinBound || !replayed.RetainedRSSWindowGrowthWithinBound ||
+				gotHeap > resourceHeapAllocGrowthLimitBytes || gotRSS > resourceRSSGrowthLimitBytes {
+				t.Fatalf("retained replay = heap %d rss %d, want heap %d rss %d within unchanged limits", gotHeap, gotRSS, test.wantHeap, test.wantRSS)
 			}
 		})
 	}
@@ -766,19 +880,24 @@ func TestResourceGateRejectsRealRetainedGoHeap(t *testing.T) {
 	}
 	allocation[len(allocation)-1] = 1
 	runtime.GC()
-	var after runtime.MemStats
-	runtime.ReadMemStats(&after)
-	if after.HeapAlloc <= before.HeapAlloc || after.HeapAlloc-before.HeapAlloc <= uint64(256*1024) {
-		t.Fatalf("real retained HeapAlloc delta = %d, want > literal 256 KiB", nonnegativeUint64Delta(after.HeapAlloc, before.HeapAlloc))
+	var afterFirst runtime.MemStats
+	runtime.ReadMemStats(&afterFirst)
+	runtime.GC()
+	var afterSecond runtime.MemStats
+	runtime.ReadMemStats(&afterSecond)
+	for index, after := range []runtime.MemStats{afterFirst, afterSecond} {
+		if after.HeapAlloc <= before.HeapAlloc || after.HeapAlloc-before.HeapAlloc <= uint64(256*1024) {
+			t.Fatalf("real retained HeapAlloc delta at observation %d = %d, want > literal 256 KiB", index+1, nonnegativeUint64Delta(after.HeapAlloc, before.HeapAlloc))
+		}
 	}
 
 	report := passingResourceGateReport()
 	report.Baseline.Memory = memoryReportFromRuntime(before)
-	report.Batches[0].Memory = memoryReportFromRuntime(after)
-	report.Batches[1].Memory = memoryReportFromRuntime(before)
+	report.Batches[0].Memory = memoryReportFromRuntime(afterFirst)
+	report.Batches[1].Memory = memoryReportFromRuntime(afterSecond)
 	report.Batches[2].Memory = memoryReportFromRuntime(before)
 	report = deriveResourceReport(report)
-	if report.HeapAllocGrowthWithinBound || !report.RSSAfter30SecondsGrowthWithinBound || !report.HighWaterWithinBound || resourceReportPasses(report, 10) {
+	if report.RetainedHeapAllocGrowthWithinBound || !report.RetainedRSSWindowGrowthWithinBound || !report.HighWaterWithinBound || resourceReportPasses(report, 10) {
 		t.Fatalf("real retained Go heap did not isolate the heap gate: %#v", report)
 	}
 	runtime.KeepAlive(allocation)
@@ -791,17 +910,20 @@ func TestResourceGateRejectsRealRetainedMmapRSS(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("process RSS and ru_maxrss byte semantics are verified on the supported macOS release host")
 	}
-	baseline, retained, usage := observeRetainedMmap(t, "TestResourceGateRejectsRealRetainedMmapRSS", "rss")
-	delta := nonnegativeDelta(retained.rssBytes, baseline.rssBytes)
-	if delta <= int64(8*1024*1024) || delta >= int64(64*1024*1024) {
-		t.Fatalf("real retained mmap RSS delta = %d, want > 8 MiB and < 64 MiB", delta)
+	baseline, retainedFirst, retainedSecond, usage := observeRetainedMmap(t, "TestResourceGateRejectsRealRetainedMmapRSS", "rss")
+	for index, retained := range []processResourceSample{retainedFirst, retainedSecond} {
+		delta := nonnegativeDelta(retained.rssBytes, baseline.rssBytes)
+		if delta <= int64(8*1024*1024) || delta >= int64(64*1024*1024) {
+			t.Fatalf("real retained mmap RSS delta at observation %d = %d, want > 8 MiB and < 64 MiB", index+1, delta)
+		}
 	}
 	report := passingResourceGateReport()
 	setResourceReportRSS(&report, baseline.rssBytes)
-	report.Batches[1].RSSAfter30SecondsBytes = retained.rssBytes
+	report.Batches[0].RSSAfter30SecondsBytes = retainedFirst.rssBytes
+	report.Batches[1].RSSAfter30SecondsBytes = retainedSecond.rssBytes
 	report.HighWaterRSSBytes = usage.highWaterRSSBytes
 	report = deriveResourceReport(report)
-	if !report.HeapAllocGrowthWithinBound || report.RSSAfter30SecondsGrowthWithinBound || !report.HighWaterWithinBound || resourceReportPasses(report, 10) {
+	if !report.RetainedHeapAllocGrowthWithinBound || report.RetainedRSSWindowGrowthWithinBound || !report.HighWaterWithinBound || resourceReportPasses(report, 10) {
 		t.Fatalf("real retained mmap did not isolate the RSS gate: %#v", report)
 	}
 }
@@ -813,15 +935,16 @@ func TestWaitedHighWaterRejectsRealRetainedRSSBreach(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("process RSS and ru_maxrss byte semantics are verified on the supported macOS release host")
 	}
-	baseline, retained, usage := observeRetainedMmap(t, "TestWaitedHighWaterRejectsRealRetainedRSSBreach", "hwm")
-	if nonnegativeDelta(retained.rssBytes, baseline.rssBytes) <= int64(64*1024*1024) {
-		t.Fatalf("real retained RSS delta = %d, want > 64 MiB", nonnegativeDelta(retained.rssBytes, baseline.rssBytes))
+	baseline, retainedFirst, retainedSecond, usage := observeRetainedMmap(t, "TestWaitedHighWaterRejectsRealRetainedRSSBreach", "hwm")
+	retainedRSS := maxInt64(retainedFirst.rssBytes, retainedSecond.rssBytes)
+	if nonnegativeDelta(retainedRSS, baseline.rssBytes) <= int64(64*1024*1024) {
+		t.Fatalf("real retained RSS delta = %d, want > 64 MiB", nonnegativeDelta(retainedRSS, baseline.rssBytes))
 	}
-	if highWaterWithinBound(usage.highWaterRSSBytes, baseline.rssBytes, retained.rssBytes) {
+	if highWaterWithinBound(usage.highWaterRSSBytes, baseline.rssBytes, retainedFirst.rssBytes, retainedSecond.rssBytes) {
 		t.Fatalf("retained high-water delta = %d was accepted", nonnegativeDelta(usage.highWaterRSSBytes, baseline.rssBytes))
 	}
-	if usage.highWaterRSSBytes < retained.rssBytes {
-		t.Fatalf("waited high water = %d, below retained RSS = %d", usage.highWaterRSSBytes, retained.rssBytes)
+	if usage.highWaterRSSBytes < retainedRSS {
+		t.Fatalf("waited high water = %d, below retained RSS = %d", usage.highWaterRSSBytes, retainedRSS)
 	}
 }
 
@@ -872,7 +995,7 @@ func runRetainedMmapHelper(t *testing.T, size int) {
 	}
 }
 
-func observeRetainedMmap(t *testing.T, testName, mode string) (processResourceSample, processResourceSample, waitedProcessUsage) {
+func observeRetainedMmap(t *testing.T, testName, mode string) (processResourceSample, processResourceSample, processResourceSample, waitedProcessUsage) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -913,7 +1036,11 @@ func observeRetainedMmap(t *testing.T, testName, mode string) (processResourceSa
 	}
 	advance()
 	waitFor("allocated")
-	retained, err := sampler.Sample(ctx, cmd.Process.Pid, false)
+	retainedFirst, err := sampler.Sample(ctx, cmd.Process.Pid, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retainedSecond, err := sampler.Sample(ctx, cmd.Process.Pid, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -928,7 +1055,7 @@ func observeRetainedMmap(t *testing.T, testName, mode string) (processResourceSa
 	if err != nil {
 		t.Fatal(err)
 	}
-	return baseline, retained, usage
+	return baseline, retainedFirst, retainedSecond, usage
 }
 
 func memoryReportFromRuntime(memory runtime.MemStats) resourceMemoryReport {
@@ -952,13 +1079,6 @@ func setResourceReportRSS(report *resourceReport, rss int64) {
 	}
 	report.Idle.RSSBeforeBytes = rss
 	report.Idle.RSSAfterBytes = rss
-}
-
-func nonnegativeUint64Delta(after, before uint64) uint64 {
-	if after <= before {
-		return 0
-	}
-	return after - before
 }
 
 func TestHighWaterWithinBoundIncludesExactLimit(t *testing.T) {
@@ -1022,6 +1142,7 @@ func TestResourceReportPassesRejectsEachGateFailure(t *testing.T) {
 		mutate func(*resourceReport)
 	}{
 		{name: "schema", mutate: func(r *resourceReport) { r.SchemaVersion-- }},
+		{name: "tool surface", mutate: func(r *resourceReport) { r.ToolSurface = toolSurface("tampered") }},
 		{name: "cold count", mutate: func(r *resourceReport) { r.Cold.FreshProcessCount = 9 }},
 		{name: "descriptor count", mutate: func(r *resourceReport) { r.DescriptorCount = 3 }},
 		{name: "baseline call count", mutate: func(r *resourceReport) { r.Baseline.MeasuredCallCount = 1 }},
@@ -1031,12 +1152,14 @@ func TestResourceReportPassesRejectsEachGateFailure(t *testing.T) {
 		{name: "high water raw", mutate: func(r *resourceReport) {
 			r.HighWaterRSSBytes = r.Baseline.RSSAfter30SecondsBytes + resourceRSSLimitBytes + 1
 		}},
-		{name: "heap cached", mutate: func(r *resourceReport) { r.HeapAllocGrowthWithinBound = false }},
-		{name: "heap raw b2", mutate: func(r *resourceReport) {
+		{name: "retained heap cached", mutate: func(r *resourceReport) { r.RetainedHeapAllocGrowthWithinBound = false }},
+		{name: "retained heap raw b1 and b2", mutate: func(r *resourceReport) {
+			r.Batches[0].Memory.HeapAllocBytes = r.Baseline.Memory.HeapAllocBytes + resourceHeapAllocGrowthLimitBytes + 1
 			r.Batches[1].Memory.HeapAllocBytes = r.Baseline.Memory.HeapAllocBytes + resourceHeapAllocGrowthLimitBytes + 1
 		}},
-		{name: "rss cached", mutate: func(r *resourceReport) { r.RSSAfter30SecondsGrowthWithinBound = false }},
-		{name: "rss raw b2", mutate: func(r *resourceReport) {
+		{name: "retained rss window cached", mutate: func(r *resourceReport) { r.RetainedRSSWindowGrowthWithinBound = false }},
+		{name: "retained RSS window raw b1 and b2", mutate: func(r *resourceReport) {
+			r.Batches[0].RSSImmediateBytes = r.Baseline.RSSAfter30SecondsBytes + resourceRSSGrowthLimitBytes + 1
 			r.Batches[1].RSSAfter30SecondsBytes = r.Baseline.RSSAfter30SecondsBytes + resourceRSSGrowthLimitBytes + 1
 		}},
 		{name: "negative current rss", mutate: func(r *resourceReport) { r.Batches[1].RSSImmediateBytes = -1 }},
@@ -1082,23 +1205,27 @@ func TestResourceReportPassesRejectsEachGateFailure(t *testing.T) {
 	}
 }
 
-func TestAlignedB0LiteralLimitsAreIndependentAndInclusive(t *testing.T) {
+func TestRetainedLiteralLimitsAreIndependentAndInclusive(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*resourceReport, int64)
 		want   bool
 	}{
 		{name: "exact heap", mutate: func(r *resourceReport, _ int64) {
+			r.Batches[0].Memory.HeapAllocBytes = r.Baseline.Memory.HeapAllocBytes + uint64(256*1024)
 			r.Batches[1].Memory.HeapAllocBytes = r.Baseline.Memory.HeapAllocBytes + uint64(256*1024)
 		}, want: true},
 		{name: "heap plus one", mutate: func(r *resourceReport, _ int64) {
+			r.Batches[0].Memory.HeapAllocBytes = r.Baseline.Memory.HeapAllocBytes + uint64(256*1024) + 1
 			r.Batches[1].Memory.HeapAllocBytes = r.Baseline.Memory.HeapAllocBytes + uint64(256*1024) + 1
 		}},
 		{name: "exact rss", mutate: func(r *resourceReport, baseline int64) {
+			r.Batches[0].RSSImmediateBytes = baseline + int64(8*1024*1024)
 			r.Batches[1].RSSAfter30SecondsBytes = baseline + int64(8*1024*1024)
 			r.HighWaterRSSBytes = r.Batches[1].RSSAfter30SecondsBytes
 		}, want: true},
 		{name: "rss plus one", mutate: func(r *resourceReport, baseline int64) {
+			r.Batches[0].RSSImmediateBytes = baseline + int64(8*1024*1024) + 1
 			r.Batches[1].RSSAfter30SecondsBytes = baseline + int64(8*1024*1024) + 1
 			r.HighWaterRSSBytes = r.Batches[1].RSSAfter30SecondsBytes
 		}},
@@ -1119,6 +1246,19 @@ func TestAlignedB0LiteralLimitsAreIndependentAndInclusive(t *testing.T) {
 	}
 }
 
+func TestDocumentTransferIdleGateUsesExactFourCalls(t *testing.T) {
+	idle := passingResourceGateReport().Idle
+	idle.ExpectedToolCallRows = 4
+	idle.ToolCallRowsBefore = 4
+	idle.ToolCallRowsAfter = 4
+	if !idleResourceReportPassesExpected(idle, 7, candidateDescriptorCount, candidateToolSurface, 4) {
+		t.Fatal("document transfer idle shape was rejected")
+	}
+	if idleResourceReportPasses(idle, 7, candidateDescriptorCount, candidateToolSurface) {
+		t.Fatal("document transfer idle shape was accepted as the canonical resource workload")
+	}
+}
+
 func passingResourceGateReport() resourceReport {
 	const baselineRSS = int64(16 * 1024 * 1024)
 	const baselineHeap = uint64(1024 * 1024)
@@ -1126,7 +1266,8 @@ func passingResourceGateReport() resourceReport {
 		ReportKind:       reportKindResource,
 		ReportSchema:     resourceReportSchema,
 		SchemaVersion:    resourceReportVersion,
-		DescriptorCount:  5,
+		ToolSurface:      candidateToolSurface,
+		DescriptorCount:  candidateDescriptorCount,
 		Cold:             coldResourceReport{FreshProcessCount: 10, MaxSDKResultBytes: 1, MaxStructuredBytes: 1},
 		CandidateRuntime: candidateRuntimeProfile{GoVersion: "go1.26.1", GOOS: "darwin", GOARCH: "amd64"},
 		Machine:          machineProfile{LogicalCPUCount: 8, GOMAXPROCS: 8},
@@ -1190,7 +1331,7 @@ func passingResourceGateReport() resourceReport {
 			NoExtraToolCalls:          true,
 			NoVaultActivity:           true,
 			NoGrepActivity:            true,
-			DescriptorCountAfter:      5,
+			DescriptorCountAfter:      candidateDescriptorCount,
 			DescriptorsUnchanged:      true,
 			ExpectedToolCallRows:      resourceConcurrentWarmupCalls + resourceMeasuredCalls + resourceConcurrentProbeCalls,
 			ToolCallRowsBefore:        resourceConcurrentWarmupCalls + resourceMeasuredCalls + resourceConcurrentProbeCalls,
@@ -1337,6 +1478,10 @@ func newSmokeSQLiteFixture(t *testing.T) string {
 	if _, err := db.Exec(`CREATE TABLE audit_events (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		event TEXT NOT NULL,
+		method TEXT,
+		tool TEXT,
+		outcome TEXT,
+		error_code TEXT,
 		body_json TEXT NOT NULL
 	)`); err != nil {
 		db.Close()
@@ -1375,11 +1520,24 @@ func buildGatewayCandidate(t *testing.T) string {
 	t.Helper()
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	candidate := filepath.Join(t.TempDir(), "personal-mcp-gateway")
-	build := exec.Command("go", "build", "-buildvcs=false", "-o", candidate, "./cmd/gateway")
+	build := exec.Command("go", "build", "-buildvcs=false", "-ldflags", "-X personal-mcp-gateway/internal/tools/obsidian.documentReadingBuild=pdf_candidate", "-o", candidate, "./cmd/gateway")
 	build.Dir = repoRoot
 	build.Env = os.Environ()
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build candidate: %v\n%s", err, output)
+	}
+	return candidate
+}
+
+func buildAcceptedGatewayCandidate(t *testing.T) string {
+	t.Helper()
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	candidate := filepath.Join(t.TempDir(), "personal-mcp-gateway")
+	build := exec.Command("go", "build", "-buildvcs=false", "-o", candidate, "./cmd/gateway")
+	build.Dir = repoRoot
+	build.Env = os.Environ()
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build accepted candidate: %v\n%s", err, output)
 	}
 	return candidate
 }
@@ -1442,6 +1600,7 @@ func assertOnlySanitizedReportValues(t *testing.T, value any) {
 		case "2_10", "11_100", "101_1000", "1001_plus",
 			reportKindFunctional, reportKindPerformance, reportKindResource,
 			functionalReportSchema, performanceReportSchema, resourceReportSchema, markdownInventoryPolicy,
+			string(candidateToolSurface), string(acceptedToolSurface),
 			"scope", "file_limit", "byte_limit", "timeout", "source_change", "complete", "cursor",
 			"result_limit", "response_limit", "input_too_large", obsidian.ResponseTooLargeCode,
 			obsidian.InvalidUTF8Code:

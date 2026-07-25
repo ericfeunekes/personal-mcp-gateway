@@ -18,9 +18,13 @@ import (
 	"personal-mcp-gateway/internal/fsx"
 	localmcp "personal-mcp-gateway/internal/mcp"
 	"personal-mcp-gateway/internal/resourceprobe"
+	"personal-mcp-gateway/internal/tools/obsidian"
 )
 
 func main() {
+	if handled, code := obsidian.RunPDFValidatorWorker(os.Args[1:], os.Stdin); handled {
+		os.Exit(code)
+	}
 	os.Exit(run(os.Args[1:], os.Stderr))
 }
 
@@ -81,6 +85,7 @@ func runWithContext(ctx context.Context, args []string, stderr io.Writer, auditF
 		writeErr(stderr, "startup error: gateway is not ready\n")
 		return 1
 	}
+	defer application.Close()
 	probeContext := ctx
 	var probeErrors <-chan error
 	if probe != nil {
@@ -108,7 +113,13 @@ func runWithContext(ctx context.Context, args []string, stderr io.Writer, auditF
 
 	switch cfg.Mode {
 	case config.ModeStdio:
-		if err := localmcp.RunStdio(probeContext, application.Server()); err != nil && !errors.Is(err, context.Canceled) {
+		var runErr error
+		if application.NativeDocuments() != nil {
+			runErr = localmcp.RunStdioWithNativeDocuments(probeContext, application.Server(), application.NativeDocuments())
+		} else {
+			runErr = localmcp.RunStdio(probeContext, application.Server())
+		}
+		if err := runErr; err != nil && !errors.Is(err, context.Canceled) {
 			log.Event("gateway.runtime_error", map[string]any{
 				"transport":  string(cfg.Mode),
 				"error_code": "stdio_stopped",

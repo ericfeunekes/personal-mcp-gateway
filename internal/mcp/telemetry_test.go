@@ -406,7 +406,7 @@ func TestSafeSummaryBuilderRejectsInvalidMetricPlacementAndEnumPairing(t *testin
 		},
 		{
 			name:  "counter section",
-			write: func(builder *SafeSummaryBuilder) error { return builder.Counter(SectionResult, CounterRawBytes, 1) },
+			write: func(builder *SafeSummaryBuilder) error { return builder.Counter(SectionResult, CounterLimit, 1) },
 		},
 		{
 			name: "enum section",
@@ -432,6 +432,21 @@ func TestSafeSummaryBuilderRejectsInvalidMetricPlacementAndEnumPairing(t *testin
 				t.Fatal("invalid summary write succeeded")
 			}
 		})
+	}
+}
+
+func TestSafeSummaryBuilderAllowsBoundedResultRawBytes(t *testing.T) {
+	builder := newSafeSummaryBuilder("test-run")
+	if err := builder.Counter(SectionResult, CounterRawBytes, 49_999_999); err != nil {
+		t.Fatalf("result raw_bytes rejected: %v", err)
+	}
+	envelope, err := builder.seal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := decodeSummary(t, envelope)["result"].(map[string]any)
+	if result["raw_bytes"] != float64(49_999_999) {
+		t.Fatalf("result raw_bytes = %#v", result["raw_bytes"])
 	}
 }
 

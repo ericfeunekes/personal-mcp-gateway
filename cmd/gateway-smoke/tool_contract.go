@@ -11,7 +11,15 @@ import (
 )
 
 func exactCandidateToolGrammar(tools []*sdk.Tool) bool {
-	if len(tools) != 5 {
+	return exactToolGrammar(tools, candidateToolSurface)
+}
+
+func exactAcceptedToolGrammar(tools []*sdk.Tool) bool {
+	return exactToolGrammar(tools, acceptedToolSurface)
+}
+
+func exactToolGrammar(tools []*sdk.Tool, surface toolSurface) bool {
+	if len(tools) != surface.descriptorCount() {
 		return false
 	}
 	byName := make(map[string]*sdk.Tool, len(tools))
@@ -27,6 +35,16 @@ func exactCandidateToolGrammar(tools []*sdk.Tool) bool {
 		byName[obsidian.ToolReadMany] == nil || byName[obsidian.ToolReadMany].Description != obsidian.ReadManyDescription ||
 		byName[obsidian.ToolGrep] == nil || byName[obsidian.ToolGrep].Description != obsidian.GrepDescription {
 		return false
+	}
+	if surface == candidateToolSurface {
+		documentTool := byName[obsidian.ToolReadDocument]
+		if documentTool == nil || documentTool.Description != obsidian.ReadDocumentDescription {
+			return false
+		}
+		document, ok := normalizedSchema(documentTool.InputSchema)
+		if !ok || !closedObjectGrammar(document, []string{"base", "path"}, []string{"path"}) {
+			return false
+		}
 	}
 
 	resolve, ok := normalizedSchema(byName[obsidian.ToolResolve].InputSchema)

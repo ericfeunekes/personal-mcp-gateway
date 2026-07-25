@@ -25,6 +25,29 @@ import (
 )
 
 const (
+	candidateDescriptorCount = 6
+	acceptedDescriptorCount  = 5
+)
+
+type toolSurface string
+
+const (
+	candidateToolSurface toolSurface = "candidate"
+	acceptedToolSurface  toolSurface = "accepted"
+)
+
+func (surface toolSurface) descriptorCount() int {
+	switch surface {
+	case candidateToolSurface:
+		return candidateDescriptorCount
+	case acceptedToolSurface:
+		return acceptedDescriptorCount
+	default:
+		return 0
+	}
+}
+
+const (
 	smokeTimeout             = 10 * time.Second
 	performanceTimeout       = 90 * time.Second
 	resourceTimeout          = 4 * time.Minute
@@ -218,6 +241,15 @@ type sqliteSnapshot struct {
 	persistedRows  int
 	parsedBodyRows int
 	toolCallRows   int
+	toolCallBodies []sqliteToolCallRow
+}
+
+type sqliteToolCallRow struct {
+	method    string
+	tool      string
+	outcome   string
+	errorCode string
+	body      map[string]any
 }
 
 type sqliteBurstTracker struct {
@@ -252,12 +284,15 @@ func runWithCandidateSnapshotter(args []string, stdout, stderr io.Writer, snapsh
 	reportJSON := flags.Bool("report-json", false, "emit one sanitized aggregate JSON report")
 	performanceJSON := flags.Bool("performance-json", false, "emit one sanitized current-vault and stratified candidate performance report")
 	resourceJSON := flags.Bool("resource-json", false, "emit one sanitized fresh-process, repeated-batch, and idle resource report")
+	resourceControl := flags.Bool("resource-control", false, "use the accepted five-tool surface for --resource-json")
+	documentTransferJSON := flags.Bool("document-transfer-json", false, "emit one disposable exact-size document transfer capacity report")
+	documentTransferArtifact := flags.String("document-transfer-artifact", "", "write the synthetic document transfer fixture for independent validation")
 	validateReports := flags.Bool("validate-report-set", false, "validate exactly one functional, performance, and resource report")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	selectedJSONModes := 0
-	for _, selected := range []bool{*reportJSON, *performanceJSON, *resourceJSON} {
+	for _, selected := range []bool{*reportJSON, *performanceJSON, *resourceJSON, *documentTransferJSON} {
 		if selected {
 			selectedJSONModes++
 		}
@@ -265,14 +300,23 @@ func runWithCandidateSnapshotter(args []string, stdout, stderr io.Writer, snapsh
 	if selectedJSONModes > 1 {
 		return errors.New("--report-json, --performance-json, and --resource-json are mutually exclusive")
 	}
+	if *resourceControl && !*resourceJSON {
+		return errors.New("--resource-control requires --resource-json")
+	}
+	if *documentTransferArtifact != "" && !*documentTransferJSON {
+		return errors.New("--document-transfer-artifact requires --document-transfer-json")
+	}
+	if *documentTransferJSON && *documentTransferArtifact == "" {
+		return errors.New("--document-transfer-json requires --document-transfer-artifact")
+	}
 	if *gatewayBin == "" || *repoRoot == "" || *candidateCommit == "" || *candidateSHA256 == "" || *dependencySHA256 == "" {
 		return errors.New("candidate provenance arguments are required")
 	}
 	if !*validateReports && *obsidianRoot == "" {
 		return errors.New("--obsidian-root is required")
 	}
-	if *validateReports && (selectedJSONModes != 0 || *obsidianRoot != "" || len(flags.Args()) != 3) {
-		return errors.New("report-set validation requires exactly three report files")
+	if *validateReports && (selectedJSONModes != 0 || *obsidianRoot != "" || len(flags.Args()) != 4) {
+		return errors.New("report-set validation requires exactly four report files")
 	}
 	if !*validateReports && len(flags.Args()) != 0 {
 		return errors.New("unexpected positional arguments")
@@ -298,13 +342,26 @@ func runWithCandidateSnapshotter(args []string, stdout, stderr io.Writer, snapsh
 	timeout := smokeTimeout
 	if *performanceJSON {
 		timeout = performanceTimeout
-	} else if *resourceJSON {
+	} else if *resourceJSON || *documentTransferJSON {
 		timeout = resourceTimeout
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	if *documentTransferJSON {
+		report, err := probeDocumentTransferCapacity(ctx, candidatePath, *documentTransferArtifact, provenance, systemResourceSampler{})
+		if report.SchemaVersion != 0 {
+			if encodeErr := json.NewEncoder(stdout).Encode(report); encodeErr != nil {
+				return errors.New("encode document transfer capacity report failed")
+			}
+		}
+		return err
+	}
 	if *resourceJSON {
-		report, err := probeCandidateResources(ctx, candidatePath, *obsidianRoot, defaultResourceProbeOptions(), systemResourceSampler{})
+		options := defaultResourceProbeOptions()
+		if *resourceControl {
+			options.ToolSurface = acceptedToolSurface
+		}
+		report, err := probeCandidateResources(ctx, candidatePath, *obsidianRoot, options, systemResourceSampler{})
 		report.ReportKind = reportKindResource
 		report.CandidateCommit = provenance.Commit
 		report.CandidateSHA256 = provenance.CandidateSHA256
@@ -427,7 +484,6 @@ func probeCurrentVault(ctx context.Context, gatewayBin, root string, report *smo
 	if err != nil {
 		return err
 	}
-
 	out, err := callStructured[obsidian.ResolveOutput](ctx, process.session, obsidian.ToolResolve, map[string]any{"path": "."}, report)
 	if err != nil {
 		return errors.New("candidate resolve call failed")
@@ -1252,7 +1308,7 @@ func inspectSQLite(ctx context.Context, dbPath string) (sqliteSnapshot, error) {
 		return sqliteSnapshot{}, errors.New("SQLite telemetry readback failed")
 	}
 	defer db.Close()
-	rows, err := db.QueryContext(ctx, `SELECT event, body_json FROM audit_events ORDER BY id`)
+	rows, err := db.QueryContext(ctx, `SELECT event, method, tool, outcome, error_code, body_json FROM audit_events ORDER BY id`)
 	if err != nil {
 		return sqliteSnapshot{}, errors.New("SQLite telemetry readback failed")
 	}
@@ -1261,7 +1317,8 @@ func inspectSQLite(ctx context.Context, dbPath string) (sqliteSnapshot, error) {
 	var snapshot sqliteSnapshot
 	for rows.Next() {
 		var event, bodyJSON string
-		if err := rows.Scan(&event, &bodyJSON); err != nil {
+		var method, tool, outcome, errorCode sql.NullString
+		if err := rows.Scan(&event, &method, &tool, &outcome, &errorCode, &bodyJSON); err != nil {
 			return sqliteSnapshot{}, errors.New("SQLite telemetry row was invalid")
 		}
 		snapshot.persistedRows++
@@ -1272,6 +1329,9 @@ func inspectSQLite(ctx context.Context, dbPath string) (sqliteSnapshot, error) {
 		snapshot.parsedBodyRows++
 		if event == "tool.call" {
 			snapshot.toolCallRows++
+			snapshot.toolCallBodies = append(snapshot.toolCallBodies, sqliteToolCallRow{
+				method: method.String, tool: tool.String, outcome: outcome.String, errorCode: errorCode.String, body: body,
+			})
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -1363,12 +1423,16 @@ func dropSQLiteEventsTable(dbPath string) error {
 }
 
 func requireExactToolList(ctx context.Context, session *sdk.ClientSession) (int, error) {
+	return requireExactToolListForSurface(ctx, session, candidateToolSurface)
+}
+
+func requireExactToolListForSurface(ctx context.Context, session *sdk.ClientSession, surface toolSurface) (int, error) {
 	listed, err := session.ListTools(ctx, nil)
 	if err != nil {
 		return 0, errors.New("candidate tool list failed")
 	}
-	if !exactCandidateToolGrammar(listed.Tools) {
-		return 0, errors.New("candidate tool grammar did not match the exact five-tool contract")
+	if !exactToolGrammar(listed.Tools, surface) {
+		return 0, errors.New("candidate tool grammar did not match the selected exact tool surface")
 	}
 	names := make([]string, 0, len(listed.Tools))
 	for _, tool := range listed.Tools {
@@ -1376,8 +1440,12 @@ func requireExactToolList(ctx context.Context, session *sdk.ClientSession) (int,
 	}
 	sort.Strings(names)
 	want := []string{obsidian.ToolGrep, obsidian.ToolLS, obsidian.ToolRead, obsidian.ToolReadMany, obsidian.ToolResolve}
+	if surface == candidateToolSurface {
+		want = append(want, obsidian.ToolReadDocument)
+		sort.Strings(want)
+	}
 	if !reflect.DeepEqual(names, want) {
-		return 0, errors.New("candidate tool list was not exactly grep, ls, read, read_many, and resolve")
+		return 0, errors.New("candidate tool list did not match the selected exact tool surface")
 	}
 	return len(names), nil
 }

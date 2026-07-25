@@ -30,7 +30,7 @@ Target tool names:
 - `edit`
 - `move`
 - `delete`
-- document reading (activation-gated name)
+- `read_document` (activation-gated implementation and format support)
 
 The MCP server name is the public integration boundary. Do not prefix tool names with `obsidian.` inside this server, and do not add non-Obsidian tools to this server. Do not expose separate `search`, `graph_search`, shell, or generic query tools: `grep` is the content-discovery entry point, `resolve` owns canonical path resolution and existence, and mutation-scoped `stat` owns opaque fingerprint acquisition for existing files and directories.
 
@@ -45,6 +45,7 @@ Implemented and accepted core tools:
 - `read`: select bounded content, heading, block, frontmatter, or outline evidence from one canonical Markdown path with source-bound continuation.
 - `read_many`: preserve one to 20 ordered read requests under one aggregate byte budget, isolate item errors, and continue with a request-vector-bound cursor.
 - `grep`: search Markdown content in deterministic canonical-path order with bounded context, explicit work budgets, truthful coverage, and stateless continuation.
+- `read_document`: activation-gated PDF candidate that captures one confined, validated source up to 49,999,999 bytes and returns its original bytes as `application/pdf`. Unsupported document families fail closed and remain absent from the support claim.
 
 The local implementation derives registration, schemas, backend-ready names, and safe telemetry from one descriptor authority. Filesystem access is fd-anchored per operation, pagination re-scans the complete shallow directory while retaining only bounded candidates or cursor state, and JSONL/SQLite summaries cannot retain raw paths, entry names, patterns, selectors, cursor values, or content. Phase 1 proof covers the original `resolve`/`ls` boundary. Phase 2 proof is intentionally layered: synthetic fixtures cover retrieval semantics; current-vault probes cover broad `grep`, inventory, performance, and resources; and the authenticated model journey covers live `grep` -> `read_many` -> continued `read_many`. Together with five-tool metadata and exact release acceptance, those layers prove the accepted core surface without claiming every retrieval selector was exercised against the real vault.
 
