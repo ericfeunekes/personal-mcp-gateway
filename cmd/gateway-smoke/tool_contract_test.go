@@ -69,7 +69,7 @@ func TestExactAcceptedToolGrammarRejectsTemporaryProbeAndSchemaDrift(t *testing.
 	}
 	withProbe := cloneTools(t, tools)
 	for _, tool := range listedCandidateTools(t) {
-		if tool.Name == obsidian.ToolDocumentTransferProbe {
+		if tool.Name == obsidian.ToolReadDocument {
 			withProbe = append(withProbe, tool)
 		}
 	}
@@ -103,7 +103,7 @@ func listedTools(t *testing.T, includeProbe bool) []*sdk.Tool {
 	}
 	descriptors, err := obsidian.Descriptors(vault)
 	if includeProbe {
-		descriptors, err = obsidian.DescriptorsWithDocumentTransferProbe(vault)
+		descriptors, err = obsidian.DescriptorsWithNativeDocuments(vault, localmcp.NewNativeDocumentBridge(), nil, nil)
 	}
 	if err != nil {
 		t.Fatal(err)

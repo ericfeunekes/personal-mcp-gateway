@@ -10,8 +10,12 @@ import (
 	"errors"
 	"image/png"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,8 +30,9 @@ import (
 )
 
 const (
-	documentTransferCapacitySchema  = "personal-mcp-gateway.document-transfer-capacity.v1"
-	documentTransferCapacityVersion = 1
+	documentTransferCapacitySchema         = "personal-mcp-gateway.document-transfer-capacity.v3"
+	documentTransferCapacityVersion        = 3
+	documentTransferAggregateRSSLimitBytes = int64(160 * 1024 * 1024)
 )
 
 type documentTransferCheckpoint struct {
@@ -55,6 +60,7 @@ type documentTransferCapacityReport struct {
 	EncodedWireFrames                  int64                        `json:"encoded_wire_frames"`
 	StructuredResultBytes              int                          `json:"structured_result_bytes"`
 	CallLatencyMicroseconds            int64                        `json:"call_latency_microseconds"`
+	SequentialCallCount                int                          `json:"sequential_call_count"`
 	CallWithinTwoSeconds               bool                         `json:"call_within_two_seconds"`
 	NonceOffset                        int                          `json:"nonce_offset"`
 	FinalPageObjectOffset              int                          `json:"final_page_object_offset"`
@@ -73,6 +79,9 @@ type documentTransferCapacityReport struct {
 	HighWaterRSSBytes                  int64                        `json:"high_water_rss_bytes"`
 	HighWaterRSSDeltaBytes             int64                        `json:"high_water_rss_delta_bytes"`
 	HighWaterWithinBound               bool                         `json:"high_water_within_bound"`
+	ValidatorHighWaterRSSBytes         int64                        `json:"validator_high_water_rss_bytes"`
+	AggregateHighWaterUpperBoundBytes  int64                        `json:"aggregate_high_water_upper_bound_bytes"`
+	AggregateHighWaterWithinBound      bool                         `json:"aggregate_high_water_within_bound"`
 	RetainedHeapAllocGrowthBytes       uint64                       `json:"retained_heap_alloc_growth_bytes"`
 	RetainedHeapAllocGrowthWithinBound bool                         `json:"retained_heap_alloc_growth_within_bound"`
 	RetainedRSSWindowGrowthBytes       int64                        `json:"retained_rss_window_growth_bytes"`
@@ -81,6 +90,29 @@ type documentTransferCapacityReport struct {
 	ActivityQuiescent                  bool                         `json:"activity_quiescent"`
 	FollowupSucceeded                  bool                         `json:"followup_succeeded"`
 	Idle                               idleResourceReport           `json:"idle"`
+	HTTP                               documentTransferHTTPReport   `json:"http"`
+}
+
+type documentTransferHTTPReport struct {
+	DescriptorCount              int    `json:"descriptor_count"`
+	SequentialCallCount          int    `json:"sequential_call_count"`
+	RawBytes                     int    `json:"raw_bytes"`
+	RawSHA256                    string `json:"raw_sha256"`
+	MaxCallLatencyMicroseconds   int64  `json:"max_call_latency_microseconds"`
+	EveryCallWithinTwoSeconds    bool   `json:"every_call_within_two_seconds"`
+	FollowupSucceeded            bool   `json:"followup_succeeded"`
+	BaselineRSSBytes             int64  `json:"baseline_rss_bytes"`
+	PostCallRSSBytes             int64  `json:"post_call_rss_bytes"`
+	RetainedRSSGrowthBytes       int64  `json:"retained_rss_growth_bytes"`
+	RetainedRSSGrowthWithinBound bool   `json:"retained_rss_growth_within_bound"`
+	HighWaterRSSBytes            int64  `json:"high_water_rss_bytes"`
+	HighWaterRSSDeltaBytes       int64  `json:"high_water_rss_delta_bytes"`
+	HighWaterWithinBound         bool   `json:"high_water_within_bound"`
+	BaselineFDCount              int    `json:"baseline_fd_count"`
+	PostCallFDCount              int    `json:"post_call_fd_count"`
+	AllFDsRecovered              bool   `json:"all_fds_recovered"`
+	SQLiteToolCallRows           int    `json:"sqlite_tool_call_rows"`
+	SQLiteTelemetryValidated     bool   `json:"sqlite_telemetry_validated"`
 }
 
 type countingTransport struct {
@@ -284,7 +316,7 @@ func validateDocumentTransferArtifact(ctx context.Context, artifactPath, expecte
 	}
 	digest := sha256.Sum256(data)
 	evidence := documentTransferArtifactEvidence{artifactSHA256: hex.EncodeToString(digest[:])}
-	if evidence.artifactSHA256 != expectedSHA || len(data) != obsidian.MaxDocumentTransferProbeBytes {
+	if evidence.artifactSHA256 != expectedSHA || len(data) != obsidian.DocumentFixtureMaxBytes {
 		return evidence, errors.New("document transfer artifact identity changed")
 	}
 	info, err := commandOutput(ctx, "pdfinfo", artifactPath)
@@ -300,8 +332,8 @@ func validateDocumentTransferArtifact(ctx context.Context, artifactPath, expecte
 	if err != nil {
 		return evidence, err
 	}
-	evidence.terminalTextExtractionPassed = !bytes.Contains(firstText, []byte(obsidian.DocumentTransferProbeNonce)) &&
-		bytes.Count(finalText, []byte(obsidian.DocumentTransferProbeNonce)) == 1
+	evidence.terminalTextExtractionPassed = !bytes.Contains(firstText, []byte(obsidian.DocumentFixtureNonce)) &&
+		bytes.Count(finalText, []byte(obsidian.DocumentFixtureNonce)) == 1
 	if !evidence.terminalTextExtractionPassed {
 		return evidence, errors.New("document transfer terminal text evidence failed")
 	}
@@ -339,11 +371,40 @@ func validateDocumentTransferArtifact(ctx context.Context, artifactPath, expecte
 	return evidence, nil
 }
 
-func callExactDocumentTransfer(ctx context.Context, session *sdk.ClientSession, transport *countingTransport) (documentTransferCallEvidence, error) {
+// measurePDFValidatorHighWater runs the candidate's private bytes-only helper
+// directly against the exact artifact. Its waited rusage is combined with the
+// gateway's independently measured high-water mark below. The sum is a
+// conservative process-tree upper bound; it does not assume the two peaks were
+// simultaneous and does not mistake helper-process isolation for a sandbox.
+func measurePDFValidatorHighWater(ctx context.Context, gatewayBin, artifactPath string) (int64, error) {
+	artifact, err := os.Open(artifactPath)
+	if err != nil {
+		return 0, errors.New("document transfer validator resource measurement failed")
+	}
+	defer artifact.Close()
+	info, err := artifact.Stat()
+	if err != nil || info.Size() != obsidian.DocumentFixtureMaxBytes {
+		return 0, errors.New("document transfer validator resource measurement failed")
+	}
+	cmd := exec.CommandContext(ctx, gatewayBin, "internal-pdf-validator", strconv.FormatInt(info.Size(), 10))
+	cmd.Stdin = artifact
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil {
+		return 0, errors.New("document transfer validator resource measurement failed")
+	}
+	usage, err := waitedUsageFromProcessState(cmd.ProcessState)
+	if err != nil || usage.highWaterRSSBytes <= 0 {
+		return 0, errors.New("document transfer validator resource measurement failed")
+	}
+	return usage.highWaterRSSBytes, nil
+}
+
+func callExactDocumentTransfer(ctx context.Context, session *sdk.ClientSession, transport *countingTransport, path string) (documentTransferCallEvidence, error) {
 	beforeWire := transport.read.Load()
 	beforeFrames := transport.frames.Load()
 	started := time.Now()
-	result, err := session.CallTool(ctx, &sdk.CallToolParams{Name: obsidian.ToolDocumentTransferProbe, Arguments: map[string]any{}})
+	result, err := session.CallTool(ctx, &sdk.CallToolParams{Name: obsidian.ToolReadDocument, Arguments: map[string]any{"path": path}})
 	latency := time.Since(started)
 	afterWire := transport.read.Load()
 	afterFrames := transport.frames.Load()
@@ -351,7 +412,7 @@ func callExactDocumentTransfer(ctx context.Context, session *sdk.ClientSession, 
 		return documentTransferCallEvidence{}, errors.New("document transfer capacity call failed")
 	}
 	embedded, ok := result.Content[0].(*sdk.EmbeddedResource)
-	if !ok || embedded.Resource == nil || embedded.Resource.URI != obsidian.DocumentTransferProbeURI || embedded.Resource.MIMEType != obsidian.DocumentTransferProbeMIME {
+	if !ok || embedded.Resource == nil || !strings.HasPrefix(embedded.Resource.URI, "obsidian://read-document/") || !strings.HasSuffix(embedded.Resource.URI, ".pdf") || embedded.Resource.MIMEType != "application/pdf" {
 		return documentTransferCallEvidence{}, errors.New("document transfer capacity resource identity changed")
 	}
 	data := embedded.Resource.Blob
@@ -361,11 +422,11 @@ func callExactDocumentTransfer(ctx context.Context, session *sdk.ClientSession, 
 	if err != nil || len(structured) == 0 || len(structured) > obsidian.MaxStructuredResultBytes {
 		return documentTransferCallEvidence{}, errors.New("document transfer capacity metadata exceeded its bound")
 	}
-	var metadata obsidian.DocumentTransferProbeOutput
-	if json.Unmarshal(structured, &metadata) != nil || metadata.RawBytes != len(data) || metadata.MIMEType != obsidian.DocumentTransferProbeMIME {
+	var metadata obsidian.ReadDocumentOutput
+	if json.Unmarshal(structured, &metadata) != nil || !metadata.OK || metadata.RawBytes != int64(len(data)) || metadata.MIMEType != "application/pdf" || metadata.Format != "pdf" {
 		return documentTransferCallEvidence{}, errors.New("document transfer capacity metadata changed")
 	}
-	nonceOffset := bytes.Index(data, []byte(obsidian.DocumentTransferProbeNonce))
+	nonceOffset := bytes.Index(data, []byte(obsidian.DocumentFixtureNonce))
 	finalPageOffset := bytes.LastIndex(data, []byte("5 0 obj"))
 	visualOffset := bytes.LastIndex(data, []byte("0.141176 0.419608 0.992157 rg"))
 	terminal := nonceOffset >= len(data)-4096 && finalPageOffset >= len(data)-4096 && visualOffset >= len(data)-4096
@@ -376,24 +437,225 @@ func callExactDocumentTransfer(ctx context.Context, session *sdk.ClientSession, 
 	}, nil
 }
 
-func probeDocumentTransferCapacity(ctx context.Context, gatewayBin, root, artifactPath string, provenance candidateProvenance, sampler resourceSampler) (documentTransferCapacityReport, error) {
+func callExactHTTPDocumentTransfer(ctx context.Context, session *sdk.ClientSession, path string) (documentTransferCallEvidence, error) {
+	started := time.Now()
+	result, err := session.CallTool(ctx, &sdk.CallToolParams{Name: obsidian.ToolReadDocument, Arguments: map[string]any{"path": path}})
+	latency := time.Since(started)
+	if err != nil || result == nil || result.IsError || len(result.Content) != 1 {
+		return documentTransferCallEvidence{}, errors.New("HTTP document transfer capacity call failed")
+	}
+	embedded, ok := result.Content[0].(*sdk.EmbeddedResource)
+	if !ok || embedded.Resource == nil || !strings.HasPrefix(embedded.Resource.URI, "obsidian://read-document/") ||
+		!strings.HasSuffix(embedded.Resource.URI, ".pdf") || embedded.Resource.MIMEType != "application/pdf" {
+		return documentTransferCallEvidence{}, errors.New("HTTP document transfer resource identity changed")
+	}
+	data := embedded.Resource.Blob
+	digest := sha256.Sum256(data)
+	structured, err := json.Marshal(result.StructuredContent)
+	if err != nil || len(structured) == 0 || len(structured) > obsidian.MaxStructuredResultBytes {
+		return documentTransferCallEvidence{}, errors.New("HTTP document transfer metadata exceeded its bound")
+	}
+	var metadata obsidian.ReadDocumentOutput
+	if json.Unmarshal(structured, &metadata) != nil || !metadata.OK || metadata.RawBytes != int64(len(data)) ||
+		metadata.MIMEType != "application/pdf" || metadata.Format != "pdf" {
+		return documentTransferCallEvidence{}, errors.New("HTTP document transfer metadata changed")
+	}
+	return documentTransferCallEvidence{
+		rawBytes: len(data), rawSHA256: hex.EncodeToString(digest[:]), structuredBytes: len(structured), latency: latency,
+	}, nil
+}
+
+func waitForHTTPReady(ctx context.Context, baseURL string) error {
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/readyz", nil)
+		if err != nil {
+			return errors.New("HTTP document transfer readiness failed")
+		}
+		response, err := client.Do(request)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, response.Body)
+			_ = response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return errors.New("HTTP document transfer readiness failed")
+		case <-ticker.C:
+		}
+	}
+}
+
+func probeExactHTTPDocumentTransfer(ctx context.Context, gatewayBin, root, path string, sampler resourceSampler) (documentTransferHTTPReport, error) {
+	report := documentTransferHTTPReport{EveryCallWithinTwoSeconds: true}
+	dbPath, cleanupDB, err := newPrivateSQLiteStore()
+	if err != nil {
+		return report, err
+	}
+	defer cleanupDB()
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		return report, errors.New("HTTP document transfer listener reservation failed")
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		return report, errors.New("HTTP document transfer listener reservation failed")
+	}
+	cmd := exec.Command(gatewayBin, "http", "--obsidian-root", root, "--addr", address, "--telemetry-db", dbPath)
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil || cmd.Process == nil || cmd.Process.Pid <= 0 {
+		return report, errors.New("HTTP document transfer candidate start failed")
+	}
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	stopped := false
+	stop := func() {
+		if stopped {
+			return
+		}
+		stopped = true
+		_ = cmd.Process.Signal(os.Interrupt)
+		select {
+		case <-waited:
+		case <-time.After(5 * time.Second):
+			_ = cmd.Process.Kill()
+			<-waited
+		}
+	}
+	defer stop()
+	baseURL := "http://" + address
+	readyCtx, cancelReady := context.WithTimeout(ctx, 5*time.Second)
+	err = waitForHTTPReady(readyCtx, baseURL)
+	cancelReady()
+	if err != nil {
+		return report, err
+	}
+	client := sdk.NewClient(&sdk.Implementation{Name: "document-transfer-capacity-http", Version: "v1"}, nil)
+	session, err := client.Connect(ctx, &sdk.StreamableClientTransport{Endpoint: baseURL + "/mcp"}, nil)
+	if err != nil {
+		return report, errors.New("HTTP document transfer candidate connection failed")
+	}
+	sessionClosed := false
+	defer func() {
+		if !sessionClosed {
+			_ = session.Close()
+		}
+	}()
+	if report.DescriptorCount, err = requireExactToolListForSurface(ctx, session, candidateToolSurface); err != nil {
+		return report, err
+	}
+	baseline, err := sampler.Sample(ctx, cmd.Process.Pid, true)
+	if err != nil {
+		return report, err
+	}
+	report.BaselineRSSBytes, report.BaselineFDCount = baseline.rssBytes, baseline.fdCount
+	for i := 0; i < 3; i++ {
+		call, callErr := callExactHTTPDocumentTransfer(ctx, session, path)
+		if callErr != nil {
+			return report, callErr
+		}
+		if call.rawBytes != obsidian.DocumentFixtureMaxBytes || call.rawSHA256 != obsidian.DocumentFixtureSHA256 {
+			return report, errors.New("HTTP document transfer exact bytes changed")
+		}
+		report.SequentialCallCount++
+		if call.latency.Microseconds() > report.MaxCallLatencyMicroseconds {
+			report.MaxCallLatencyMicroseconds = call.latency.Microseconds()
+		}
+		report.EveryCallWithinTwoSeconds = report.EveryCallWithinTwoSeconds && call.latency < resourceCallTimeLimit
+		report.RawBytes, report.RawSHA256 = call.rawBytes, call.rawSHA256
+	}
+	followup, _, isError, err := callResourceCandidate[obsidian.ResolveOutput](ctx, session, obsidian.ToolResolve, map[string]any{"path": "."})
+	report.FollowupSucceeded = err == nil && !isError && followup.OK && followup.Exists && followup.Type == "directory"
+	if !report.FollowupSucceeded {
+		return report, errors.New("HTTP document transfer same-session follow-up failed")
+	}
+	if err := waitResource(ctx, resourceStabilize30); err != nil {
+		return report, err
+	}
+	postCall, err := sampler.Sample(ctx, cmd.Process.Pid, true)
+	if err != nil {
+		return report, err
+	}
+	report.PostCallRSSBytes, report.PostCallFDCount = postCall.rssBytes, postCall.fdCount
+	report.RetainedRSSGrowthBytes = nonnegativeDelta(postCall.rssBytes, baseline.rssBytes)
+	report.RetainedRSSGrowthWithinBound = report.RetainedRSSGrowthBytes <= resourceRSSGrowthLimitBytes
+	// A readiness probe connection may finish closing after the SDK session is
+	// established. Fewer descriptors is recovery, while any increase is a leak.
+	report.AllFDsRecovered = postCall.fdCount <= baseline.fdCount
+	telemetry, err := inspectSQLite(ctx, dbPath)
+	if err != nil {
+		return report, err
+	}
+	report.SQLiteToolCallRows = telemetry.toolCallRows
+	report.SQLiteTelemetryValidated = telemetry.toolCallRows == 4 && telemetry.parsedBodyRows == telemetry.persistedRows && telemetry.persistedRows >= telemetry.toolCallRows
+	if err := session.Close(); err != nil {
+		return report, errors.New("HTTP document transfer session close failed")
+	}
+	sessionClosed = true
+	stopped = true
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		return report, errors.New("HTTP document transfer candidate stop failed")
+	}
+	select {
+	case err := <-waited:
+		if err != nil {
+			return report, errors.New("HTTP document transfer candidate stop failed")
+		}
+	case <-time.After(5 * time.Second):
+		_ = cmd.Process.Kill()
+		<-waited
+		return report, errors.New("HTTP document transfer candidate stop timed out")
+	case <-ctx.Done():
+		_ = cmd.Process.Kill()
+		<-waited
+		return report, errors.New("HTTP document transfer candidate stop timed out")
+	}
+	usage, err := waitedUsageFromProcessState(cmd.ProcessState)
+	if err != nil {
+		return report, err
+	}
+	report.HighWaterRSSBytes = usage.highWaterRSSBytes
+	report.HighWaterRSSDeltaBytes = nonnegativeDelta(usage.highWaterRSSBytes, baseline.rssBytes)
+	report.HighWaterWithinBound = report.HighWaterRSSDeltaBytes <= resourceRSSLimitBytes
+	return report, nil
+}
+
+func documentTransferHTTPReportPasses(report documentTransferHTTPReport) bool {
+	return report.DescriptorCount == candidateDescriptorCount && report.SequentialCallCount == 3 &&
+		report.RawBytes == obsidian.DocumentFixtureMaxBytes && report.RawSHA256 == obsidian.DocumentFixtureSHA256 &&
+		report.MaxCallLatencyMicroseconds > 0 && report.MaxCallLatencyMicroseconds < resourceCallTimeLimit.Microseconds() &&
+		report.EveryCallWithinTwoSeconds && report.FollowupSucceeded &&
+		report.BaselineRSSBytes > 0 && report.PostCallRSSBytes > 0 &&
+		report.RetainedRSSGrowthBytes == nonnegativeDelta(report.PostCallRSSBytes, report.BaselineRSSBytes) &&
+		report.RetainedRSSGrowthBytes <= resourceRSSGrowthLimitBytes && report.RetainedRSSGrowthWithinBound &&
+		report.HighWaterRSSBytes >= report.BaselineRSSBytes && report.HighWaterRSSDeltaBytes == nonnegativeDelta(report.HighWaterRSSBytes, report.BaselineRSSBytes) &&
+		report.HighWaterRSSDeltaBytes <= resourceRSSLimitBytes && report.HighWaterWithinBound &&
+		report.BaselineFDCount > 0 && report.PostCallFDCount > 0 && report.PostCallFDCount <= report.BaselineFDCount && report.AllFDsRecovered &&
+		report.SQLiteToolCallRows == 4 && report.SQLiteTelemetryValidated
+}
+
+func probeDocumentTransferCapacity(ctx context.Context, gatewayBin, artifactPath string, provenance candidateProvenance, sampler resourceSampler) (documentTransferCapacityReport, error) {
 	report := documentTransferCapacityReport{
 		ReportKind: "document_transfer_capacity", ReportSchema: documentTransferCapacitySchema, SchemaVersion: documentTransferCapacityVersion,
 		CandidateCommit: provenance.Commit, CandidateSHA256: provenance.CandidateSHA256, DependencySHA256: provenance.DependencySHA256,
-		FirstDisallowedSizeRejected: !obsidian.DocumentTransferProbeSizeAllowed(obsidian.RejectedDocumentTransferBytes),
+		FirstDisallowedSizeRejected: !obsidian.DocumentSizeAllowed(obsidian.RejectedDocumentBytes),
 	}
 	var err error
 	if artifactPath == "" {
 		return report, errors.New("document transfer artifact path is required")
 	}
-	fixture, err := obsidian.GenerateDocumentTransferProbePDFForSpike()
-	if err != nil || len(fixture) != obsidian.MaxDocumentTransferProbeBytes {
+	fixture, err := obsidian.GenerateDocumentCapacityFixture()
+	if err != nil || len(fixture) != obsidian.DocumentFixtureMaxBytes {
 		return report, errors.New("document transfer fixture generation failed")
 	}
 	if err := os.WriteFile(artifactPath, fixture, 0o600); err != nil {
 		return report, errors.New("document transfer artifact write failed")
 	}
-	artifact, err := validateDocumentTransferArtifact(ctx, artifactPath, obsidian.DocumentTransferProbeSHA256)
+	artifact, err := validateDocumentTransferArtifact(ctx, artifactPath, obsidian.DocumentFixtureSHA256)
 	if err != nil {
 		return report, err
 	}
@@ -403,6 +665,10 @@ func probeDocumentTransferCapacity(ctx context.Context, gatewayBin, root, artifa
 	report.RenderedFinalPageSHA256 = artifact.renderedFinalPageSHA256
 	report.RenderedGeometryPassed = artifact.renderedGeometryPassed
 	report.FixtureLeakageCheckPassed = artifact.fixtureLeakageCheckPassed
+	report.ValidatorHighWaterRSSBytes, err = measurePDFValidatorHighWater(ctx, gatewayBin, artifactPath)
+	if err != nil {
+		return report, err
+	}
 	fixture = nil
 	if report.CandidateRuntime, err = inspectCandidateRuntime(gatewayBin); err != nil {
 		return report, err
@@ -410,7 +676,7 @@ func probeDocumentTransferCapacity(ctx context.Context, gatewayBin, root, artifa
 	if report.Machine, err = inspectMachineProfile(); err != nil {
 		return report, err
 	}
-	candidate, transport, err := connectCountingResourceCandidate(ctx, gatewayBin, root)
+	candidate, transport, err := connectCountingResourceCandidate(ctx, gatewayBin, filepath.Dir(artifactPath))
 	if err != nil {
 		return report, err
 	}
@@ -428,9 +694,21 @@ func probeDocumentTransferCapacity(ctx context.Context, gatewayBin, root, artifa
 	if err != nil {
 		return report, err
 	}
-	call, err := callExactDocumentTransfer(ctx, candidate.process.session, transport)
-	if err != nil {
-		return report, err
+	var call documentTransferCallEvidence
+	for i := 0; i < 3; i++ {
+		current, callErr := callExactDocumentTransfer(ctx, candidate.process.session, transport, filepath.Base(artifactPath))
+		if callErr != nil {
+			return report, callErr
+		}
+		if i == 0 {
+			call = current
+		} else if current.rawBytes != call.rawBytes || current.rawSHA256 != call.rawSHA256 || current.encodedWireFrames != 1 || !current.terminalEvidence {
+			return report, errors.New("document transfer sequential call changed")
+		}
+		if current.latency > call.latency {
+			call.latency = current.latency
+		}
+		report.SequentialCallCount++
 	}
 	report.RawBytes, report.RawSHA256, report.EncodedWireBytes = call.rawBytes, call.rawSHA256, call.encodedWireBytes
 	report.EncodedWireFrames = call.encodedWireFrames
@@ -461,7 +739,7 @@ func probeDocumentTransferCapacity(ctx context.Context, gatewayBin, root, artifa
 	if !report.FollowupSucceeded {
 		return report, errors.New("document transfer same-session follow-up failed")
 	}
-	report.Idle, err = observeResourceIdleExpected(ctx, candidate.process.session, candidate.process.command.Process.Pid, report.DescriptorCount, report.Baseline.FDCount, candidate.dbPath, defaultResourceProbeOptions(), sampler, candidate.control, 2)
+	report.Idle, err = observeResourceIdleExpected(ctx, candidate.process.session, candidate.process.command.Process.Pid, report.DescriptorCount, report.Baseline.FDCount, candidate.dbPath, defaultResourceProbeOptions(), sampler, candidate.control, 4)
 	if err != nil {
 		return report, err
 	}
@@ -480,17 +758,64 @@ func probeDocumentTransferCapacity(ctx context.Context, gatewayBin, root, artifa
 	report.AllFDsRecovered = len(report.PostCall) == 3 && report.PostCall[0].FDCount == report.Baseline.FDCount && report.PostCall[1].FDCount == report.Baseline.FDCount && report.PostCall[2].FDCount == report.Baseline.FDCount
 	report.RetainedHeapAllocGrowthWithinBound = report.RetainedHeapAllocGrowthBytes <= resourceHeapAllocGrowthLimitBytes
 	report.RetainedRSSWindowGrowthWithinBound = report.RetainedRSSWindowGrowthBytes <= resourceRSSGrowthLimitBytes
-	report.Passed = report.DescriptorCount == candidateDescriptorCount && report.RawBytes == obsidian.MaxDocumentTransferProbeBytes &&
-		report.RawSHA256 == obsidian.DocumentTransferProbeSHA256 && report.EncodedWireBytes > int64(report.RawBytes) && report.EncodedWireFrames == 1 &&
-		report.StructuredResultBytes > 0 && report.StructuredResultBytes <= obsidian.MaxStructuredResultBytes && report.CallWithinTwoSeconds &&
-		report.TerminalEvidenceWithin4096Bytes && report.ArtifactSHA256 == report.RawSHA256 && report.PDFValidatorAccepted &&
-		report.TerminalTextExtractionPassed && validDigest(report.RenderedFinalPageSHA256) && report.RenderedGeometryPassed && report.FixtureLeakageCheckPassed &&
-		report.FirstDisallowedSizeRejected && report.GCAcknowledgementCount == 4 &&
-		report.HighWaterWithinBound && report.RetainedHeapAllocGrowthWithinBound && report.RetainedRSSWindowGrowthWithinBound &&
-		report.AllFDsRecovered && report.ActivityQuiescent && report.FollowupSucceeded &&
-		idleResourceReportPassesExpected(report.Idle, report.Baseline.FDCount, report.DescriptorCount, candidateToolSurface, 2)
+	report.HTTP, err = probeExactHTTPDocumentTransfer(ctx, gatewayBin, filepath.Dir(artifactPath), filepath.Base(artifactPath), sampler)
+	if err != nil {
+		return report, err
+	}
+	report.AggregateHighWaterUpperBoundBytes = maxInt64(report.HighWaterRSSBytes, report.HTTP.HighWaterRSSBytes) + report.ValidatorHighWaterRSSBytes
+	report.AggregateHighWaterWithinBound = report.AggregateHighWaterUpperBoundBytes <= documentTransferAggregateRSSLimitBytes
+	report.Passed = documentTransferCapacityReportPasses(report)
 	if !report.Passed {
 		return report, errors.New("document transfer capacity gate failed")
 	}
 	return report, nil
+}
+
+func documentTransferCapacityReportPasses(report documentTransferCapacityReport) bool {
+	return reportSchemaTuplePasses(report.ReportKind, report.ReportSchema, report.SchemaVersion) &&
+		candidateRuntimeProfilePasses(report.CandidateRuntime) && machineProfilePasses(report.Machine) &&
+		report.DescriptorCount == candidateDescriptorCount && report.RawBytes == obsidian.DocumentFixtureMaxBytes &&
+		report.RawSHA256 == obsidian.DocumentFixtureSHA256 && report.EncodedWireBytes > int64(report.RawBytes) && report.EncodedWireFrames == 1 &&
+		report.StructuredResultBytes > 0 && report.StructuredResultBytes <= obsidian.MaxStructuredResultBytes &&
+		documentTransferStdioEvidencePasses(report) && report.ArtifactSHA256 == report.RawSHA256 && report.PDFValidatorAccepted &&
+		report.TerminalTextExtractionPassed && validDigest(report.RenderedFinalPageSHA256) && report.RenderedGeometryPassed && report.FixtureLeakageCheckPassed &&
+		report.FirstDisallowedSizeRejected && report.ValidatorHighWaterRSSBytes > 0 &&
+		report.AggregateHighWaterUpperBoundBytes == maxInt64(report.HighWaterRSSBytes, report.HTTP.HighWaterRSSBytes)+report.ValidatorHighWaterRSSBytes &&
+		report.AggregateHighWaterUpperBoundBytes > report.ValidatorHighWaterRSSBytes &&
+		report.AggregateHighWaterUpperBoundBytes <= documentTransferAggregateRSSLimitBytes && report.AggregateHighWaterWithinBound &&
+		report.RetainedHeapAllocGrowthWithinBound && report.RetainedRSSWindowGrowthWithinBound &&
+		report.AllFDsRecovered && report.ActivityQuiescent && report.FollowupSucceeded &&
+		idleResourceReportPassesExpected(report.Idle, report.Baseline.FDCount, report.DescriptorCount, candidateToolSurface, 4) &&
+		documentTransferHTTPReportPasses(report.HTTP)
+}
+
+func documentTransferStdioEvidencePasses(report documentTransferCapacityReport) bool {
+	if report.SequentialCallCount != 3 || report.CallLatencyMicroseconds <= 0 ||
+		report.CallLatencyMicroseconds >= resourceCallTimeLimit.Microseconds() || !report.CallWithinTwoSeconds ||
+		!report.TerminalEvidenceWithin4096Bytes || report.RawBytes < 4096 ||
+		report.NonceOffset < report.RawBytes-4096 || report.NonceOffset >= report.RawBytes ||
+		report.FinalPageObjectOffset < report.RawBytes-4096 || report.FinalPageObjectOffset >= report.RawBytes ||
+		report.VisualEvidenceOffset < report.RawBytes-4096 || report.VisualEvidenceOffset >= report.RawBytes ||
+		report.Baseline.RSSBytes <= 0 || report.Baseline.FDCount <= 0 || report.Baseline.Memory.HeapAllocBytes == 0 ||
+		len(report.PostCall) != 3 || report.GCAcknowledgementCount != 1+len(report.PostCall) ||
+		report.HighWaterRSSBytes < report.Baseline.RSSBytes ||
+		report.HighWaterRSSDeltaBytes != nonnegativeDelta(report.HighWaterRSSBytes, report.Baseline.RSSBytes) ||
+		report.HighWaterRSSDeltaBytes > resourceRSSLimitBytes || !report.HighWaterWithinBound {
+		return false
+	}
+	var heapGrowth uint64
+	var rssGrowth int64
+	lastElapsed := report.Baseline.ElapsedMicroseconds
+	for _, checkpoint := range report.PostCall {
+		if checkpoint.ElapsedMicroseconds < lastElapsed || checkpoint.RSSBytes <= 0 || checkpoint.FDCount != report.Baseline.FDCount ||
+			checkpoint.Memory.HeapAllocBytes == 0 {
+			return false
+		}
+		lastElapsed = checkpoint.ElapsedMicroseconds
+		heapGrowth = maxUint64(heapGrowth, nonnegativeUint64Delta(checkpoint.Memory.HeapAllocBytes, report.Baseline.Memory.HeapAllocBytes))
+		rssGrowth = maxInt64(rssGrowth, nonnegativeDelta(checkpoint.RSSBytes, report.Baseline.RSSBytes))
+	}
+	return report.RetainedHeapAllocGrowthBytes == heapGrowth && heapGrowth <= resourceHeapAllocGrowthLimitBytes &&
+		report.RetainedHeapAllocGrowthWithinBound && report.RetainedRSSWindowGrowthBytes == rssGrowth &&
+		rssGrowth <= resourceRSSGrowthLimitBytes && report.RetainedRSSWindowGrowthWithinBound && report.AllFDsRecovered
 }

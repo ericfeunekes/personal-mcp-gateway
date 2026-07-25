@@ -26,6 +26,7 @@ Proof must match the claim. This repo handles personal data, so green unit tests
 | Local release transaction lifecycle | Executable state/event matrix plus process tests for locking, crash-boundary reconciliation, exact-hash accept/rollback, first-install unload, recovery-artifact retention, and installed-service pending-to-terminal journeys | Any change to release, update, rollback, acceptance, or supervised-runtime activation behavior |
 | Obsidian server tool names in ChatGPT | Live smoke test through OpenAI Secure MCP Tunnel | Before treating connector compatibility as settled |
 | Minimal machine impact | Local process observation for idle CPU, memory, file descriptors, startup behavior, and no whole-vault startup scan | Before always-on usage |
+| Native document transfer | Exact repeated stdio and HTTP calls through the candidate serializer, original-byte/MIME identity, malformed/spoof/source-change negatives, response deadlines, one-shot cleanup, and authenticated tunnel/model journeys | Adding a format or changing capture, validation, handoff, or transport |
 
 ## Expected Commands
 
@@ -158,6 +159,33 @@ the six-tool `candidate` surface. The five-tool `accepted` surface is available
 only through explicit `--resource-control` with `--resource-json`; it exists for
 paired regression comparison and is rejected by canonical report-set
 validation.
+
+The PDF activation candidate additionally runs an exact 49,999,999-byte gate.
+It generates and independently validates/renders a two-page PDF, makes three
+sequential native calls in one stdio session and three in one HTTP session,
+checks original SHA-256/MIME/terminal evidence, and launches the built candidate
+for both transports. Each transport retains the 64 MiB lifetime high-water and
+8 MiB retained-RSS limits. Stdio additionally proves blocking-GC cleanup,
+quiescence, exact FD recovery, same-session follow-up, and a 60-second idle
+window; HTTP proves same-session follow-up, no FD increase, and retained RSS
+after 30 seconds. The report separately measures the bytes-only validator
+helper and requires the larger gateway high-water plus helper high-water to fit
+a conservative 160 MiB aggregate upper bound. The heavyweight local check is
+opt-in outside release. Its HTTP candidate uses a private default SQLite audit
+sink so the proof includes the production `statusRecorder` unwrap, telemetry
+cost, and four persisted tool-call rows:
+
+```bash
+make build
+ISSUE4_EXACT_DOCUMENT_GATE=1 GOCACHE=$(pwd)/.gocache \
+  go test -count=1 ./cmd/gateway-smoke \
+  -run '^TestExactNativeDocumentCapacityCandidate$' -v
+```
+
+`make release` runs the same document-capacity report unconditionally against
+the exact candidate SHA before installation. Its fixture is written only in
+the private release-report directory; validator backing is unlinked before any
+document bytes are written.
 
 ## Mutation Phase Proof Contract
 

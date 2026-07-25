@@ -1246,12 +1246,12 @@ func TestRetainedLiteralLimitsAreIndependentAndInclusive(t *testing.T) {
 	}
 }
 
-func TestDocumentTransferIdleGateUsesExactTwoCalls(t *testing.T) {
+func TestDocumentTransferIdleGateUsesExactFourCalls(t *testing.T) {
 	idle := passingResourceGateReport().Idle
-	idle.ExpectedToolCallRows = 2
-	idle.ToolCallRowsBefore = 2
-	idle.ToolCallRowsAfter = 2
-	if !idleResourceReportPassesExpected(idle, 7, candidateDescriptorCount, candidateToolSurface, 2) {
+	idle.ExpectedToolCallRows = 4
+	idle.ToolCallRowsBefore = 4
+	idle.ToolCallRowsAfter = 4
+	if !idleResourceReportPassesExpected(idle, 7, candidateDescriptorCount, candidateToolSurface, 4) {
 		t.Fatal("document transfer idle shape was rejected")
 	}
 	if idleResourceReportPasses(idle, 7, candidateDescriptorCount, candidateToolSurface) {
@@ -1516,7 +1516,7 @@ func buildGatewayCandidate(t *testing.T) string {
 	t.Helper()
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	candidate := filepath.Join(t.TempDir(), "personal-mcp-gateway")
-	build := exec.Command("go", "build", "-buildvcs=false", "-ldflags", "-X personal-mcp-gateway/internal/tools/obsidian.documentTransferProbeBuild=enabled", "-o", candidate, "./cmd/gateway")
+	build := exec.Command("go", "build", "-buildvcs=false", "-ldflags", "-X personal-mcp-gateway/internal/tools/obsidian.documentReadingBuild=pdf_candidate", "-o", candidate, "./cmd/gateway")
 	build.Dir = repoRoot
 	build.Env = os.Environ()
 	if output, err := build.CombinedOutput(); err != nil {

@@ -306,8 +306,8 @@ func runWithCandidateSnapshotter(args []string, stdout, stderr io.Writer, snapsh
 	if !*validateReports && *obsidianRoot == "" {
 		return errors.New("--obsidian-root is required")
 	}
-	if *validateReports && (selectedJSONModes != 0 || *obsidianRoot != "" || len(flags.Args()) != 3) {
-		return errors.New("report-set validation requires exactly three report files")
+	if *validateReports && (selectedJSONModes != 0 || *obsidianRoot != "" || len(flags.Args()) != 4) {
+		return errors.New("report-set validation requires exactly four report files")
 	}
 	if !*validateReports && len(flags.Args()) != 0 {
 		return errors.New("unexpected positional arguments")
@@ -339,7 +339,7 @@ func runWithCandidateSnapshotter(args []string, stdout, stderr io.Writer, snapsh
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	if *documentTransferJSON {
-		report, err := probeDocumentTransferCapacity(ctx, candidatePath, *obsidianRoot, *documentTransferArtifact, provenance, systemResourceSampler{})
+		report, err := probeDocumentTransferCapacity(ctx, candidatePath, *documentTransferArtifact, provenance, systemResourceSampler{})
 		if report.SchemaVersion != 0 {
 			if encodeErr := json.NewEncoder(stdout).Encode(report); encodeErr != nil {
 				return errors.New("encode document transfer capacity report failed")
@@ -475,10 +475,6 @@ func probeCurrentVault(ctx context.Context, gatewayBin, root string, report *smo
 	if err != nil {
 		return err
 	}
-	if err := verifyDocumentTransferProbe(ctx, process.session, report); err != nil {
-		return err
-	}
-
 	out, err := callStructured[obsidian.ResolveOutput](ctx, process.session, obsidian.ToolResolve, map[string]any{"path": "."}, report)
 	if err != nil {
 		return errors.New("candidate resolve call failed")
@@ -1432,7 +1428,7 @@ func requireExactToolListForSurface(ctx context.Context, session *sdk.ClientSess
 	sort.Strings(names)
 	want := []string{obsidian.ToolGrep, obsidian.ToolLS, obsidian.ToolRead, obsidian.ToolReadMany, obsidian.ToolResolve}
 	if surface == candidateToolSurface {
-		want = append(want, obsidian.ToolDocumentTransferProbe)
+		want = append(want, obsidian.ToolReadDocument)
 		sort.Strings(want)
 	}
 	if !reflect.DeepEqual(names, want) {

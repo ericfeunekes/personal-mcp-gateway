@@ -1,22 +1,17 @@
 ---
 title: "Issue 4 Native Document Transfer Spike"
-status: embedded-near-ceiling-no-go
+status: pdf-production-candidate
 issue: 4
 ---
 
 # Issue 4 Native Document Transfer Spike
 
-This disposable branch tests one question before the document-reading design is
-phased: does authenticated ChatGPT interpret a PDF returned as MCP embedded
-resource bytes, without a download, upload, attachment, or other surrogate
-step?
-
-The pending candidate advertises exactly one temporary additional read-only
-tool, `document_transfer_probe`. It accepts no arguments, reads no vault data,
-and returns one synthetic `application/pdf` resource plus only its MIME type and
-raw byte count as structured metadata. The PDF contains the live verifier's
-nonce and visual relationship; neither appears in the descriptor or structured
-metadata.
+This record preserves the disposable feasibility experiments and the evidence
+that led to the production PDF activation slice. The temporary
+`document_transfer_probe` implementation has been removed. The current
+candidate exposes the stable `read_document` tool only in a
+`pdf_candidate` build and reads explicit, confined vault PDFs through the
+production capture, validation, handoff, and transport path.
 
 ## Local evidence required before release
 
@@ -29,9 +24,8 @@ metadata.
   valid PDF one byte larger is rejected before transfer.
 - The canonical suite and exact candidate smoke/resource gates pass.
 
-The 512 KiB raw limit keeps base64 plus the MCP JSON envelope below the
-gateway's 1 MiB stdio message bound. It is spike evidence, not an accepted
-document-reading product limit.
+The historical 512 KiB limit below belongs only to the disposable probe. The
+production PDF candidate limit is 49,999,999 raw bytes.
 
 ## Live verdict
 
@@ -202,3 +196,86 @@ authenticated ChatGPT attempt ran. This result does not reject a resource-link
 or native-hosted delivery mechanism that streams from bounded backing storage;
 that alternative remains an empirical design gate before the 50 MB product
 target can be phased.
+
+## Resource-link/native-hosted investigation on 2026-07-25
+
+The pinned Go MCP SDK does not supply a non-atomic native-file transport behind
+`ResourceLink`. `ResourceLink` serializes URI, name, MIME, size, and display
+metadata only; it has no bytes, fetch callback, authorization, expiry, or
+cleanup contract. The SDK's explicit `resources/read` response carries binary
+content as one `Blob []byte`, which JSON encodes as one base64 value. Reading a
+resource through that method therefore returns to the atomic representation
+already rejected at the selected ceiling rather than creating a streaming
+escape hatch.
+
+Current official OpenAI Secure MCP Tunnel documentation describes forwarding
+MCP JSON-RPC requests and responses between OpenAI and a reachable local stdio
+or HTTP MCP server. It does not promise that ChatGPT dereferences a tool-result
+resource link, expose URI authorization or expiry semantics, or define a
+native-hosted/file-reference output lifecycle. The adjacent ChatGPT component
+file APIs mention files returned by tool file references, but do not define how
+an MCP `ResourceLink` becomes that file reference or how a private local source
+is fetched through the Secure MCP Tunnel.
+
+This closes the pinned SDK's resource-link branch, not every local transport
+design. The architecture permits a narrow protocol contingency when the SDK
+blocks a proven compatibility requirement. A remaining local spike must test
+whether the gateway can fully capture and revalidate the source in bounded
+anonymous memory, then incrementally base64-serialize the same embedded-resource
+wire shape without constructing a second base64 string or whole JSON frame.
+Capture must finish before emission so a changed source cannot leave a partial
+artifact; direct descriptor-to-client streaming is not acceptable. Production
+`read_document` implementation and phase-graph freeze remain gated on that
+capacity/correctness result and, if local proof passes, authenticated tunnel
+proof. A small authenticated resource-link probe remains a later alternative;
+it requires a temporary release and metadata refresh and would not by itself
+solve the atomic ceiling. No external mutation ran during this investigation.
+
+## PDF production-candidate outcome on 2026-07-25
+
+The narrow contingency is now implemented rather than inferred. `read_document`
+opens one explicit confined PDF, admits its observed size against a weighted
+49,999,999-byte process budget, copies it into one anonymous mapping, validates
+the captured bytes, revalidates the source, and registers a random one-shot
+payload. The marker expires after five seconds and is consumed only by the
+native stdio/HTTP writers. The writers incrementally base64-encode the original
+snapshot under a 30-second write deadline and never construct the SDK's atomic
+`Blob []byte` result. Native JSON-RPC batches are rejected before dispatch;
+ordinary messages still use the SDK implementation unchanged.
+
+The first exact production-path run found that in-process `pdfcpu` validation
+left about 101 MB of reclaimable heap pages resident and correctly failed the
+retained-RSS and high-water gates. Moving validation to a bytes-only helper
+cleared retained RSS, but mapping the helper input duplicated the 50 MB resident
+set and still failed lifetime high-water. The helper now streams stdin into a
+mode-private temporary file that is unlinked before bytes are written, validates
+that anonymous backing, and exits. It accepts no path or host capability. The
+next exact run returned all three 49,999,999-byte stdio resources with SHA-256
+`935d656fc945ea0c002af42af4ae62edfbf48f22aeb03872c7a4b51fe6beb69d`,
+`application/pdf`, correct terminal evidence, and maximum call latency 0.586
+seconds. Gateway high-water delta was 50,438,144 bytes, retained RSS growth was
+520,192 bytes, retained heap growth was 18,488 bytes, and every FD, quiescence,
+follow-up, and 60-second idle observation passed. That run's aggregate verdict
+was false only because the idle harness still expected the historical one
+document call plus follow-up; the production sequence now makes three document
+calls plus follow-up, and the harness expectation has been corrected to four.
+
+The report was then strengthened to schema v3. Its HTTP half now launches the
+built candidate's `http` command and connects through `/mcp`; it no longer
+reconstructs an in-process handler. The report also measures the bytes-only
+validator helper directly and combines its waited high-water RSS with the
+larger stdio/HTTP gateway high-water. A first v3 run measured a conservative
+126,066,688-byte upper bound (66,281,472-byte gateway high-water plus
+59,785,216-byte validator high-water) and exposed only that an already-closing
+readiness connection could leave the post-call HTTP FD count lower than the
+baseline. The gate now treats no increase as recovery. A further proof review
+made the HTTP candidate use a private default SQLite audit sink, required the
+complete four-report set and coherent v3 checkpoint evidence, and moved
+serialized validator admission before source access. The strengthened exact
+candidate-process gate passed in 125.79 seconds. The full canonical suite and
+release-source process tests also pass. No release, installation, connector
+refresh, or authenticated call has run. PDF activation still requires the
+authorized release boundary and fresh
+authenticated journeys for a small text/visual PDF, a scanned visual/OCR PDF,
+and the exact near-ceiling PDF. Other official document families remain
+unsupported and keep Issue #4 open.

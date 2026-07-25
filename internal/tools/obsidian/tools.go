@@ -51,6 +51,27 @@ func Descriptors(vault *fsx.Vault) ([]localmcp.ToolDescriptor, error) {
 	return DescriptorsWithGrepActivity(vault, nil)
 }
 
+// DescriptorsWithNativeDocuments adds the activation-gated native document
+// tool using the process-owned one-shot transport bridge.
+func DescriptorsWithNativeDocuments(vault *fsx.Vault, bridge *localmcp.NativeDocumentBridge, grepActivity *fsx.SchedulerActivity, hooks *GrepTestHooks, validators ...DocumentValidator) ([]localmcp.ToolDescriptor, error) {
+	descriptors, err := descriptorsWithGrepTestHooks(vault, grepActivity, hooks)
+	if err != nil {
+		return descriptors, err
+	}
+	if bridge == nil {
+		return nil, errors.New("native document bridge is required")
+	}
+	var validator DocumentValidator
+	if len(validators) > 0 {
+		validator = validators[0]
+	}
+	document, err := readDocumentDescriptor(vault, bridge, newDocumentByteGate(DocumentMaxBytes), validator)
+	if err != nil {
+		return nil, err
+	}
+	return append(descriptors, document), nil
+}
+
 // DescriptorsWithGrepActivity is private wiring for the inherited exact
 // resource probe; normal callers use Descriptors and pay no observer cost.
 func DescriptorsWithGrepActivity(vault *fsx.Vault, grepActivity *fsx.SchedulerActivity) ([]localmcp.ToolDescriptor, error) {
@@ -61,24 +82,6 @@ func DescriptorsWithGrepActivity(vault *fsx.Vault, grepActivity *fsx.SchedulerAc
 // the exposed MCP descriptor set or add a runtime capability.
 func DescriptorsWithGrepTestHooks(vault *fsx.Vault, grepActivity *fsx.SchedulerActivity, hooks *GrepTestHooks) ([]localmcp.ToolDescriptor, error) {
 	return descriptorsWithGrepTestHooks(vault, grepActivity, hooks)
-}
-
-// DescriptorsWithDocumentTransferProbe is temporary test plumbing for the
-// disposable issue #4 candidate contract. Normal runtime construction uses
-// Descriptors and cannot activate this surface without the candidate build tag.
-func DescriptorsWithDocumentTransferProbe(vault *fsx.Vault) ([]localmcp.ToolDescriptor, error) {
-	descriptors, err := descriptorsWithGrepTestHooks(vault, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-	if documentTransferProbeEnabled() {
-		return descriptors, nil
-	}
-	probe, err := documentTransferProbeDescriptor(newTools(vault, nil))
-	if err != nil {
-		return nil, err
-	}
-	return append(descriptors, probe), nil
 }
 
 func descriptorsWithGrepTestHooks(vault *fsx.Vault, grepActivity *fsx.SchedulerActivity, hooks *GrepTestHooks) ([]localmcp.ToolDescriptor, error) {
@@ -141,13 +144,6 @@ func descriptorsWithGrepTestHooks(vault *fsx.Vault, grepActivity *fsx.SchedulerA
 		return nil, err
 	}
 	descriptors := []localmcp.ToolDescriptor{resolve, ls, read, readMany, grep}
-	if documentTransferProbeEnabled() {
-		probe, err := documentTransferProbeDescriptor(tools)
-		if err != nil {
-			return nil, err
-		}
-		descriptors = append(descriptors, probe)
-	}
 	return descriptors, nil
 }
 

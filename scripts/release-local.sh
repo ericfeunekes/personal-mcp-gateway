@@ -147,6 +147,8 @@ fi
 functional_report="$report_dir/functional.json"
 performance_report="$report_dir/performance.json"
 resource_report="$report_dir/resource.json"
+document_report="$report_dir/document.json"
+document_artifact="$report_dir/document-capacity.pdf"
 cd "$repo_root" 2>/dev/null || fail release_config 'release configuration is invalid'
 
 if ! capture_report "$functional_report" "$go_command" run ./cmd/gateway-smoke \
@@ -169,6 +171,16 @@ fi
 if [[ ! -s "$performance_report" || "$(wc -c <"$performance_report")" -gt "$report_limit" ]]; then
   fail release_smoke_failed 'release candidate performance report is invalid'
 fi
+if ! capture_report "$document_report" "$go_command" run ./cmd/gateway-smoke \
+  --gateway-bin "$smoke_candidate" --obsidian-root "$OBSIDIAN_ROOT" \
+  --repo-root "$repo_root" --candidate-commit "$commit" \
+  --candidate-sha256 "$candidate_hash" --dependency-sha256 "$dependency_hash" \
+  --document-transfer-json --document-transfer-artifact "$document_artifact"; then
+  fail release_smoke_failed 'release candidate document capacity smoke failed'
+fi
+if [[ ! -s "$document_report" || "$(wc -c <"$document_report")" -gt "$report_limit" ]]; then
+  fail release_smoke_failed 'release candidate document capacity report is invalid'
+fi
 if ! capture_report "$resource_report" "$go_command" run ./cmd/gateway-smoke \
   --gateway-bin "$smoke_candidate" --obsidian-root "$OBSIDIAN_ROOT" \
   --repo-root "$repo_root" --candidate-commit "$commit" \
@@ -179,7 +191,6 @@ fi
 if [[ ! -s "$resource_report" || "$(wc -c <"$resource_report")" -gt "$report_limit" ]]; then
   fail release_smoke_failed 'release candidate resource report is invalid'
 fi
-
 smoked_snapshot_hash="$(shasum -a 256 "$smoke_candidate" 2>/dev/null | awk '{print $1}')" || fail release_smoke_failed 'release candidate smoke failed'
 if [[ "$candidate_hash" != "$smoked_snapshot_hash" ]]; then
   fail release_changed 'release inputs changed during validation'
@@ -207,7 +218,7 @@ if ! env GOCACHE="${GOCACHE:-$repo_root/.gocache}" "$go_command" run ./cmd/gatew
   --gateway-bin "$smoke_candidate" --repo-root "$repo_root" \
   --candidate-commit "$commit" --candidate-sha256 "$candidate_hash" \
   --dependency-sha256 "$dependency_hash" --validate-report-set \
-  "$functional_report" "$performance_report" "$resource_report" >/dev/null 2>&1; then
+  "$functional_report" "$performance_report" "$resource_report" "$document_report" >/dev/null 2>&1; then
   fail release_smoke_failed 'release candidate report set is invalid'
 fi
 health_url_file="${TUNNEL_HEALTH_URL_FILE:-/tmp/personal-mcp-gateway/tunnel-health.url}"

@@ -27,6 +27,7 @@ const (
 	reportKindFunctional  = "functional"
 	reportKindPerformance = "performance"
 	reportKindResource    = "resource"
+	reportKindDocument    = "document_transfer_capacity"
 )
 
 type candidateProvenance struct {
@@ -170,8 +171,8 @@ func validLowerHex(value string) bool {
 }
 
 func validateReportSet(paths []string, expected candidateProvenance) error {
-	if len(paths) != 3 {
-		return errors.New("exactly three candidate reports are required")
+	if len(paths) != 4 {
+		return errors.New("exactly four candidate reports are required")
 	}
 	seen := make(map[string]bool, 3)
 	for _, path := range paths {
@@ -194,6 +195,9 @@ func validateReportSet(paths []string, expected candidateProvenance) error {
 		seen[report.ReportKind] = true
 	}
 	if !seen[reportKindFunctional] || !seen[reportKindPerformance] || !seen[reportKindResource] {
+		return errors.New("candidate report set is incomplete")
+	}
+	if !seen[reportKindDocument] {
 		return errors.New("candidate report set is incomplete")
 	}
 	return nil
@@ -252,6 +256,11 @@ func validateReportProof(data []byte, kind string) error {
 		var report resourceReport
 		if err := decodeCompleteReport(data, &report); err != nil || !report.Passed || !resourceReportPassesForSurface(report, resourceColdProcesses, candidateToolSurface) {
 			return errors.New("resource report proof is invalid")
+		}
+	case reportKindDocument:
+		var report documentTransferCapacityReport
+		if err := decodeCompleteReport(data, &report); err != nil || !documentTransferCapacityReportPasses(report) {
+			return errors.New("document capacity report proof is invalid")
 		}
 	default:
 		return errors.New("report kind is invalid")
@@ -406,6 +415,8 @@ func reportSchemaTuplePasses(kind, schema string, version int) bool {
 		return schema == performanceReportSchema && version == performanceReportVersion
 	case reportKindResource:
 		return schema == resourceReportSchema && version == resourceReportVersion
+	case reportKindDocument:
+		return schema == documentTransferCapacitySchema && version == documentTransferCapacityVersion
 	default:
 		return false
 	}

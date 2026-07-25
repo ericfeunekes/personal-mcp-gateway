@@ -37,12 +37,12 @@ func exactToolGrammar(tools []*sdk.Tool, surface toolSurface) bool {
 		return false
 	}
 	if surface == candidateToolSurface {
-		probeTool := byName[obsidian.ToolDocumentTransferProbe]
-		if probeTool == nil || probeTool.Description != obsidian.DocumentTransferProbeDescription {
+		documentTool := byName[obsidian.ToolReadDocument]
+		if documentTool == nil || documentTool.Description != obsidian.ReadDocumentDescription {
 			return false
 		}
-		probe, ok := normalizedSchema(probeTool.InputSchema)
-		if !ok || len(probe) != 2 || probe["type"] != "object" || probe["additionalProperties"] != false {
+		document, ok := normalizedSchema(documentTool.InputSchema)
+		if !ok || !closedObjectGrammar(document, []string{"base", "path"}, []string{"path"}) {
 			return false
 		}
 	}
