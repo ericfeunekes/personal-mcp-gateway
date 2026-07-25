@@ -20,7 +20,7 @@ server naming, SDK, tunnel, runtime, and supervision decisions remain accepted.
 
 ## Decision
 
-The `obsidian` MCP server targets these simple read-only tool names:
+The `obsidian` MCP server's read/retrieval surface targets these simple read-only tool names:
 
 - `resolve`
 - `ls`
@@ -32,10 +32,12 @@ The `obsidian` MCP server targets these simple read-only tool names:
 - `backlinks`
 - `path_between`
 
-Use `grep` as the familiar universal content-discovery operation. Do not expose
-a separate `search`, `stat`, or overloaded `graph_search`: `resolve` already
-owns path metadata, and explicit graph verbs make direction, scope, cost, and
-completeness easier for an agent to control.
+Use `grep` as the familiar universal content-discovery operation. On this
+read/retrieval surface, do not expose a separate `search`, retrieval `stat`, or
+overloaded `graph_search`: `resolve` already owns retrieval path metadata, and
+explicit graph verbs make direction, scope, cost, and completeness easier for
+an agent to control. This decision does not preclude the separately governed
+mutation-scoped fingerprint `stat` that activates only with the mutation tools.
 
 `links` and shallow outbound `traverse` are the graph foundation. `links`
 performs only local/direct resolution; traversal uses a bounded request-local

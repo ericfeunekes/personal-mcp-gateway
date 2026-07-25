@@ -58,7 +58,8 @@ treated as accepted:
 - config validation and loopback bind rejection tests;
 - root-confined filesystem adapter tests for traversal, absolute paths, hidden entries, symlink traversal, limits, cancellation, and read-only behavior;
 - mutation adapter tests proving `stat` fingerprints allowed regular files and
-  directories without exposing filesystem identity; create and destination
+  empty directories without exposing filesystem identity, and rejects a
+  non-empty directory after examining at most one entry; create and destination
   absence cannot collide; stale source fingerprints cannot replace, patch,
   move, or delete a newer source; multi-replacement patches validate every
   unique non-overlapping match before effect; and rejected calls preserve both
@@ -66,8 +67,11 @@ treated as accepted:
 - process-boundary mutation tests at the production commit points proving
   collision-safe no-replace behavior under hostile external name replacement,
   complete prior-or-final visibility under cancellation, timeout, injected I/O
-  failure, and SIGKILL, no content-bearing temporary residue, exact descriptor
-  recovery, permanent-delete truthfulness, and no automatic retry after an
+  failure, and SIGKILL of the gateway and commit helper separately—including
+  stage creation before identity announcement—symmetric chosen-name/identity
+  cleanup, no content-bearing temporary residue after
+  healthy-scheduler quiescence, exact descriptor cleanup,
+  permanent-delete truthfulness, and no automatic retry after an
   uncertain post-commit result;
 - grep boundary tests proving literal mode searches complete oversized physical
   lines while returning explicit bounded UTF-8 evidence, continues to account
@@ -204,13 +208,14 @@ document bytes are written.
 
 ## Mutation Phase Proof Contract
 
-This section is the acceptance bar for a future mutation implementation, not a
-claim that the platform feasibility gate has passed. The current macOS API has
-no existing-name full-source-version compare-and-change namespace primitive, so
-issue #3 must not enter implementation or mutation-delta release proof until
-`requirements/obsidian-mutation-tools.md` records a newly approved enforceable
-authority boundary. A final-state-only check, advisory lock, or
-revalidate-then-rename implementation cannot satisfy these cells.
+This section is the acceptance bar for mutation implementation. The current
+macOS API has no existing-name full-source-version compare-and-change namespace
+primitive. The approved contract therefore requires exact fingerprint,
+absence, and patch-context validation at the last available pre-effect
+checkpoint and accepts the narrow external-writer window between that checkpoint
+and the namespace syscall. Proof must demonstrate every observable pre-effect
+mismatch and must not relabel this boundary as full CAS. A final-state-only
+check or advisory lock cannot satisfy these cells.
 
 Issue #3 adds an exact five-tool mutation delta to the accepted server:
 read-only mutation-scoped `stat`, plus `write`, `edit`, `move`, and `delete`.
@@ -222,6 +227,25 @@ for that accepted baseline only. They must be deliberately versioned or
 replaced before a mutation candidate can pass; adding handler unit tests while
 retaining a release grammar that omits the five-tool delta is failed proof.
 
+### Issue #6 foundation gate
+
+Before any issue #7 public-surface implementation begins, private
+production-boundary `fsx` and gateway-helper subprocess proof must pass for:
+vault confinement and same-directory staging; file source fingerprints; empty
+directory fingerprints with at-most-one-entry emptiness checks, nanosecond
+source stamps, and add/remove membership races; stale fingerprint and
+absence rejection; `RENAME_EXCL` collision behavior and unsupported-volume
+failure; helper protocol/version, 4 KiB frame, two-second deadline, four-helper,
+four-stage, 8 MiB-per-stage, mode/kind/link/owner/descriptor bounds; helper-owned final
+revalidation and commit; parent/helper SIGKILL separately including the
+stage-created-before-identity-announcement checkpoint; private-stage cleanup's
+last-unlink race and targeted-writer exclusion; simultaneous
+or sequential owner loss named as excluded; prior-or-final public visibility; uncertain
+post-commit no-replay; accepted final-syscall race documentation; and FD,
+process, stage, and vault-activity quiescence. This gate adds no MCP schemas,
+descriptors, telemetry, candidate reports, connector metadata, deployment, or
+personal-vault mutation. Those are issue #7 proof surfaces.
+
 The mutation merge and release candidate must prove all of the following:
 
 - `tools/list`, backend-ready telemetry, descriptor grammar, and annotations
@@ -229,7 +253,9 @@ The mutation merge and release candidate must prove all of the following:
   tools. Every previously accepted tool and `stat` retains its declared
   read-only/destructive truth; `write`, `edit`, `move`, and `delete` are not
   read-only and are destructive, including `move` because it removes the source
-  path.
+  path. Every mutation descriptor explicitly sets `openWorldHint:false` and an
+  intentional `idempotentHint:true` consistent with exact one-effect
+  preconditions and no automatic uncertain-outcome replay.
 - SDK stdio and Streamable HTTP calls cover `stat` for a regular file and empty
   directory plus create, complete replacement, structured multi-replacement
   patch, move, and permanent delete. Follow-on `stat` and `resolve` observe the
@@ -238,26 +264,35 @@ The mutation merge and release candidate must prove all of the following:
   missing or ambiguous patch matches, overlapping or mixed-encoding patches,
   denied paths and kinds, non-empty directory deletion, size limits,
   cancellation, timeout, I/O failure, same-inode in-place source changes,
-  directory-membership changes, and hostile name races without mutating the
-  target or non-target fixture state.
+  directory-membership changes, and hostile name races injected before final
+  revalidation without mutating the target or non-target fixture state. A
+  separate checkpoint demonstrates and documents the accepted unprotected
+  interval after helper-owned final revalidation without asserting a no-effect
+  rejection.
 - Exact-candidate functional reports retain operation outcomes and bounded safe
   counts without path, destination, content, patch value, fingerprint, cursor,
   or host identity. Performance and resource reports retain the accepted
   read-only workloads and add repeated representative mutation cycles that
   recover temporary files and descriptors exactly, remain within the existing
-  heap/RSS/FD/CPU thresholds, retain no mutation state, and show no continuing
+  heap/RSS/FD/CPU thresholds, retain no mutation authority or content-bearing
+  residue, and show no continuing
   resource or vault-activity growth after quiescence.
 - Release fake reports and cross-report validation use the same accepted
   baseline plus five-tool mutation delta. A report that omits the mutation
   delta cannot satisfy the mutation candidate gate.
 
 Platform-specific atomicity proof must name the actual macOS commit primitives
-and checkpoints used by the implementation. A check-then-rename helper test is
-insufficient: proof must exercise external replacement at the final effect
-boundary and subprocess interruption before and after commit. A post-commit
-failure may report an uncertain outcome, but it must never expose partial bytes,
-silently overwrite a collision, leave content-bearing residue, or trigger an
-automatic replay.
+and checkpoints used by the implementation. A helper-only test is insufficient:
+proof must exercise external replacement immediately before helper-owned final revalidation,
+the explicitly accepted window after revalidation, and subprocess interruption
+of the parent and helper separately before and after the commit token. A
+post-commit failure may report an uncertain outcome,
+but it must never expose partial public bytes, silently overwrite an
+absent-destination collision, leave content-bearing staging residue, or trigger
+an automatic replay. Sequential loss of both owners, process-group loss, OS
+crash, power loss, and a writer deliberately targeting the private stage name
+are named exclusions rather than implied proof.
+
 ## Test Data Rules
 
 - Use generated fixture vaults in tests.
