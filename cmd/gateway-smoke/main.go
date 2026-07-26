@@ -3,12 +3,16 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path"
@@ -25,8 +29,8 @@ import (
 )
 
 const (
-	candidateDescriptorCount = 6
-	acceptedDescriptorCount  = 5
+	candidateDescriptorCount = 11
+	acceptedDescriptorCount  = 10
 )
 
 type toolSurface string
@@ -59,79 +63,117 @@ const (
 	cancellationDelay        = 2 * time.Millisecond
 	cancellationBound        = 100 * time.Millisecond
 	defaultSuccessMessage    = "gateway smoke passed: resolve(.) returned an existing directory"
-	smokeReportVersion       = 3
-	performanceReportVersion = 4
+	smokeReportVersion       = 5
+	performanceReportVersion = 7
 )
 
 var stratifiedEntryCounts = [...]int{1, 100, 1_000, 10_000}
 
 type smokeReport struct {
-	ReportKind                   string                   `json:"report_kind"`
-	ReportSchema                 string                   `json:"report_schema"`
-	SchemaVersion                int                      `json:"schema_version"`
-	Passed                       bool                     `json:"passed"`
-	CandidateCommit              string                   `json:"candidate_commit"`
-	CandidateSHA256              string                   `json:"candidate_sha256"`
-	DependencySHA256             string                   `json:"dependency_sha256"`
-	CandidateRuntime             candidateRuntimeProfile  `json:"candidate_runtime"`
-	Machine                      machineProfile           `json:"machine"`
-	CurrentVault                 vaultAggregateProfile    `json:"current_vault"`
-	SyntheticVault               vaultAggregateProfile    `json:"synthetic_vault"`
-	CurrentProcess               candidateProcessProfile  `json:"current_process"`
-	SyntheticProcess             candidateProcessProfile  `json:"synthetic_process"`
-	ToolCalls                    functionalToolCallCounts `json:"tool_calls"`
-	ToolCount                    int                      `json:"tool_count"`
-	SDKResultCount               int                      `json:"sdk_result_count"`
-	MaxSDKResultBytes            int                      `json:"max_sdk_result_bytes"`
-	MaxStructuredResultBytes     int                      `json:"max_structured_result_bytes"`
-	MaxClientLatencyMicroseconds int64                    `json:"max_client_latency_microseconds"`
-	TotalFilesScanned            uint64                   `json:"total_files_scanned"`
-	TotalBytesScanned            uint64                   `json:"total_bytes_scanned"`
-	TotalSourceEntriesValidated  uint64                   `json:"total_source_entries_validated"`
-	CurrentResolveExistingDir    bool                     `json:"current_resolve_existing_directory"`
-	SyntheticCanonicalResolve    bool                     `json:"synthetic_canonical_resolve"`
-	SyntheticPageCount           int                      `json:"synthetic_page_count"`
-	SyntheticEntryCount          int                      `json:"synthetic_entry_count"`
-	SyntheticSecondProgress      bool                     `json:"synthetic_second_page_progress"`
-	SyntheticNoDuplicates        bool                     `json:"synthetic_no_duplicates"`
-	SyntheticFullEquivalence     bool                     `json:"synthetic_full_equivalence"`
-	SyntheticReadSelected        bool                     `json:"synthetic_read_selected"`
-	SyntheticGrepMatchCount      int                      `json:"synthetic_grep_match_count"`
-	SyntheticReadManyPages       int                      `json:"synthetic_read_many_pages"`
-	SyntheticReadManyContinued   bool                     `json:"synthetic_read_many_continued"`
-	SyntheticRetrievalEquivalent bool                     `json:"synthetic_retrieval_equivalent"`
-	SyntheticTelemetrySanitized  bool                     `json:"synthetic_telemetry_sanitized"`
+	ReportKind                   string                    `json:"report_kind"`
+	ReportSchema                 string                    `json:"report_schema"`
+	SchemaVersion                int                       `json:"schema_version"`
+	Passed                       bool                      `json:"passed"`
+	CandidateCommit              string                    `json:"candidate_commit"`
+	CandidateSHA256              string                    `json:"candidate_sha256"`
+	DependencySHA256             string                    `json:"dependency_sha256"`
+	CandidateRuntime             candidateRuntimeProfile   `json:"candidate_runtime"`
+	Machine                      machineProfile            `json:"machine"`
+	CurrentVault                 vaultAggregateProfile     `json:"current_vault"`
+	SyntheticVault               vaultAggregateProfile     `json:"synthetic_vault"`
+	CurrentProcess               candidateProcessProfile   `json:"current_process"`
+	SyntheticProcess             candidateProcessProfile   `json:"synthetic_process"`
+	ToolCalls                    functionalToolCallCounts  `json:"tool_calls"`
+	ToolCount                    int                       `json:"tool_count"`
+	SDKResultCount               int                       `json:"sdk_result_count"`
+	MaxSDKResultBytes            int                       `json:"max_sdk_result_bytes"`
+	MaxStructuredResultBytes     int                       `json:"max_structured_result_bytes"`
+	MaxClientLatencyMicroseconds int64                     `json:"max_client_latency_microseconds"`
+	TotalFilesScanned            uint64                    `json:"total_files_scanned"`
+	TotalBytesScanned            uint64                    `json:"total_bytes_scanned"`
+	TotalSourceEntriesValidated  uint64                    `json:"total_source_entries_validated"`
+	CurrentResolveExistingDir    bool                      `json:"current_resolve_existing_directory"`
+	SyntheticCanonicalResolve    bool                      `json:"synthetic_canonical_resolve"`
+	SyntheticPageCount           int                       `json:"synthetic_page_count"`
+	SyntheticEntryCount          int                       `json:"synthetic_entry_count"`
+	SyntheticSecondProgress      bool                      `json:"synthetic_second_page_progress"`
+	SyntheticNoDuplicates        bool                      `json:"synthetic_no_duplicates"`
+	SyntheticFullEquivalence     bool                      `json:"synthetic_full_equivalence"`
+	SyntheticReadSelected        bool                      `json:"synthetic_read_selected"`
+	SyntheticGrepMatchCount      int                       `json:"synthetic_grep_match_count"`
+	SyntheticReadManyPages       int                       `json:"synthetic_read_many_pages"`
+	SyntheticReadManyContinued   bool                      `json:"synthetic_read_many_continued"`
+	SyntheticRetrievalEquivalent bool                      `json:"synthetic_retrieval_equivalent"`
+	SyntheticTelemetrySanitized  bool                      `json:"synthetic_telemetry_sanitized"`
+	SyntheticEmptyDirectoryStat  bool                      `json:"synthetic_empty_directory_stat"`
+	SyntheticMutation            syntheticMutationEvidence `json:"synthetic_mutation"`
+	SyntheticMutationBoundaries  mutationBoundaryEvidence  `json:"synthetic_mutation_boundaries"`
+	SyntheticHTTPMutation        bool                      `json:"synthetic_http_mutation"`
+	SyntheticHTTPBoundaries      bool                      `json:"synthetic_http_mutation_boundaries"`
+}
+
+// syntheticMutationEvidence deliberately carries only aggregate outcome facts.
+// Names, values, paths, and opaque fingerprints remain private to the disposable fixture.
+type syntheticMutationEvidence struct {
+	CreateAbsent       bool `json:"create_absent"`
+	ReplaceFingerprint bool `json:"replace_fingerprint"`
+	MultiReplacement   bool `json:"multi_replacement"`
+	MoveAbsent         bool `json:"move_absent"`
+	DeletePermanent    bool `json:"delete_permanent"`
+	FollowOnObserved   bool `json:"follow_on_observed"`
+	CollisionRefused   bool `json:"collision_refused"`
+	StaleRefused       bool `json:"stale_refused"`
+	PatchRefused       bool `json:"patch_refused"`
+	DeniedRefused      bool `json:"denied_refused"`
+	ResidueFree        bool `json:"residue_free"`
+}
+
+// mutationBoundaryEvidence carries only aggregate facts from the built-candidate
+// limit and refusal matrix. Fixture paths, values, and fingerprints stay private.
+type mutationBoundaryEvidence struct {
+	WriteAtLimit               bool `json:"write_at_limit"`
+	WriteOverLimitRefused      bool `json:"write_over_limit_refused"`
+	EditAtLimit                bool `json:"edit_at_limit"`
+	EditResultOverLimitRefused bool `json:"edit_result_over_limit_refused"`
+	EditSourceOverLimitRefused bool `json:"edit_source_over_limit_refused"`
+	AmbiguousContextRefused    bool `json:"ambiguous_context_refused"`
+	OverlappingContextRefused  bool `json:"overlapping_context_refused"`
+	ImmediateIsolationObserved bool `json:"immediate_isolation_observed"`
+	ResidueFree                bool `json:"residue_free"`
 }
 
 type performanceReport struct {
-	ReportKind          string                   `json:"report_kind"`
-	ReportSchema        string                   `json:"report_schema"`
-	SchemaVersion       int                      `json:"schema_version"`
-	Passed              bool                     `json:"passed"`
-	CandidateCommit     string                   `json:"candidate_commit"`
-	CandidateSHA256     string                   `json:"candidate_sha256"`
-	DependencySHA256    string                   `json:"dependency_sha256"`
-	CandidateRuntime    candidateRuntimeProfile  `json:"candidate_runtime"`
-	Machine             machineProfile           `json:"machine"`
-	CurrentVault        vaultAggregateProfile    `json:"current_vault"`
-	SyntheticCorpus     vaultAggregateProfile    `json:"synthetic_corpus"`
-	DescriptorCount     int                      `json:"descriptor_count"`
-	CardinalityBucket   string                   `json:"cardinality_bucket"`
-	ResolveCached       performanceMetrics       `json:"resolve_cached"`
-	LSFirstLimit1       performanceMetrics       `json:"ls_first_limit_1"`
-	LSContinuedLimit1   performanceMetrics       `json:"ls_continued_limit_1"`
-	LSFirstLimit100     performanceMetrics       `json:"ls_first_limit_100"`
-	SyntheticRead       performanceMetrics       `json:"synthetic_read"`
-	SyntheticGrep       performanceMetrics       `json:"synthetic_grep"`
-	BroadCurrentGrep    broadGrepObservation     `json:"broad_current_grep"`
-	BroadNegativeGrep   broadNegativeObservation `json:"broad_negative_grep"`
-	SyntheticProcess    candidateProcessProfile  `json:"synthetic_process"`
-	CurrentVaultProcess candidateProcessProfile  `json:"current_vault_process"`
-	Stratified          []stratifiedMetrics      `json:"stratified"`
-	CurrentSQLite       sqliteTelemetryProof     `json:"current_sqlite"`
-	StratifiedSQLite    sqliteTelemetryProof     `json:"stratified_sqlite"`
-	SQLiteDegradation   sqliteDegradationProof   `json:"sqlite_degradation"`
-	Cancellation        cancellationObservation  `json:"cancellation"`
+	ReportKind           string                    `json:"report_kind"`
+	ReportSchema         string                    `json:"report_schema"`
+	SchemaVersion        int                       `json:"schema_version"`
+	Passed               bool                      `json:"passed"`
+	CandidateCommit      string                    `json:"candidate_commit"`
+	CandidateSHA256      string                    `json:"candidate_sha256"`
+	DependencySHA256     string                    `json:"dependency_sha256"`
+	CandidateRuntime     candidateRuntimeProfile   `json:"candidate_runtime"`
+	Machine              machineProfile            `json:"machine"`
+	CurrentVault         vaultAggregateProfile     `json:"current_vault"`
+	SyntheticCorpus      vaultAggregateProfile     `json:"synthetic_corpus"`
+	DescriptorCount      int                       `json:"descriptor_count"`
+	CardinalityBucket    string                    `json:"cardinality_bucket"`
+	ResolveCached        performanceMetrics        `json:"resolve_cached"`
+	LSFirstLimit1        performanceMetrics        `json:"ls_first_limit_1"`
+	LSContinuedLimit1    performanceMetrics        `json:"ls_continued_limit_1"`
+	LSFirstLimit100      performanceMetrics        `json:"ls_first_limit_100"`
+	SyntheticRead        performanceMetrics        `json:"synthetic_read"`
+	SyntheticGrep        performanceMetrics        `json:"synthetic_grep"`
+	MutationCycles       int                       `json:"mutation_cycles"`
+	MutationJourneyCalls int                       `json:"mutation_journey_calls"`
+	MutationEvidence     syntheticMutationEvidence `json:"mutation_evidence"`
+	BroadCurrentGrep     broadGrepObservation      `json:"broad_current_grep"`
+	BroadNegativeGrep    broadNegativeObservation  `json:"broad_negative_grep"`
+	SyntheticProcess     candidateProcessProfile   `json:"synthetic_process"`
+	CurrentVaultProcess  candidateProcessProfile   `json:"current_vault_process"`
+	Stratified           []stratifiedMetrics       `json:"stratified"`
+	CurrentSQLite        sqliteTelemetryProof      `json:"current_sqlite"`
+	StratifiedSQLite     sqliteTelemetryProof      `json:"stratified_sqlite"`
+	SQLiteDegradation    sqliteDegradationProof    `json:"sqlite_degradation"`
+	Cancellation         cancellationObservation   `json:"cancellation"`
 }
 
 type sqliteTelemetryProof struct {
@@ -284,7 +326,7 @@ func runWithCandidateSnapshotter(args []string, stdout, stderr io.Writer, snapsh
 	reportJSON := flags.Bool("report-json", false, "emit one sanitized aggregate JSON report")
 	performanceJSON := flags.Bool("performance-json", false, "emit one sanitized current-vault and stratified candidate performance report")
 	resourceJSON := flags.Bool("resource-json", false, "emit one sanitized fresh-process, repeated-batch, and idle resource report")
-	resourceControl := flags.Bool("resource-control", false, "use the accepted five-tool surface for --resource-json")
+	resourceControl := flags.Bool("resource-control", false, "use the default ten-tool non-document surface for --resource-json")
 	documentTransferJSON := flags.Bool("document-transfer-json", false, "emit one disposable exact-size document transfer capacity report")
 	documentTransferArtifact := flags.String("document-transfer-artifact", "", "write the synthetic document transfer fixture for independent validation")
 	validateReports := flags.Bool("validate-report-set", false, "validate exactly one functional, performance, and resource report")
@@ -400,6 +442,9 @@ func runWithCandidateSnapshotter(args []string, stdout, stderr io.Writer, snapsh
 		report.SyntheticCorpus = phase2.syntheticCorpus
 		report.SyntheticRead = phase2.syntheticRead
 		report.SyntheticGrep = phase2.syntheticGrep
+		report.MutationCycles = phase2.mutationCycles
+		report.MutationJourneyCalls = phase2.mutationJourneyCalls
+		report.MutationEvidence = phase2.mutationEvidence
 		report.BroadCurrentGrep = phase2.broadCurrentGrep
 		report.BroadNegativeGrep = phase2.broadNegativeGrep
 		report.SyntheticProcess = phase2.syntheticProcess
@@ -952,6 +997,9 @@ func probeSyntheticVault(ctx context.Context, gatewayBin string, report *smokeRe
 		return err
 	}
 	session := process.session
+	if err := probeSyntheticEmptyDirectoryStat(ctx, session, fixture.root, report); err != nil {
+		return err
+	}
 
 	resolved, err := callStructured[obsidian.ResolveOutput](ctx, session, obsidian.ToolResolve, map[string]any{
 		"path": fixture.canonicalInput,
@@ -1040,16 +1088,547 @@ func probeSyntheticVault(ctx context.Context, gatewayBin string, report *smokeRe
 	if err != nil {
 		return err
 	}
+	mutationFingerprints, err := probeSyntheticMutation(ctx, session, fixture.root, report)
+	if err != nil {
+		return err
+	}
+	boundaryEvidence, boundaryPrivate, err := probeSyntheticMutationBoundaries(ctx, session, fixture.root, report)
+	if err != nil {
+		return err
+	}
+	report.SyntheticMutationBoundaries = boundaryEvidence
 	report.SyntheticProcess, err = tracker.finish(ctx, process)
 	if err != nil {
 		return err
 	}
 	closed = true
-	if err := verifySyntheticRetrievalTelemetry(telemetry.String(), fixture, cursors); err != nil {
+	privateEvidence := append(append(cursors, mutationFingerprints...), boundaryPrivate...)
+	if err := verifySyntheticRetrievalTelemetry(telemetry.String(), fixture, privateEvidence); err != nil {
 		return err
 	}
 	report.SyntheticTelemetrySanitized = true
+	if err := probeSyntheticHTTPMutation(ctx, gatewayBin, fixture.root, report); err != nil {
+		return err
+	}
 	return nil
+}
+
+func probeSyntheticHTTPMutation(ctx context.Context, gatewayBin, root string, report *smokeReport) error {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return errors.New("synthetic HTTP address reservation failed")
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		return errors.New("synthetic HTTP address release failed")
+	}
+	cmd := exec.CommandContext(ctx, gatewayBin, "http", "--obsidian-root", root, "--addr", address, "--telemetry", "off")
+	var stderr bytes.Buffer
+	cmd.Stdout = io.Discard
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return errors.New("synthetic HTTP candidate start failed")
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	defer func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Signal(os.Interrupt)
+		}
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+			<-done
+		}
+	}()
+
+	client := &http.Client{Timeout: 250 * time.Millisecond}
+	readyURL := "http://" + address + "/readyz"
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		response, requestErr := client.Get(readyURL)
+		if requestErr == nil {
+			_ = response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			return errors.New("synthetic HTTP candidate did not become ready")
+		}
+		select {
+		case <-ctx.Done():
+			return errors.New("synthetic HTTP candidate readiness was canceled")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	mcpClient := sdk.NewClient(&sdk.Implementation{Name: "local-release-smoke-http", Version: "v1"}, nil)
+	session, err := mcpClient.Connect(ctx, &sdk.StreamableClientTransport{Endpoint: "http://" + address + "/mcp"}, nil)
+	if err != nil {
+		return errors.New("synthetic HTTP MCP connection failed")
+	}
+	defer session.Close()
+	if count, err := requireExactToolList(ctx, session); err != nil || count != 10 {
+		return errors.New("synthetic HTTP descriptor gate failed")
+	}
+	if _, err := probeSyntheticMutation(ctx, session, root, report); err != nil {
+		return errors.New("synthetic HTTP mutation journey failed")
+	}
+	boundaryEvidence, _, err := probeSyntheticMutationBoundaries(ctx, session, root, report)
+	if err != nil || !mutationBoundaryEvidencePasses(boundaryEvidence) {
+		return errors.New("synthetic HTTP mutation boundary journey failed")
+	}
+	if err := probeSyntheticEmptyDirectoryStat(ctx, session, root, report); err != nil {
+		return errors.New("synthetic HTTP empty-directory stat failed")
+	}
+	report.SyntheticHTTPMutation = true
+	report.SyntheticHTTPBoundaries = true
+	return nil
+}
+
+func probeSyntheticEmptyDirectoryStat(ctx context.Context, session *sdk.ClientSession, root string, report *smokeReport) error {
+	const path = "mutation-private-empty-directory"
+	abs := filepath.Join(root, path)
+	if err := os.Mkdir(abs, 0o700); err != nil {
+		return errors.New("synthetic empty-directory fixture setup failed")
+	}
+	defer os.Remove(abs)
+	stat, err := callStructured[obsidian.StatOutput](ctx, session, obsidian.ToolStat, map[string]any{"path": path}, report)
+	if err != nil || !stat.OK || stat.Path != path || stat.Type != "directory" || stat.Size < 0 || stat.Fingerprint == "" {
+		return errors.New("synthetic empty-directory stat failed")
+	}
+	report.SyntheticEmptyDirectoryStat = true
+	return nil
+}
+
+func probeSyntheticMutation(ctx context.Context, session *sdk.ClientSession, root string, report *smokeReport) ([]string, error) {
+	// These sentinels remain confined to the disposable fixture. The report records
+	// only the aggregate evidence below, while telemetry validation rejects them.
+	const source = "mutation-private-source.md"
+	const destination = "mutation-private-destination.md"
+	const initial = "mutation-private-old-alpha\nmutation-private-old-beta\n"
+	const replacement = "mutation-private-replace-alpha\nmutation-private-replace-beta\n"
+	const firstOld = "mutation-private-replace-alpha"
+	const firstNew = "mutation-private-edit-alpha"
+	const secondOld = "mutation-private-replace-beta"
+	const secondNew = "mutation-private-edit-beta"
+	const outsideValue = "mutation-private-outside-value"
+	before, err := snapshotMutationFixture(root)
+	if err != nil {
+		return nil, err
+	}
+	outsidePath, outsideInput, err := newMutationOutsideSentinel(root, outsideValue)
+	if err != nil {
+		return nil, err
+	}
+	defer os.Remove(outsidePath)
+
+	created, err := callStructured[obsidian.MutationOutput](ctx, session, obsidian.ToolWrite, map[string]any{
+		"path": source, "encoding": obsidian.MutationEncodingUTF8, "value": initial,
+		"precondition": map[string]any{"kind": obsidian.MutationPreconditionAbsent},
+	}, report)
+	if err != nil || !created.OK || created.Type != "file" || created.Fingerprint == "" {
+		return nil, errors.New("synthetic mutation create did not return file metadata")
+	}
+	report.SyntheticMutation.CreateAbsent = true
+
+	createdStat, err := callStructured[obsidian.StatOutput](ctx, session, obsidian.ToolStat, map[string]any{"path": source}, report)
+	if err != nil || !createdStat.OK || createdStat.Type != "file" || createdStat.Fingerprint != created.Fingerprint {
+		return nil, errors.New("synthetic mutation stat did not observe create")
+	}
+
+	replaced, err := callStructured[obsidian.MutationOutput](ctx, session, obsidian.ToolWrite, map[string]any{
+		"path": source, "encoding": obsidian.MutationEncodingUTF8, "value": replacement,
+		"precondition": map[string]any{"kind": obsidian.MutationPreconditionFingerprint, "fingerprint": createdStat.Fingerprint},
+	}, report)
+	if err != nil || !replaced.OK || replaced.Fingerprint == "" || replaced.Fingerprint == createdStat.Fingerprint {
+		return nil, errors.New("synthetic mutation replacement did not advance fingerprint")
+	}
+	report.SyntheticMutation.ReplaceFingerprint = true
+
+	refusalBefore, err := snapshotMutationIsolation(root, outsidePath)
+	if err != nil {
+		return nil, err
+	}
+	collision, err := callExpectedToolError[obsidian.MutationOutput](ctx, session, obsidian.ToolWrite, map[string]any{
+		"path": source, "encoding": obsidian.MutationEncodingUTF8, "value": "collision-value",
+		"precondition": map[string]any{"kind": obsidian.MutationPreconditionAbsent},
+	}, report)
+	if err != nil || collision.Error == nil || collision.Error.Code != "destination_exists" {
+		return nil, errors.New("synthetic mutation create collision was not refused")
+	}
+	if err := requireMutationIsolationUnchanged(root, outsidePath, refusalBefore); err != nil {
+		return nil, err
+	}
+	report.SyntheticMutation.CollisionRefused = true
+	refusalBefore, err = snapshotMutationIsolation(root, outsidePath)
+	if err != nil {
+		return nil, err
+	}
+	stale, err := callExpectedToolError[obsidian.MutationOutput](ctx, session, obsidian.ToolWrite, map[string]any{
+		"path": source, "encoding": obsidian.MutationEncodingUTF8, "value": "stale-value",
+		"precondition": map[string]any{"kind": obsidian.MutationPreconditionFingerprint, "fingerprint": created.Fingerprint},
+	}, report)
+	if err != nil || stale.Error == nil || stale.Error.Code != "source_changed" {
+		return nil, errors.New("synthetic mutation stale replacement was not refused")
+	}
+	if err := requireMutationIsolationUnchanged(root, outsidePath, refusalBefore); err != nil {
+		return nil, err
+	}
+	report.SyntheticMutation.StaleRefused = true
+	refusalBefore, err = snapshotMutationIsolation(root, outsidePath)
+	if err != nil {
+		return nil, err
+	}
+	patchRefusal, err := callExpectedToolError[obsidian.MutationOutput](ctx, session, obsidian.ToolEdit, map[string]any{
+		"path": source, "fingerprint": replaced.Fingerprint, "encoding": obsidian.MutationEncodingUTF8,
+		"replacements": []any{map[string]any{"old": "missing-context", "new": "unused"}},
+	}, report)
+	if err != nil || patchRefusal.Error == nil || patchRefusal.Error.Code != "invalid_patch" {
+		return nil, errors.New("synthetic mutation missing patch context was not refused")
+	}
+	if err := requireMutationIsolationUnchanged(root, outsidePath, refusalBefore); err != nil {
+		return nil, err
+	}
+	report.SyntheticMutation.PatchRefused = true
+	refusalBefore, err = snapshotMutationIsolation(root, outsidePath)
+	if err != nil {
+		return nil, err
+	}
+	denied, err := callExpectedToolError[obsidian.MutationOutput](ctx, session, obsidian.ToolWrite, map[string]any{
+		"path": outsideInput, "encoding": obsidian.MutationEncodingUTF8, "value": "denied-value",
+		"precondition": map[string]any{"kind": obsidian.MutationPreconditionAbsent},
+	}, report)
+	if err != nil || denied.Error == nil || denied.Error.Code != "path_denied" {
+		return nil, errors.New("synthetic mutation denied path was not refused")
+	}
+	if err := requireMutationIsolationUnchanged(root, outsidePath, refusalBefore); err != nil {
+		return nil, err
+	}
+	report.SyntheticMutation.DeniedRefused = true
+	afterRefusals, err := callStructured[obsidian.StatOutput](ctx, session, obsidian.ToolStat, map[string]any{"path": source}, report)
+	if err != nil || !afterRefusals.OK || afterRefusals.Fingerprint != replaced.Fingerprint {
+		return nil, errors.New("synthetic mutation refusal changed the source")
+	}
+
+	edited, err := callStructured[obsidian.MutationOutput](ctx, session, obsidian.ToolEdit, map[string]any{
+		"path": source, "fingerprint": replaced.Fingerprint, "encoding": obsidian.MutationEncodingUTF8,
+		"replacements": []any{
+			map[string]any{"old": firstOld, "new": firstNew},
+			map[string]any{"old": secondOld, "new": secondNew},
+		},
+	}, report)
+	if err != nil || !edited.OK || edited.Fingerprint == "" || edited.Fingerprint == replaced.Fingerprint {
+		return nil, errors.New("synthetic mutation multi-replacement did not advance fingerprint")
+	}
+	report.SyntheticMutation.MultiReplacement = true
+
+	moved, err := callStructured[obsidian.MutationOutput](ctx, session, obsidian.ToolMove, map[string]any{
+		"source": source, "destination": destination, "fingerprint": edited.Fingerprint,
+		"destination_precondition": map[string]any{"kind": obsidian.MutationPreconditionAbsent},
+	}, report)
+	if err != nil || !moved.OK || moved.Path != destination || moved.Fingerprint == "" {
+		return nil, errors.New("synthetic mutation move did not return destination metadata")
+	}
+	report.SyntheticMutation.MoveAbsent = true
+	movedRead, err := callStructured[obsidian.ReadOutput](ctx, session, obsidian.ToolRead, map[string]any{"path": destination}, report)
+	if err != nil || !movedRead.OK || movedRead.Content == nil || *movedRead.Content != "mutation-private-edit-alpha\nmutation-private-edit-beta\n" {
+		return nil, errors.New("synthetic mutation read did not observe edited destination bytes")
+	}
+
+	movedStat, err := callStructured[obsidian.StatOutput](ctx, session, obsidian.ToolStat, map[string]any{"path": destination}, report)
+	if err != nil || !movedStat.OK || movedStat.Type != "file" || movedStat.Fingerprint != moved.Fingerprint {
+		return nil, errors.New("synthetic mutation stat did not observe move")
+	}
+	deleted, err := callStructured[obsidian.DeleteOutput](ctx, session, obsidian.ToolDelete, map[string]any{
+		"path": destination, "fingerprint": movedStat.Fingerprint,
+	}, report)
+	if err != nil || !deleted.OK || !deleted.Permanent || deleted.Path != destination {
+		return nil, errors.New("synthetic mutation delete was not permanent")
+	}
+	report.SyntheticMutation.DeletePermanent = true
+
+	resolved, err := callStructured[obsidian.ResolveOutput](ctx, session, obsidian.ToolResolve, map[string]any{"path": destination}, report)
+	if err != nil || !resolved.OK || resolved.Exists {
+		return nil, errors.New("synthetic mutation resolve did not observe permanent delete")
+	}
+	report.SyntheticMutation.FollowOnObserved = true
+	after, err := snapshotMutationFixture(root)
+	if err != nil || !reflect.DeepEqual(before, after) {
+		return nil, errors.New("synthetic mutation cycle left fixture residue")
+	}
+	report.SyntheticMutation.ResidueFree = true
+	return []string{created.Fingerprint, createdStat.Fingerprint, replaced.Fingerprint, edited.Fingerprint, moved.Fingerprint, movedStat.Fingerprint, outsidePath, outsideInput, outsideValue}, nil
+}
+
+func probeSyntheticMutationBoundaries(ctx context.Context, session *sdk.ClientSession, root string, report *smokeReport) (mutationBoundaryEvidence, []string, error) {
+	const (
+		writePath      = "mutation-private-limit-write.bin"
+		editPath       = "mutation-private-limit-edit.bin"
+		overSourcePath = "mutation-private-over-source.bin"
+	)
+	initial, err := snapshotMutationFixture(root)
+	if err != nil {
+		return mutationBoundaryEvidence{}, nil, err
+	}
+	defer os.Remove(filepath.Join(root, writePath))
+	defer os.Remove(filepath.Join(root, editPath))
+	defer os.Remove(filepath.Join(root, overSourcePath))
+
+	evidence := mutationBoundaryEvidence{}
+	private := []string{writePath, editPath, overSourcePath}
+	exactValue := make([]byte, obsidian.MutationMaxValueBytes)
+	copy(exactValue, []byte("mutation-boundary-private-write"))
+	exactEncoded := base64.StdEncoding.EncodeToString(exactValue)
+	private = append(private, exactEncoded[:64])
+	created, err := callStructured[obsidian.MutationOutput](ctx, session, obsidian.ToolWrite, map[string]any{
+		"path": writePath, "encoding": obsidian.MutationEncodingBase64, "value": exactEncoded,
+		"precondition": map[string]any{"kind": obsidian.MutationPreconditionAbsent},
+	}, report)
+	if err != nil || !created.OK || created.Size != obsidian.MutationMaxValueBytes || created.Fingerprint == "" {
+		return mutationBoundaryEvidence{}, nil, errors.New("synthetic write-at-limit boundary failed")
+	}
+	evidence.WriteAtLimit = true
+	private = append(private, created.Fingerprint)
+	deleted, err := callStructured[obsidian.DeleteOutput](ctx, session, obsidian.ToolDelete, map[string]any{
+		"path": writePath, "fingerprint": created.Fingerprint,
+	}, report)
+	if err != nil || !deleted.OK || !deleted.Permanent {
+		return mutationBoundaryEvidence{}, nil, errors.New("synthetic write-at-limit cleanup failed")
+	}
+
+	overValue := append(append([]byte(nil), exactValue...), 0)
+	overEncoded := base64.StdEncoding.EncodeToString(overValue)
+	writeBefore, err := snapshotMutationFixture(root)
+	if err != nil {
+		return mutationBoundaryEvidence{}, nil, err
+	}
+	overWrite, err := callExpectedToolError[obsidian.MutationOutput](ctx, session, obsidian.ToolWrite, map[string]any{
+		"path": writePath, "encoding": obsidian.MutationEncodingBase64, "value": overEncoded,
+		"precondition": map[string]any{"kind": obsidian.MutationPreconditionAbsent},
+	}, report)
+	if err != nil || overWrite.Error == nil || overWrite.Error.Code != "input_too_large" {
+		return mutationBoundaryEvidence{}, nil, errors.New("synthetic write-over-limit boundary was not refused")
+	}
+	writeAfter, err := snapshotMutationFixture(root)
+	if err != nil || !reflect.DeepEqual(writeBefore, writeAfter) {
+		return mutationBoundaryEvidence{}, nil, errors.New("synthetic write-over-limit refusal changed fixture state")
+	}
+	evidence.WriteOverLimitRefused = true
+
+	editSource := make([]byte, obsidian.MutationMaxFileBytes)
+	copy(editSource, []byte("one two "))
+	for index := len("one two "); index < len(editSource)-1; index++ {
+		editSource[index] = 'a'
+	}
+	editSource[len(editSource)-1] = 'z'
+	if err := os.WriteFile(filepath.Join(root, editPath), editSource, 0o600); err != nil {
+		return mutationBoundaryEvidence{}, nil, errors.New("synthetic edit-at-limit fixture setup failed")
+	}
+	stat, err := callStructured[obsidian.StatOutput](ctx, session, obsidian.ToolStat, map[string]any{"path": editPath}, report)
+	if err != nil || !stat.OK || stat.Size != obsidian.MutationMaxFileBytes || stat.Fingerprint == "" {
+		return mutationBoundaryEvidence{}, nil, errors.New("synthetic edit-at-limit stat failed")
+	}
+	private = append(private, stat.Fingerprint)
+	edited, err := callStructured[obsidian.MutationOutput](ctx, session, obsidian.ToolEdit, map[string]any{
+		"path": editPath, "fingerprint": stat.Fingerprint, "encoding": obsidian.MutationEncodingUTF8,
+		"replacements": []any{map[string]any{"old": "z", "new": "y"}},
+	}, report)
+	if err != nil || !edited.OK || edited.Size != obsidian.MutationMaxFileBytes || edited.Fingerprint == "" {
+		return mutationBoundaryEvidence{}, nil, errors.New("synthetic edit-at-limit boundary failed")
+	}
+	evidence.EditAtLimit = true
+	private = append(private, edited.Fingerprint)
+
+	for _, refusal := range []struct {
+		name         string
+		replacements []any
+		mark         func()
+	}{
+		{name: "result-over-limit", replacements: []any{map[string]any{"old": "y", "new": "yy"}}, mark: func() { evidence.EditResultOverLimitRefused = true }},
+		{name: "overlapping-context", replacements: []any{map[string]any{"old": "one two", "new": "one"}, map[string]any{"old": "two", "new": "2"}}, mark: func() { evidence.OverlappingContextRefused = true }},
+		{name: "ambiguous-context", replacements: []any{map[string]any{"old": "aa", "new": "a"}}, mark: func() { evidence.AmbiguousContextRefused = true }},
+	} {
+		before, err := snapshotMutationFixture(root)
+		if err != nil {
+			return mutationBoundaryEvidence{}, nil, err
+		}
+		out, callErr := callExpectedToolError[obsidian.MutationOutput](ctx, session, obsidian.ToolEdit, map[string]any{
+			"path": editPath, "fingerprint": edited.Fingerprint, "encoding": obsidian.MutationEncodingUTF8,
+			"replacements": refusal.replacements,
+		}, report)
+		if callErr != nil || out.Error == nil || out.Error.Code != "invalid_patch" && out.Error.Code != "input_too_large" {
+			return mutationBoundaryEvidence{}, nil, errors.New("synthetic edit boundary refusal failed")
+		}
+		if refusal.name == "result-over-limit" && out.Error.Code != "input_too_large" || refusal.name != "result-over-limit" && out.Error.Code != "invalid_patch" {
+			return mutationBoundaryEvidence{}, nil, errors.New("synthetic edit boundary refusal code drifted")
+		}
+		after, err := snapshotMutationFixture(root)
+		if err != nil || !reflect.DeepEqual(before, after) {
+			return mutationBoundaryEvidence{}, nil, errors.New("synthetic edit boundary refusal changed fixture state")
+		}
+		refusal.mark()
+	}
+
+	overSource := make([]byte, obsidian.MutationMaxFileBytes+1)
+	copy(overSource, []byte("mutation-boundary-private-over-source"))
+	overSource[len(overSource)-1] = 'z'
+	if err := os.WriteFile(filepath.Join(root, overSourcePath), overSource, 0o600); err != nil {
+		return mutationBoundaryEvidence{}, nil, errors.New("synthetic over-source fixture setup failed")
+	}
+	overStat, err := callStructured[obsidian.StatOutput](ctx, session, obsidian.ToolStat, map[string]any{"path": overSourcePath}, report)
+	if err != nil || !overStat.OK || overStat.Size != obsidian.MutationMaxFileBytes+1 || overStat.Fingerprint == "" {
+		return mutationBoundaryEvidence{}, nil, errors.New("synthetic over-source stat failed")
+	}
+	private = append(private, overStat.Fingerprint)
+	overBefore, err := snapshotMutationFixture(root)
+	if err != nil {
+		return mutationBoundaryEvidence{}, nil, err
+	}
+	overEdit, err := callExpectedToolError[obsidian.MutationOutput](ctx, session, obsidian.ToolEdit, map[string]any{
+		"path": overSourcePath, "fingerprint": overStat.Fingerprint, "encoding": obsidian.MutationEncodingUTF8,
+		"replacements": []any{map[string]any{"old": "z", "new": "y"}},
+	}, report)
+	if err != nil || overEdit.Error == nil || overEdit.Error.Code != "input_too_large" {
+		return mutationBoundaryEvidence{}, nil, errors.New("synthetic over-source boundary was not refused")
+	}
+	overAfter, err := snapshotMutationFixture(root)
+	if err != nil || !reflect.DeepEqual(overBefore, overAfter) {
+		return mutationBoundaryEvidence{}, nil, errors.New("synthetic over-source refusal changed fixture state")
+	}
+	evidence.EditSourceOverLimitRefused = true
+	evidence.ImmediateIsolationObserved = true
+
+	for _, target := range []struct {
+		path        string
+		fingerprint string
+	}{
+		{path: editPath, fingerprint: edited.Fingerprint},
+		{path: overSourcePath, fingerprint: overStat.Fingerprint},
+	} {
+		out, err := callStructured[obsidian.DeleteOutput](ctx, session, obsidian.ToolDelete, map[string]any{"path": target.path, "fingerprint": target.fingerprint}, report)
+		if err != nil || !out.OK || !out.Permanent {
+			return mutationBoundaryEvidence{}, nil, errors.New("synthetic boundary cleanup failed")
+		}
+	}
+	final, err := snapshotMutationFixture(root)
+	if err != nil || !reflect.DeepEqual(initial, final) {
+		return mutationBoundaryEvidence{}, nil, errors.New("synthetic mutation boundary journey left residue")
+	}
+	evidence.ResidueFree = true
+	return evidence, private, nil
+}
+
+func snapshotMutationFixture(root string) (map[string]string, error) {
+	snapshot := map[string]string{}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == root {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		value := fmt.Sprintf("%s:%d", info.Mode().Type(), info.Size())
+		if info.Mode().IsRegular() {
+			file, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			hash := sha256.New()
+			_, copyErr := io.Copy(hash, file)
+			closeErr := file.Close()
+			if copyErr != nil || closeErr != nil {
+				return errors.New("synthetic mutation fixture digest failed")
+			}
+			value = fmt.Sprintf("%s:%x", value, hash.Sum(nil))
+		}
+		snapshot[filepath.ToSlash(rel)] = value
+		return nil
+	})
+	if err != nil {
+		return nil, errors.New("synthetic mutation fixture snapshot failed")
+	}
+	return snapshot, nil
+}
+
+type mutationIsolationSnapshot struct {
+	vault   map[string]string
+	outside string
+}
+
+func newMutationOutsideSentinel(root, value string) (string, string, error) {
+	file, err := os.CreateTemp(filepath.Dir(root), "personal-mcp-gateway-outside-")
+	if err != nil {
+		return "", "", errors.New("synthetic outside sentinel setup failed")
+	}
+	path := file.Name()
+	if _, err := io.WriteString(file, value); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return "", "", errors.New("synthetic outside sentinel setup failed")
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", "", errors.New("synthetic outside sentinel setup failed")
+	}
+	return path, "../" + filepath.Base(path), nil
+}
+
+func snapshotMutationIsolation(root, outsidePath string) (mutationIsolationSnapshot, error) {
+	vault, err := snapshotMutationFixture(root)
+	if err != nil {
+		return mutationIsolationSnapshot{}, err
+	}
+	outside, err := snapshotMutationPath(outsidePath)
+	if err != nil {
+		return mutationIsolationSnapshot{}, errors.New("synthetic outside sentinel snapshot failed")
+	}
+	return mutationIsolationSnapshot{vault: vault, outside: outside}, nil
+}
+
+func requireMutationIsolationUnchanged(root, outsidePath string, before mutationIsolationSnapshot) error {
+	after, err := snapshotMutationIsolation(root, outsidePath)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(before, after) {
+		return errors.New("synthetic mutation refusal changed fixture state")
+	}
+	return nil
+}
+
+func snapshotMutationPath(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	value := fmt.Sprintf("%s:%d", info.Mode().Type(), info.Size())
+	if !info.Mode().IsRegular() {
+		return value, nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.New()
+	_, copyErr := io.Copy(hash, file)
+	closeErr := file.Close()
+	if copyErr != nil || closeErr != nil {
+		return "", errors.New("synthetic mutation path digest failed")
+	}
+	return fmt.Sprintf("%s:%x", value, hash.Sum(nil)), nil
 }
 
 func probeSyntheticRetrieval(ctx context.Context, session *sdk.ClientSession, fixture syntheticFixture, report *smokeReport) ([]string, error) {
@@ -1138,6 +1717,15 @@ func verifySyntheticRetrievalTelemetry(encoded string, fixture syntheticFixture,
 		"alpha training evidence",
 		fixture.canonicalInput,
 		fixture.canonicalPath,
+		"mutation-private-source.md",
+		"mutation-private-destination.md",
+		"mutation-private-empty-directory",
+		"mutation-private-old-alpha",
+		"mutation-private-replace-alpha",
+		"mutation-private-edit-alpha",
+		"mutation-private-old-beta",
+		"mutation-private-replace-beta",
+		"mutation-private-edit-beta",
 	}, fixture.expectedListings...), cursors...) {
 		if strings.Contains(encoded, forbidden) {
 			return errors.New("synthetic retrieval telemetry retained private evidence")
@@ -1157,7 +1745,7 @@ func verifySyntheticRetrievalTelemetry(encoded string, fixture syntheticFixture,
 			seen[tool] = true
 		}
 	}
-	for _, tool := range []string{obsidian.ToolRead, obsidian.ToolReadMany, obsidian.ToolGrep} {
+	for _, tool := range []string{obsidian.ToolRead, obsidian.ToolReadMany, obsidian.ToolGrep, obsidian.ToolStat, obsidian.ToolWrite, obsidian.ToolEdit, obsidian.ToolMove, obsidian.ToolDelete} {
 		if !seen[tool] {
 			return errors.New("synthetic retrieval telemetry lacked aggregate tool evidence")
 		}
@@ -1439,7 +2027,7 @@ func requireExactToolListForSurface(ctx context.Context, session *sdk.ClientSess
 		names = append(names, tool.Name)
 	}
 	sort.Strings(names)
-	want := []string{obsidian.ToolGrep, obsidian.ToolLS, obsidian.ToolRead, obsidian.ToolReadMany, obsidian.ToolResolve}
+	want := []string{obsidian.ToolDelete, obsidian.ToolEdit, obsidian.ToolGrep, obsidian.ToolLS, obsidian.ToolMove, obsidian.ToolRead, obsidian.ToolReadMany, obsidian.ToolResolve, obsidian.ToolStat, obsidian.ToolWrite}
 	if surface == candidateToolSurface {
 		want = append(want, obsidian.ToolReadDocument)
 		sort.Strings(want)
@@ -1470,6 +2058,36 @@ func callStructured[Out any](ctx context.Context, session *sdk.ClientSession, na
 	report.TotalFilesScanned += coverage.FilesScanned
 	report.TotalBytesScanned += coverage.BytesScanned
 	report.TotalSourceEntriesValidated += coverage.SourceEntriesValidated
+	return out, nil
+}
+
+func callExpectedToolError[Out any](ctx context.Context, session *sdk.ClientSession, name string, arguments map[string]any, report *smokeReport) (Out, error) {
+	var out Out
+	started := time.Now()
+	result, err := session.CallTool(ctx, &sdk.CallToolParams{Name: name, Arguments: arguments})
+	latency := time.Since(started)
+	if err != nil || result == nil || !result.IsError {
+		return out, errors.New("candidate tool refusal was unavailable")
+	}
+	encodedResult, err := json.Marshal(result)
+	if err != nil || len(encodedResult) > obsidian.MaxSDKResultBytes {
+		return out, errors.New("candidate refusal SDK result exceeded maximum size")
+	}
+	structured, err := json.Marshal(result.StructuredContent)
+	if err != nil || json.Unmarshal(structured, &out) != nil {
+		return out, errors.New("candidate refusal structured result was invalid")
+	}
+	report.SDKResultCount++
+	report.ToolCalls.add(name)
+	if len(encodedResult) > report.MaxSDKResultBytes {
+		report.MaxSDKResultBytes = len(encodedResult)
+	}
+	if len(structured) > report.MaxStructuredResultBytes {
+		report.MaxStructuredResultBytes = len(structured)
+	}
+	if micros := latency.Microseconds(); micros > report.MaxClientLatencyMicroseconds {
+		report.MaxClientLatencyMicroseconds = micros
+	}
 	return out, nil
 }
 

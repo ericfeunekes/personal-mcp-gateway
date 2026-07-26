@@ -10,7 +10,7 @@ covers:
 
 # Obsidian Domain
 
-The `obsidian` MCP server exposes narrow agent tools over one configured local vault. The accepted core remains read-only discovery and Markdown retrieval; planned mutation and native-document capabilities are governed separately so they do not weaken vault confinement or become generic filesystem access. Correctness must not depend on hidden server-side state.
+The `obsidian` MCP server exposes narrow agent tools over one configured local vault. The accepted implementation combines read-only discovery and Markdown retrieval with the separately governed mutation surface; native-document capabilities remain activation-gated. Correctness must not depend on hidden server-side state.
 
 ## Tool Vocabulary
 
@@ -36,7 +36,7 @@ The MCP server name is the public integration boundary. Do not prefix tool names
 
 The target list is phased. `tools/list` advertises only fully implemented and proven tools, never disabled placeholders. `backlinks` and `path_between` remain absent until the numeric full-vault activation gate in the requirements passes.
 
-The mutation phase would add `stat`, `write`, `edit`, `move`, and `delete` together. It is currently blocked because macOS can enforce an absent destination atomically only on supporting volumes and cannot bind the complete expected source-version stamp to replace, move, or delete at the namespace commit point. `stat` remains a narrow read-only prerequisite for mutation-ready file and directory identity, not a general replacement for `resolve`, and is withheld by product choice while the integrated mutation contract is blocked. If the feasibility gate is resolved, the four mutation tools are advertised by default on the trusted personal connector with no separate server-side write gate. Their fingerprint, absence-precondition, patch, destructive-annotation, permanent-delete, and feasibility contracts live in `requirements/obsidian-mutation-tools.md`.
+The mutation phase adds `stat`, `write`, `edit`, `move`, and `delete` together after its filesystem foundation is proven. `stat` is a narrow read-only prerequisite for mutation-ready file and directory identity, not a general replacement for `resolve`. The four mutation tools are advertised by default on the trusted personal connector with no separate server-side write gate. They use exact fingerprint, absence, and patch-context preconditions with last-available pre-effect revalidation, atomic whole-file visibility and absent-destination no-replace where supported, and an explicitly accepted macOS external-writer window after final revalidation. Their destructive annotations, permanent-delete semantics, recovery boundary, fixed limits, and non-CAS concurrency contract live in `requirements/obsidian-mutation-tools.md`.
 
 Implemented and accepted core tools:
 
@@ -46,12 +46,21 @@ Implemented and accepted core tools:
 - `read_many`: preserve one to 20 ordered read requests under one aggregate byte budget, isolate item errors, and continue with a request-vector-bound cursor.
 - `grep`: search Markdown content in deterministic canonical-path order with bounded context, explicit work budgets, truthful coverage, and stateless continuation.
 - `read_document`: activation-gated PDF candidate that captures one confined, validated source up to 49,999,999 bytes and returns its original bytes as `application/pdf`. Unsupported document families fail closed and remain absent from the support claim.
+- `stat`: return canonical safe metadata and an opaque mutation fingerprint for one allowed regular file or empty directory.
+- `write`: create an absent file or atomically replace one complete file value under an exact precondition and the 512 KiB decoded-value cap.
+- `edit`: validate and atomically apply one 1-to-64-operation exact-context patch against a fingerprinted source.
+- `move`: exclusively rename one fingerprinted file or empty directory to an explicitly absent destination.
+- `delete`: permanently remove one fingerprinted file or empty directory without trash, undo, or recovery state.
 
 The local implementation derives registration, schemas, backend-ready names, and safe telemetry from one descriptor authority. Filesystem access is fd-anchored per operation, pagination re-scans the complete shallow directory while retaining only bounded candidates or cursor state, and JSONL/SQLite summaries cannot retain raw paths, entry names, patterns, selectors, cursor values, or content. Phase 1 proof covers the original `resolve`/`ls` boundary. Phase 2 proof is intentionally layered: synthetic fixtures cover retrieval semantics; current-vault probes cover broad `grep`, inventory, performance, and resources; and the authenticated model journey covers live `grep` -> `read_many` -> continued `read_many`. Together with five-tool metadata and exact release acceptance, those layers prove the accepted core surface without claiming every retrieval selector was exercised against the real vault.
 
 The 64 KiB encoded SDK result limit is the absolute context envelope for every Obsidian tool. Phase 2 retrieval may accept source/content work budgets up to 256 KiB, but it must page any larger selected work beneath that envelope with caller-carried cursors. Single-note Markdown parsing is capped at 8 MiB and 50,000 physical source lines so source-unit selection remains memory-bounded without another agent-facing option. `grep` keeps the 1 MiB materialization cap for regular expressions, while literal mode streams longer physical lines without retaining them whole and returns explicit bounded excerpts when line evidence would otherwise dominate the SDK envelope. Retrieval uses one shared coverage grammar; `grep` favors useful early pages and reports incomplete scope rather than continuing an expensive scan only to strengthen a completeness claim.
 
-Not implemented yet: `links`, `traverse`, `backlinks`, and `path_between`.
+Not implemented yet: `links`, `traverse`, `backlinks`, and `path_between`. The
+private vault-confined mutation foundation and public five-tool mutation delta
+are implemented and proven against built-gateway disposable local fixtures on
+macOS. Authenticated installed-connector discovery and the personal-vault
+disposable journey remain separate, explicitly authorized release work.
 
 ## Stateless Path Model
 
@@ -101,3 +110,4 @@ The detailed schemas, limits, resolution rules, acceptance criteria, and perform
 - `GAP-OBS-008`: Descriptor-owned safe telemetry summaries are complete for the accepted five-tool core surface; summaries for links, traversal, backlinks, and path discovery are not implemented.
 - `GAP-OBS-009`: The accepted five-tool summaries have local JSONL/SQLite proof plus live model-driven `ls`, `grep`, and continued `read_many` telemetry; graph-tool summaries have not been proven.
 - `GAP-OBS-010`: Live request-local `backlinks` and `path_between` are not implemented for pre-activation benchmark and proof.
+- `GAP-OBS-012`: The public mutation surface and built-gateway disposable-fixture proof are complete locally; authenticated installed-connector discovery and the personal-vault disposable mutation journey remain release-gated and require Eric's explicit approval.

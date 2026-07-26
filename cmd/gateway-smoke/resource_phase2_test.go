@@ -71,7 +71,7 @@ func TestPhase2ResourceFixtureLocksExactComplexityBoundaries(t *testing.T) {
 	}
 }
 
-func TestPhase2ResourceProbeExercisesBuiltFiveToolCandidate(t *testing.T) {
+func TestPhase2ResourceProbeExercisesBuiltTenToolCandidate(t *testing.T) {
 	candidate := buildGatewayCandidate(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -88,8 +88,8 @@ func TestPhase2ResourceProbeExercisesBuiltFiveToolCandidate(t *testing.T) {
 		t.Fatalf("probeCandidateResources: %v; report=%#v", err, report)
 	}
 	if !report.Passed || report.DescriptorCount != candidateDescriptorCount || !validResourceWorkload(report.Workload) ||
-		!validResourceBoundaries(report.Boundaries) || report.Idle.ToolCallRowsBefore != resourceConcurrentWarmupCalls+resourceMeasuredCalls+resourceConcurrentProbeCalls ||
-		report.Idle.ToolCallRowsAfter != resourceConcurrentWarmupCalls+resourceMeasuredCalls+resourceConcurrentProbeCalls {
+		!validResourceBoundaries(report.Boundaries) || report.Idle.ToolCallRowsBefore != resourceExpectedToolCallRows ||
+		report.Idle.ToolCallRowsAfter != resourceExpectedToolCallRows {
 		t.Fatalf("resource report = %#v", report)
 	}
 	encoded, err := json.Marshal(report)
@@ -105,7 +105,7 @@ func TestPhase2ResourceProbeExercisesBuiltFiveToolCandidate(t *testing.T) {
 	}
 }
 
-func TestPhase2ResourceProbeAcceptedControlUsesFiveToolSurface(t *testing.T) {
+func TestPhase2ResourceProbeAcceptedControlUsesTenToolSurface(t *testing.T) {
 	candidate := buildAcceptedGatewayCandidate(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -273,9 +273,9 @@ func passingPhase2ResourceGateReport() resourceReport {
 	report.Idle.DescriptorCountAfter = candidateDescriptorCount
 	report.Idle.FDBeforeCount = report.Baseline.FDImmediateCount
 	report.Idle.FDAfterCount = report.Baseline.FDImmediateCount
-	report.Idle.ExpectedToolCallRows = resourceConcurrentWarmupCalls + resourceMeasuredCalls + resourceConcurrentProbeCalls
-	report.Idle.ToolCallRowsBefore = resourceConcurrentWarmupCalls + resourceMeasuredCalls + resourceConcurrentProbeCalls
-	report.Idle.ToolCallRowsAfter = resourceConcurrentWarmupCalls + resourceMeasuredCalls + resourceConcurrentProbeCalls
+	report.Idle.ExpectedToolCallRows = resourceExpectedToolCallRows
+	report.Idle.ToolCallRowsBefore = resourceExpectedToolCallRows
+	report.Idle.ToolCallRowsAfter = resourceExpectedToolCallRows
 	report.Process = candidateProcessProfile{
 		BaselineCPUMicroseconds: report.Baseline.CPUTimeMicroseconds,
 		FinalCPUMicroseconds:    report.Idle.CPUTimeAfterMicroseconds,

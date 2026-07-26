@@ -31,8 +31,8 @@ func TestPhase1DescriptorsTeachCanonicalContinuation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Tools) != 5 {
-		t.Fatalf("tool count = %d, want 5", len(listed.Tools))
+	if len(listed.Tools) != 10 {
+		t.Fatalf("tool count = %d, want 10", len(listed.Tools))
 	}
 	byName := map[string]*sdk.Tool{}
 	for _, tool := range listed.Tools {

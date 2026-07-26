@@ -29,6 +29,9 @@ func main() {
 }
 
 func run(args []string, stderr io.Writer) (code int) {
+	if handled, helperCode := fsx.RunMutationHelperMode(args); handled {
+		return helperCode
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return runWithContext(ctx, args, stderr, newAuditLogger)

@@ -69,14 +69,17 @@ type Vault struct {
 // vaultTestHooks are instance-local deterministic race seams. They are
 // intentionally unavailable outside this package and nil in production.
 type vaultTestHooks struct {
-	beforeOpenSegment  func(depth int)
-	beforeOpenFile     func()
-	afterFileRead      func()
-	beforeListScan     func()
-	afterListBatch     func(filesScanned uint64)
-	afterEntryBaseline func()
-	afterWalkFile      func(filesVisited uint64)
-	beforeWalkDescend  func(rel string)
+	beforeOpenSegment    func(depth int)
+	beforeOpenFile       func()
+	afterFileRead        func()
+	beforeListScan       func()
+	afterListBatch       func(filesScanned uint64)
+	afterEntryBaseline   func()
+	afterWalkFile        func(filesVisited uint64)
+	beforeWalkDescend    func(rel string)
+	afterMutationRoot    func()
+	beforeMutationFinal  func()
+	beforeMutationEffect func()
 }
 
 type Resolved struct {

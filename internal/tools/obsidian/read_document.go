@@ -32,7 +32,7 @@ const (
 )
 
 // Set only on a locally proven activation candidate. Ordinary builds retain
-// the accepted five-tool surface.
+// the default ten-tool non-document surface.
 var documentReadingBuild = "disabled"
 
 func DocumentReadingCandidateEnabled() bool { return documentReadingBuild == "pdf_candidate" }

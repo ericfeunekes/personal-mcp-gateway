@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -272,11 +273,16 @@ func TestSQLiteTelemetryFromRealToolCallsIsSanitized(t *testing.T) {
 
 	listedTools := listedToolNames(t, ctx, session)
 	wantTools := []string{
+		obsidian.ToolDelete,
+		obsidian.ToolEdit,
 		obsidian.ToolGrep,
 		obsidian.ToolLS,
+		obsidian.ToolMove,
 		obsidian.ToolRead,
 		obsidian.ToolReadMany,
 		obsidian.ToolResolve,
+		obsidian.ToolStat,
+		obsidian.ToolWrite,
 	}
 	if !reflect.DeepEqual(listedTools, wantTools) {
 		t.Fatalf("tools = %#v, want %#v", listedTools, wantTools)
@@ -376,6 +382,130 @@ func TestSQLiteTelemetryFromRealToolCallsIsSanitized(t *testing.T) {
 	if findRow(rows, "tool.call", "unknown", "protocol_error", "unknown_tool") == nil {
 		t.Fatalf("missing sanitized unknown_tool row: %s", text)
 	}
+}
+
+// TestSQLiteMutationTelemetryDoesNotPersistVaultData exercises the public
+// mutation descriptors through the SDK and reads SQLite's indexed columns and
+// JSON body separately. It includes one successful move and refused write,
+// edit, and delete calls; the fixture vault is disposable and its only
+// successful effect is the explicit move under test.
+func TestSQLiteMutationTelemetryDoesNotPersistVaultData(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the confined mutation foundation is supported on darwin")
+	}
+	const (
+		runID       = "mutation-sqlite-nondisclosure"
+		source      = "home/projects/alpha.md"
+		writePath   = ".obsidian/telemetry-write-private.md"
+		destination = "telemetry-move-private.md"
+		writeValue  = "write-content-never-persist"
+		patchOld    = "patch-old-never-persist"
+		patchNew    = "patch-new-never-persist"
+	)
+	root := testutil.FixtureVault(t)
+	dbPath := filepath.Join(t.TempDir(), "mutation-telemetry.sqlite")
+	log, err := audit.NewSQLite(dbPath, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Validate(config.Config{Mode: config.ModeStdio, ObsidianRoot: root, Telemetry: config.TelemetrySQLite, TelemetryDB: dbPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	application, err := New(cfg, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, stop := connectPipeTransport(t, ctx, application)
+
+	stat := callTool[obsidian.StatOutput](t, ctx, session, obsidian.ToolStat, map[string]any{"path": source})
+	if !stat.OK || stat.Fingerprint == "" {
+		t.Fatalf("stat output = %#v", stat)
+	}
+	stale := alternateTestFingerprint(stat.Fingerprint)
+	callMutationError := func(name string, arguments map[string]any) {
+		t.Helper()
+		result, callErr := session.CallTool(ctx, &sdk.CallToolParams{Name: name, Arguments: arguments})
+		if callErr != nil {
+			t.Fatal(callErr)
+		}
+		if !result.IsError {
+			t.Fatalf("%s unexpectedly succeeded: %#v", name, result.StructuredContent)
+		}
+	}
+	callMutationError(obsidian.ToolWrite, map[string]any{
+		"path": writePath, "encoding": obsidian.MutationEncodingUTF8, "value": writeValue,
+		"precondition": map[string]any{"kind": obsidian.MutationPreconditionAbsent},
+	})
+	callMutationError(obsidian.ToolEdit, map[string]any{
+		"path": source, "fingerprint": stat.Fingerprint, "encoding": obsidian.MutationEncodingUTF8,
+		"replacements": []map[string]any{{"old": patchOld, "new": patchNew}},
+	})
+	moved := callTool[obsidian.MutationOutput](t, ctx, session, obsidian.ToolMove, map[string]any{
+		"source": source, "destination": destination, "fingerprint": stat.Fingerprint,
+		"destination_precondition": map[string]any{"kind": obsidian.MutationPreconditionAbsent},
+	})
+	if !moved.OK || moved.Path != destination {
+		t.Fatalf("move output = %#v", moved)
+	}
+	callMutationError(obsidian.ToolDelete, map[string]any{"path": source, "fingerprint": stale})
+	stop()
+	if err := log.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT tool, outcome, COALESCE(error_code, ''), body_json FROM audit_events WHERE event = 'tool.call' AND tool IN ('stat', 'write', 'edit', 'move', 'delete') ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var tool, outcome, code, body string
+		if err := rows.Scan(&tool, &outcome, &code, &body); err != nil {
+			t.Fatal(err)
+		}
+		seen[tool] = true
+		indexed := strings.Join([]string{tool, outcome, code}, "\n")
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+			t.Fatalf("%s body_json invalid: %v", tool, err)
+		}
+		decodedBody := mustJSON(t, decoded)
+		for _, forbidden := range []string{root, source, writePath, destination, writeValue, patchOld, patchNew, stat.Fingerprint, stale} {
+			if strings.Contains(indexed, forbidden) {
+				t.Fatalf("%s indexed columns leaked %q: %s", tool, forbidden, indexed)
+			}
+			if strings.Contains(decodedBody, forbidden) {
+				t.Fatalf("%s body_json leaked %q: %s", tool, forbidden, decodedBody)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range []string{obsidian.ToolStat, obsidian.ToolWrite, obsidian.ToolEdit, obsidian.ToolMove, obsidian.ToolDelete} {
+		if !seen[tool] {
+			t.Fatalf("missing SQLite mutation tool row for %s", tool)
+		}
+	}
+}
+
+func alternateTestFingerprint(value string) string {
+	if value == "" {
+		return ""
+	}
+	if value[0] == 'A' {
+		return "B" + value[1:]
+	}
+	return "A" + value[1:]
 }
 
 func TestJSONLAndSQLiteSafeSummariesMatchForRealCursorCalls(t *testing.T) {
@@ -1330,11 +1460,16 @@ func assertTools(t *testing.T, ctx context.Context, session *sdk.ClientSession) 
 	t.Helper()
 	got := listedToolNames(t, ctx, session)
 	want := []string{
+		obsidian.ToolDelete,
+		obsidian.ToolEdit,
 		obsidian.ToolGrep,
 		obsidian.ToolLS,
+		obsidian.ToolMove,
 		obsidian.ToolRead,
 		obsidian.ToolReadMany,
 		obsidian.ToolResolve,
+		obsidian.ToolStat,
+		obsidian.ToolWrite,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("tools = %#v, want %#v", got, want)
@@ -1354,25 +1489,30 @@ func listedToolNames(t *testing.T, ctx context.Context, session *sdk.ClientSessi
 	sort.Strings(got)
 	for _, tool := range tools.Tools {
 		assertRequiredToolInputs(t, tool)
-		assertReadOnlyToolAnnotations(t, tool)
+		assertToolAnnotations(t, tool)
 	}
 	return got
 }
 
-func assertReadOnlyToolAnnotations(t *testing.T, tool *sdk.Tool) {
+func assertToolAnnotations(t *testing.T, tool *sdk.Tool) {
 	t.Helper()
 	annotations := tool.Annotations
 	if annotations == nil {
 		t.Fatalf("%s annotations are missing", tool.Name)
 	}
-	if !annotations.ReadOnlyHint {
-		t.Fatalf("%s ReadOnlyHint = false, want true", tool.Name)
+	mutation := tool.Name == obsidian.ToolWrite || tool.Name == obsidian.ToolEdit || tool.Name == obsidian.ToolMove || tool.Name == obsidian.ToolDelete
+	if annotations.ReadOnlyHint == mutation {
+		t.Fatalf("%s ReadOnlyHint = %v, want %v", tool.Name, annotations.ReadOnlyHint, !mutation)
 	}
-	if annotations.DestructiveHint == nil || *annotations.DestructiveHint {
-		t.Fatalf("%s DestructiveHint = %v, want explicit false", tool.Name, annotations.DestructiveHint)
+	if annotations.DestructiveHint == nil || *annotations.DestructiveHint != mutation {
+		t.Fatalf("%s DestructiveHint = %v, want %v", tool.Name, annotations.DestructiveHint, mutation)
 	}
 	if annotations.OpenWorldHint == nil || *annotations.OpenWorldHint {
 		t.Fatalf("%s OpenWorldHint = %v, want explicit false", tool.Name, annotations.OpenWorldHint)
+	}
+	mutationPhase := mutation || tool.Name == obsidian.ToolStat
+	if annotations.IdempotentHint != mutationPhase {
+		t.Fatalf("%s IdempotentHint = %v, want %v", tool.Name, annotations.IdempotentHint, mutationPhase)
 	}
 }
 
@@ -1395,6 +1535,14 @@ func assertRequiredToolInputs(t *testing.T, tool *sdk.Tool) {
 		want = []string{"requests"}
 	case obsidian.ToolGrep:
 		want = []string{"pattern"}
+	case obsidian.ToolWrite:
+		want = []string{"path", "encoding", "value", "precondition"}
+	case obsidian.ToolEdit:
+		want = []string{"path", "fingerprint", "encoding", "replacements"}
+	case obsidian.ToolMove:
+		want = []string{"source", "destination", "fingerprint", "destination_precondition"}
+	case obsidian.ToolDelete:
+		want = []string{"path", "fingerprint"}
 	}
 	for _, required := range want {
 		if _, ok := schema.Properties[required]; !ok {

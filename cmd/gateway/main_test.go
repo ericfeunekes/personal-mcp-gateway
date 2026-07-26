@@ -100,8 +100,8 @@ func TestStdioSubprocessServesMCP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools() failed: %v\nstderr:\n%s", err, stderr.String())
 	}
-	if len(tools.Tools) != 5 {
-		t.Fatalf("tool count = %d, want 5", len(tools.Tools))
+	if len(tools.Tools) != 10 {
+		t.Fatalf("tool count = %d, want 10", len(tools.Tools))
 	}
 	wantTools := map[string]bool{
 		obsidian.ToolResolve:  true,
@@ -109,6 +109,11 @@ func TestStdioSubprocessServesMCP(t *testing.T) {
 		obsidian.ToolRead:     true,
 		obsidian.ToolReadMany: true,
 		obsidian.ToolGrep:     true,
+		obsidian.ToolStat:     true,
+		obsidian.ToolWrite:    true,
+		obsidian.ToolEdit:     true,
+		obsidian.ToolMove:     true,
+		obsidian.ToolDelete:   true,
 	}
 	for _, tool := range tools.Tools {
 		if !wantTools[tool.Name] {
@@ -166,14 +171,21 @@ func assertStdioPhase2DescriptorGrammar(t *testing.T, tool *sdk.Tool) {
 		obsidian.ToolRead:     obsidian.ReadDescription,
 		obsidian.ToolReadMany: obsidian.ReadManyDescription,
 		obsidian.ToolGrep:     obsidian.GrepDescription,
+		obsidian.ToolStat:     obsidian.StatDescription,
+		obsidian.ToolWrite:    obsidian.WriteDescription,
+		obsidian.ToolEdit:     obsidian.EditDescription,
+		obsidian.ToolMove:     obsidian.MoveDescription,
+		obsidian.ToolDelete:   obsidian.DeleteDescription,
 	}[tool.Name]
 	if !ok || tool.Description != description {
 		t.Fatalf("%s description = %q, want %q", tool.Name, tool.Description, description)
 	}
 	annotations := tool.Annotations
-	if annotations == nil || !annotations.ReadOnlyHint || annotations.DestructiveHint == nil || *annotations.DestructiveHint ||
-		annotations.OpenWorldHint == nil || *annotations.OpenWorldHint || annotations.IdempotentHint || annotations.Title != "" {
-		t.Fatalf("%s annotations = %#v, want exact read-only/non-destructive/closed-world hints", tool.Name, annotations)
+	mutation := tool.Name == obsidian.ToolWrite || tool.Name == obsidian.ToolEdit || tool.Name == obsidian.ToolMove || tool.Name == obsidian.ToolDelete
+	mutationPhase := mutation || tool.Name == obsidian.ToolStat
+	if annotations == nil || annotations.ReadOnlyHint == mutation || annotations.DestructiveHint == nil || *annotations.DestructiveHint != mutation ||
+		annotations.OpenWorldHint == nil || *annotations.OpenWorldHint || annotations.IdempotentHint != mutationPhase || annotations.Title != "" {
+		t.Fatalf("%s annotations = %#v, want exact mutation-phase hints", tool.Name, annotations)
 	}
 
 	schema := stdioSchemaObject(t, tool.InputSchema)
@@ -215,6 +227,16 @@ func assertStdioPhase2DescriptorGrammar(t *testing.T, tool *sdk.Tool) {
 		assertStdioIntegerContract(t, stdioSchemaProperty(t, schema, "limit"), 1, obsidian.MaxGrepLimit, obsidian.DefaultGrepLimit)
 		assertStdioIntegerContract(t, stdioSchemaProperty(t, schema, "max_files"), 1, obsidian.MaxGrepMaxFiles, obsidian.DefaultGrepMaxFiles)
 		assertStdioIntegerContract(t, stdioSchemaProperty(t, schema, "max_bytes"), 1, obsidian.MaxGrepMaxBytes, obsidian.DefaultGrepMaxBytes)
+	case obsidian.ToolStat:
+		assertStdioObjectShape(t, schema, []string{"base", "path"}, []string{"path"})
+	case obsidian.ToolWrite:
+		assertStdioObjectShape(t, schema, []string{"base", "encoding", "path", "precondition", "value"}, []string{"encoding", "path", "precondition", "value"})
+	case obsidian.ToolEdit:
+		assertStdioObjectShape(t, schema, []string{"base", "encoding", "fingerprint", "path", "replacements"}, []string{"encoding", "fingerprint", "path", "replacements"})
+	case obsidian.ToolMove:
+		assertStdioObjectShape(t, schema, []string{"base", "destination", "destination_precondition", "fingerprint", "source"}, []string{"destination", "destination_precondition", "fingerprint", "source"})
+	case obsidian.ToolDelete:
+		assertStdioObjectShape(t, schema, []string{"base", "fingerprint", "path"}, []string{"fingerprint", "path"})
 	}
 }
 

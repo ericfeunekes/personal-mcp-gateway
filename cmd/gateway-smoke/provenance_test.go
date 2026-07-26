@@ -264,6 +264,14 @@ func TestValidateReportSetRequiresOneMatchingReportPerMode(t *testing.T) {
 			t.Fatal("functional evidence drift was accepted")
 		}
 	})
+	t.Run("functional mutation boundary drift", func(t *testing.T) {
+		report := reports[0].(smokeReport)
+		report.SyntheticMutationBoundaries.AmbiguousContextRefused = false
+		drifted := write("functional-mutation-boundary-drift.json", report)
+		if err := validateReportSet([]string{drifted, performance, resource}, expected); err == nil {
+			t.Fatal("functional mutation boundary drift was accepted")
+		}
+	})
 	t.Run("performance evidence drift", func(t *testing.T) {
 		report := reports[1].(performanceReport)
 		report.SyntheticCorpus.MarkdownByteCount--
@@ -471,14 +479,19 @@ func completeCandidateReports(expected candidateProvenance) []any {
 	functional := smokeReport{
 		ReportKind: reportKindFunctional, ReportSchema: functionalReportSchema, SchemaVersion: smokeReportVersion, Passed: true,
 		CandidateCommit: expected.Commit, CandidateSHA256: expected.CandidateSHA256, DependencySHA256: expected.DependencySHA256,
-		ToolCalls: functionalToolCallCounts{Resolve: 2, LS: 3, Read: 1, ReadMany: 2, Grep: 1},
-		ToolCount: candidateDescriptorCount, SDKResultCount: 9, MaxSDKResultBytes: 1, MaxStructuredResultBytes: 1,
+		ToolCalls: functionalToolCallCounts{Resolve: 4, LS: 3, Read: 3, ReadMany: 2, Grep: 1, Stat: 12, Write: 14, Edit: 14, Move: 2, Delete: 8},
+		ToolCount: candidateDescriptorCount, SDKResultCount: 63, MaxSDKResultBytes: 1, MaxStructuredResultBytes: 1,
 		MaxClientLatencyMicroseconds: 1, TotalFilesScanned: 1, TotalBytesScanned: 1, TotalSourceEntriesValidated: 1,
 		CurrentResolveExistingDir: true,
 		SyntheticCanonicalResolve: true, SyntheticPageCount: 2, SyntheticEntryCount: 3,
 		SyntheticSecondProgress: true, SyntheticNoDuplicates: true, SyntheticFullEquivalence: true,
 		SyntheticReadSelected: true, SyntheticGrepMatchCount: 3, SyntheticReadManyPages: 2,
 		SyntheticReadManyContinued: true, SyntheticRetrievalEquivalent: true, SyntheticTelemetrySanitized: true,
+		SyntheticEmptyDirectoryStat: true,
+		SyntheticMutation:           syntheticMutationEvidence{CreateAbsent: true, ReplaceFingerprint: true, MultiReplacement: true, MoveAbsent: true, DeletePermanent: true, FollowOnObserved: true, CollisionRefused: true, StaleRefused: true, PatchRefused: true, DeniedRefused: true, ResidueFree: true},
+		SyntheticMutationBoundaries: mutationBoundaryEvidence{WriteAtLimit: true, WriteOverLimitRefused: true, EditAtLimit: true, EditResultOverLimitRefused: true, EditSourceOverLimitRefused: true, AmbiguousContextRefused: true, OverlappingContextRefused: true, ImmediateIsolationObserved: true, ResidueFree: true},
+		SyntheticHTTPMutation:       true,
+		SyntheticHTTPBoundaries:     true,
 	}
 	profileShape := passingPhase2PerformanceReportShape()
 	functional.CandidateRuntime = profileShape.CandidateRuntime

@@ -14,7 +14,7 @@ covers:
 
 An agent can efficiently discover relevant notes, read only the needed portions, follow authored Obsidian references with provenance, and batch explicit reads without hidden state or unbounded vault work. Every result is directly composable into the next call. Every partial search or traversal result says whether the returned results and the declared search scope are complete. Representative real-vault workflows meet explicit latency, scan-work, response-size, and idle-impact targets.
 
-The surface governed by this requirement remains read-only. The Obsidian vault is the source of truth. A separately governed mutation phase may add mutation-scoped metadata and effects only after `obsidian-mutation-tools.md` passes its feasibility and activation gates.
+The surface governed by this requirement remains read-only. The Obsidian vault is the source of truth. A separately governed mutation phase may add mutation-scoped metadata and effects only after `obsidian-mutation-tools.md` passes its foundation and activation gates.
 
 ## Why The Surface Changes
 
@@ -52,7 +52,7 @@ The MCP server is named `obsidian`. Tools inside it use these simple names:
 - `backlinks`
 - `path_between`
 
-Do not prefix tool names with `obsidian.` inside this server. Do not expose `search`, `stat`, `graph_search`, shell commands, generic filesystem operations, or generic query execution.
+Do not prefix tool names with `obsidian.` inside this server. On this read/retrieval surface, do not expose `search`, retrieval `stat`, `graph_search`, shell commands, generic filesystem operations, or generic query execution. The separately governed mutation phase may add its narrow fingerprint-acquisition `stat` together with the mutation surface.
 
 Every activated tool advertises read-only, non-destructive, closed-world MCP annotations. Enforcement remains in the implementation and vault boundary, not the annotations.
 
@@ -123,7 +123,7 @@ Tool-specific seed/item errors reuse these codes. Messages remain generic and sa
 
 Input: `path`, optional `base`.
 
-Returns the canonical vault-relative path, existence, type, size, and modified time. Missing paths are valid resolved results: their deepest existing ancestor uses stored spelling and the remaining suffix uses NFC-normalized caller spelling. Unsafe inputs are errors. This is the metadata operation; there is no separate `stat` tool.
+Returns the canonical vault-relative path, existence, type, size, and modified time. Missing paths are valid resolved results: their deepest existing ancestor uses stored spelling and the remaining suffix uses NFC-normalized caller spelling. Unsafe inputs are errors. This is the read/retrieval metadata operation; this requirement adds no separate retrieval `stat` tool. Mutation-scoped fingerprint acquisition is governed separately.
 
 ### `ls`
 

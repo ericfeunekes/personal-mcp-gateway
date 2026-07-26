@@ -23,6 +23,7 @@ const (
 
 type Tools struct {
 	vault        *fsx.Vault
+	mutator      *fsx.Mutator
 	openDir      func(context.Context, string, string) (listDirectory, error)
 	grepActivity *fsx.SchedulerActivity
 }
@@ -34,6 +35,7 @@ func New(vault *fsx.Vault) *Tools {
 func newTools(vault *fsx.Vault, grepActivity *fsx.SchedulerActivity) *Tools {
 	return &Tools{
 		vault:        vault,
+		mutator:      fsx.NewMutator(vault),
 		grepActivity: grepActivity,
 		openDir: func(ctx context.Context, base, path string) (listDirectory, error) {
 			return vault.OpenDir(ctx, base, path)
@@ -143,8 +145,11 @@ func descriptorsWithGrepTestHooks(vault *fsx.Vault, grepActivity *fsx.SchedulerA
 	if err != nil {
 		return nil, err
 	}
-	descriptors := []localmcp.ToolDescriptor{resolve, ls, read, readMany, grep}
-	return descriptors, nil
+	mutations, err := mutationDescriptors(tools)
+	if err != nil {
+		return nil, err
+	}
+	return append([]localmcp.ToolDescriptor{resolve, ls, read, readMany, grep}, mutations...), nil
 }
 
 func readOnlyToolAnnotations() *sdk.ToolAnnotations {
@@ -641,27 +646,34 @@ func summaryCoverageValue(value string) (localmcp.EnumValue, bool) {
 
 func summaryErrorValue(value string) (localmcp.EnumValue, bool) {
 	values := map[string]localmcp.EnumValue{
-		"path_denied":        localmcp.ValuePathDenied,
-		"symlink_denied":     localmcp.ValueSymlinkDenied,
-		"not_found":          localmcp.ValueNotFound,
-		"not_directory":      localmcp.ValueNotDirectory,
-		"limit_exceeded":     localmcp.ValueLimitExceeded,
-		"input_too_large":    localmcp.ValueInputTooLarge,
-		"timeout":            localmcp.ValueTimeout,
-		"canceled":           localmcp.ValueCanceled,
-		"source_changed":     localmcp.ValueSourceChange,
-		"cursor_invalid":     localmcp.ValueCursorInvalid,
-		"cursor_mismatch":    localmcp.ValueCursorMismatch,
-		"cursor_stale":       localmcp.ValueCursorStale,
-		"response_too_large": localmcp.ValueResponseTooLarge,
-		"unsupported_file":   localmcp.ValueUnsupportedFile,
-		"invalid_utf8":       localmcp.ValueInvalidUTF8,
-		"invalid_selector":   localmcp.ValueInvalidSelector,
-		"selector_not_found": localmcp.ValueSelectorNotFound,
-		"selector_ambiguous": localmcp.ValueSelectorAmbiguous,
-		"invalid_regex":      localmcp.ValueInvalidRegex,
-		"document_busy":      localmcp.ValueDocumentBusy,
-		"malformed_document": localmcp.ValueMalformedDocument,
+		"path_denied":         localmcp.ValuePathDenied,
+		"symlink_denied":      localmcp.ValueSymlinkDenied,
+		"not_found":           localmcp.ValueNotFound,
+		"not_directory":       localmcp.ValueNotDirectory,
+		"limit_exceeded":      localmcp.ValueLimitExceeded,
+		"input_too_large":     localmcp.ValueInputTooLarge,
+		"timeout":             localmcp.ValueTimeout,
+		"canceled":            localmcp.ValueCanceled,
+		"source_changed":      localmcp.ValueSourceChange,
+		"cursor_invalid":      localmcp.ValueCursorInvalid,
+		"cursor_mismatch":     localmcp.ValueCursorMismatch,
+		"cursor_stale":        localmcp.ValueCursorStale,
+		"response_too_large":  localmcp.ValueResponseTooLarge,
+		"unsupported_file":    localmcp.ValueUnsupportedFile,
+		"invalid_utf8":        localmcp.ValueInvalidUTF8,
+		"invalid_selector":    localmcp.ValueInvalidSelector,
+		"selector_not_found":  localmcp.ValueSelectorNotFound,
+		"selector_ambiguous":  localmcp.ValueSelectorAmbiguous,
+		"invalid_regex":       localmcp.ValueInvalidRegex,
+		"document_busy":       localmcp.ValueDocumentBusy,
+		"malformed_document":  localmcp.ValueMalformedDocument,
+		"destination_exists":  localmcp.ValueDestinationExists,
+		"not_empty":           localmcp.ValueNotEmpty,
+		"unsupported":         localmcp.ValueUnsupported,
+		"uncertain":           localmcp.ValueUncertain,
+		"invalid_fingerprint": localmcp.ValueInvalidFingerprint,
+		"invalid_encoding":    localmcp.ValueInvalidEncoding,
+		"invalid_patch":       localmcp.ValueInvalidPatch,
 	}
 	result, ok := values[value]
 	return result, ok
