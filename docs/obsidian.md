@@ -45,7 +45,7 @@ Implemented and accepted core tools:
 - `read`: select bounded content, heading, block, frontmatter, or outline evidence from one canonical Markdown path with source-bound continuation.
 - `read_many`: preserve one to 20 ordered read requests under one aggregate byte budget, isolate item errors, and continue with a request-vector-bound cursor.
 - `grep`: search Markdown content in deterministic canonical-path order with bounded context, explicit work budgets, truthful coverage, and stateless continuation.
-- `read_document`: activation-gated PDF candidate that captures one confined, validated source up to 49,999,999 bytes and returns its original bytes as `application/pdf`. Unsupported document families fail closed and remain absent from the support claim.
+- `read_document`: activation-gated PDF candidate that captures one confined, validated source up to 7,000,000 bytes and returns its original bytes as `application/pdf`. Unsupported document families fail closed and remain absent from the support claim.
 - `stat`: return canonical safe metadata and an opaque mutation fingerprint for one allowed regular file or empty directory.
 - `write`: create an absent file or atomically replace one complete file value under an exact precondition and the 512 KiB decoded-value cap.
 - `edit`: validate and atomically apply one 1-to-64-operation exact-context patch against a fingerprinted source.

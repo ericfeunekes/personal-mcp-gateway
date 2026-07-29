@@ -25,10 +25,10 @@ import (
 
 const (
 	ToolReadDocument        = "read_document"
-	DocumentMaxBytes        = 49_999_999
+	DocumentMaxBytes        = 7_000_000
 	documentChunkSize       = 256 << 10
 	documentMIMEPDF         = "application/pdf"
-	ReadDocumentDescription = "Return one supported vault document as its original native bytes for model-native reading. The PDF activation supports one explicit vault-relative .pdf path up to 49,999,999 bytes; other document formats remain unsupported."
+	ReadDocumentDescription = "Return one supported vault document as its original native bytes for model-native reading. The PDF activation supports one explicit vault-relative .pdf path up to 7,000,000 bytes; other document formats remain unsupported."
 )
 
 // Set only on a locally proven activation candidate. Ordinary builds retain

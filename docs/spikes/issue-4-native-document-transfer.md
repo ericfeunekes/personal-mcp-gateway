@@ -15,14 +15,14 @@ production capture, validation, handoff, and transport path.
 
 ## Local evidence required before release
 
-- The fixture is a valid, renderable two-page PDF of exactly 49,999,999 raw
+- The fixture is a valid, renderable two-page PDF of exactly 7,000,000 raw
   bytes, with terminal text and geometry on the final page.
 - Extracted text contains the byte-only nonce, and rendered visual inspection
   confirms the intended shape relationship.
-- The exact built candidate advertises six tools and returns the fixture with
+- The exact built candidate advertises eleven tools and returns the fixture with
   its URI, MIME type, PDF boundaries, and byte-only nonce unchanged.
 - The exact production candidate accepts that fixture and rejects an actual
-  50,000,000-byte `.pdf` through `read_document` with `input_too_large`.
+  7,000,001-byte `.pdf` through `read_document` with `input_too_large`.
 - The candidate HTTP proof also exercises competing reads, a stalled client,
   sanitized negative results, vault immutability, SQLite summary privacy, and
   retry after each released admission.
@@ -288,7 +288,7 @@ unsupported and keep Issue #4 open.
 
 Schema v4 replaces synthetic ceiling and row-count-only assertions with
 candidate-boundary evidence. The actual HTTP candidate must reject a real
-50,000,000-byte `.pdf`, return exact sanitized errors for malformed,
+7,000,001-byte `.pdf`, return exact sanitized errors for malformed,
 unsupported, hidden, and symlink inputs, leave the proof vault unchanged, and
 persist only decoded safe summaries whose indexed fields match their bodies.
 It also races two near-ceiling reads to prove one `document_busy` result and
@@ -305,3 +305,18 @@ final implementation tree, `make test` passed and the complete stdio/HTTP
 capacity gate passed in 157.10 seconds. Both independent closeout audits then
 reported no remaining contract-blocking gap for the local PDF slice. No
 release, installation, connector refresh, or authenticated call was performed.
+
+## Authenticated tunnel ceiling correction on 2026-07-29
+
+An authorized combined release proved the small text/visual and scanned/OCR PDF
+journeys through ChatGPT, but the exact 49,999,999-byte call produced a
+66,666,915-byte MCP response. Secure MCP Tunnel rejected the response with HTTP
+413 because its request/response payload limit is 10,485,760 bytes; ChatGPT
+surfaced the failed handoff as 502. The candidate was rolled back and remained
+unaccepted.
+
+The current candidate therefore caps raw PDFs at 7,000,000 bytes. Its complete
+inline MCP response is required to remain below 10 MiB before the tunnel adds
+its own envelope, and 7,000,001 bytes fails closed. Exact built-candidate stdio
+and HTTP capacity gates and the canonical suite pass at the revised boundary.
+Activation still requires a fresh authenticated exact-7,000,000-byte journey.

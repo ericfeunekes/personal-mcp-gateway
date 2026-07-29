@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -96,6 +97,12 @@ type documentTransferCapacityReport struct {
 	Idle                               idleResourceReport           `json:"idle"`
 	HTTP                               documentTransferHTTPReport   `json:"http"`
 }
+
+// Keep the complete MCP response beneath the control plane's observed 10 MiB
+// request/response limit before the authenticated tunnel gate adds its own
+// envelope. The selected 7,000,000-byte raw ceiling leaves additional headroom
+// beyond this direct-wire assertion.
+const documentTunnelPayloadLimitBytes = 10 * 1024 * 1024
 
 type documentTransferHTTPReport struct {
 	DescriptorCount              int    `json:"descriptor_count"`
@@ -1192,7 +1199,9 @@ func documentTransferCapacityReportPasses(report documentTransferCapacityReport)
 	return reportSchemaTuplePasses(report.ReportKind, report.ReportSchema, report.SchemaVersion) &&
 		candidateRuntimeProfilePasses(report.CandidateRuntime) && machineProfilePasses(report.Machine) &&
 		report.DescriptorCount == candidateDescriptorCount && report.RawBytes == obsidian.DocumentFixtureMaxBytes &&
-		report.RawSHA256 == obsidian.DocumentFixtureSHA256 && report.EncodedWireBytes > int64(report.RawBytes) && report.EncodedWireFrames == 1 &&
+		report.RawSHA256 == obsidian.DocumentFixtureSHA256 &&
+		report.EncodedWireBytes > int64(base64.StdEncoding.EncodedLen(report.RawBytes)) &&
+		report.EncodedWireBytes < documentTunnelPayloadLimitBytes && report.EncodedWireFrames == 1 &&
 		report.StructuredResultBytes > 0 && report.StructuredResultBytes <= obsidian.MaxStructuredResultBytes &&
 		documentTransferStdioEvidencePasses(report) && report.ArtifactSHA256 == report.RawSHA256 && report.PDFValidatorAccepted &&
 		report.TerminalTextExtractionPassed && validDigest(report.RenderedFinalPageSHA256) && report.RenderedGeometryPassed && report.FixtureLeakageCheckPassed &&

@@ -45,7 +45,7 @@ func TestVaultProofSnapshotDetectsSameSizeNestedContentMutation(t *testing.T) {
 	}
 }
 
-// This exact-size gate is opt-in because it transfers three 49,999,999-byte
+// This exact-size gate is opt-in because it transfers three 7,000,000-byte
 // resources over each production transport and observes bounded cleanup. The
 // release workflow runs the same production paths unconditionally before
 // activation.

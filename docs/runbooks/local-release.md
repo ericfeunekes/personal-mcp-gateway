@@ -39,7 +39,7 @@ path is:
    and `delete` are non-read-only and destructive. Before acceptance, complete
    both release-gated journeys in `docs/TESTING.md`: the explicitly approved
    disposable-target mutation journey with sanitized JSONL/SQLite readback, and
-   the PDF text/visual, scanned visual/OCR, and exact 49,999,999-byte native
+   the PDF text/visual, scanned visual/OCR, and exact 7,000,000-byte native
    materialization journeys. The installed mutation journey requires Eric's
    explicit approval before its first vault effect, then a pause and second
    fresh approval immediately before permanent `delete`; the first approval

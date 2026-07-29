@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"os"
@@ -138,6 +139,31 @@ func TestValidateReportSetRequiresOneMatchingReportPerMode(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("document tunnel wire boundary", func(t *testing.T) {
+		base64Minimum := int64(base64.StdEncoding.EncodedLen(obsidian.DocumentFixtureMaxBytes))
+		for _, test := range []struct {
+			name    string
+			bytes   int64
+			wantErr bool
+		}{
+			{name: "below base64 minimum", bytes: base64Minimum - 1, wantErr: true},
+			{name: "base64 minimum without envelope", bytes: base64Minimum, wantErr: true},
+			{name: "limit minus one", bytes: documentTunnelPayloadLimitBytes - 1},
+			{name: "limit", bytes: documentTunnelPayloadLimitBytes, wantErr: true},
+			{name: "limit plus one", bytes: documentTunnelPayloadLimitBytes + 1, wantErr: true},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				report := passingDocumentCapacityReport(expected)
+				report.EncodedWireBytes = test.bytes
+				candidate := write(test.name+".json", report)
+				err := validateReportSet([]string{functional, performance, resource, candidate}, expected)
+				if (err != nil) != test.wantErr {
+					t.Fatalf("encoded wire bytes=%d error=%v, wantErr=%t", test.bytes, err, test.wantErr)
+				}
+			})
+		}
+	})
 
 	t.Run("cross-report drift", func(t *testing.T) {
 		report := reports[2].(resourceReport)
@@ -339,7 +365,8 @@ func passingDocumentCapacityReport(expected candidateProvenance) documentTransfe
 		ReportKind: reportKindDocument, ReportSchema: documentTransferCapacitySchema, SchemaVersion: documentTransferCapacityVersion, Passed: true,
 		CandidateCommit: expected.Commit, CandidateSHA256: expected.CandidateSHA256, DependencySHA256: expected.DependencySHA256,
 		CandidateRuntime: shape.CandidateRuntime, Machine: shape.Machine, DescriptorCount: candidateDescriptorCount,
-		RawBytes: obsidian.DocumentFixtureMaxBytes, RawSHA256: obsidian.DocumentFixtureSHA256, EncodedWireBytes: obsidian.DocumentFixtureMaxBytes + 1,
+		RawBytes: obsidian.DocumentFixtureMaxBytes, RawSHA256: obsidian.DocumentFixtureSHA256,
+		EncodedWireBytes:  int64(base64.StdEncoding.EncodedLen(obsidian.DocumentFixtureMaxBytes) + 512),
 		EncodedWireFrames: 1, StructuredResultBytes: 1, CallLatencyMicroseconds: 1, SequentialCallCount: 3, CallWithinTwoSeconds: true,
 		NonceOffset: obsidian.DocumentFixtureMaxBytes - 1, FinalPageObjectOffset: obsidian.DocumentFixtureMaxBytes - 2,
 		VisualEvidenceOffset: obsidian.DocumentFixtureMaxBytes - 3, TerminalEvidenceWithin4096Bytes: true,

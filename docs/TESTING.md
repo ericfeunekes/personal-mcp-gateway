@@ -164,13 +164,13 @@ is available only through explicit `--resource-control` with `--resource-json`;
 it exists for paired regression comparison and is rejected by canonical
 report-set validation.
 
-The PDF activation candidate additionally runs an exact 49,999,999-byte gate.
+The PDF activation candidate additionally runs an exact 7,000,000-byte gate.
 It generates and independently validates/renders a two-page PDF, makes three
 sequential native calls in one stdio session and three in one HTTP session,
 checks original SHA-256/MIME/terminal evidence, and launches the built candidate
 for both transports. The HTTP half additionally proves that one of two competing
 near-ceiling calls fails with sanitized `document_busy`, retry succeeds, an
-actual 50,000,000-byte `.pdf` and four other unsafe inputs return their exact
+actual 7,000,001-byte `.pdf` and four other unsafe inputs return their exact
 structured errors without native content, and the vault is unchanged. A real
 stalled client must produce no server failure before 29 seconds, then hit the
 30-second response deadline and emit a sanitized operational write-failure
@@ -394,7 +394,7 @@ journey. Use only generated synthetic fixtures whose staging, use, and removal
 Eric has explicitly authorized at the live vault boundary; those are separate
 vault effects and are not implied by release authorization. In fresh
 authenticated ChatGPT runs, require model-selected `read_document` for a small text/visual PDF, a
-scanned visual/OCR PDF, and an exact 49,999,999-byte PDF. Generate expected
+scanned visual/OCR PDF, and an exact 7,000,000-byte PDF. Generate expected
 text and visual challenge answers outside the model prompt and conversation;
 the prompt asks for the evidence but never supplies the expected values. The
 exact-ceiling fixture must place distinct answer-bearing evidence on its first

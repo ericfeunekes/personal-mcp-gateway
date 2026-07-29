@@ -10,7 +10,7 @@ const (
 	DocumentFixtureMaxBytes = DocumentMaxBytes
 	RejectedDocumentBytes   = DocumentMaxBytes + 1
 	DocumentFixtureNonce    = "NDX-7Q4M-9K2P-R8VC"
-	DocumentFixtureSHA256   = "935d656fc945ea0c002af42af4ae62edfbf48f22aeb03872c7a4b51fe6beb69d"
+	DocumentFixtureSHA256   = "9c063f55fb86cab8299f09ea85284b90ec06b37ce4ce46bbdb7fa6fc16ae0d0a"
 )
 
 func DocumentSizeAllowed(size int) bool { return size > 0 && int64(size) <= DocumentMaxBytes }
