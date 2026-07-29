@@ -31,16 +31,24 @@ and `pending`; it does not mean the candidate is accepted. The successful fast
 path is:
 
 1. Run `make release` and retain the printed full release ID.
-2. Complete the current tool phase's authenticated journey. For the accepted
-   five-tool core-retrieval phase, refresh metadata for server `obsidian`,
-   observe exactly `grep`, `ls`, `read`, `read_many`, and `resolve` as read-only,
-   and have a fresh model run select `grep`, then `read_many` over returned
-   canonical paths under a deliberately small aggregate budget, then continue
-   `read_many` with the same ordered requests and budget plus the returned
-   cursor. Later graph phases replace this with their own newly activated
-   representative journey.
-3. Run `make release-accept RELEASE_ID=<full-id>` after success, or
-   `make release-rollback RELEASE_ID=<full-id>` after failure.
+2. Complete the current tool phase's authenticated journey. The current combined
+   candidate must refresh metadata for server `obsidian` and observe exactly
+   `grep`, `ls`, `read`, `read_many`, `resolve`, `stat`, `write`, `edit`, `move`,
+   `delete`, and `read_document`. The five retrieval tools, `stat`, and
+   `read_document` are read-only and non-destructive; `write`, `edit`, `move`,
+   and `delete` are non-read-only and destructive. Before acceptance, complete
+   both release-gated journeys in `docs/TESTING.md`: the explicitly approved
+   disposable-target mutation journey with sanitized JSONL/SQLite readback, and
+   the PDF text/visual, scanned visual/OCR, and exact 49,999,999-byte native
+   materialization journeys. The installed mutation journey requires Eric's
+   explicit approval before its first vault effect, then a pause and second
+   fresh approval immediately before permanent `delete`; the first approval
+   does not pre-authorize the final call.
+3. Run `make release-accept RELEASE_ID=<full-id>` only after both journeys
+   succeed. After either journey fails, run `make release-rollback
+   RELEASE_ID=<full-id>`, refresh authenticated metadata back to the prior
+   schema, and make one successful prior-contract call before closing the
+   attempt.
 
 `make release-status` is the diagnostic and interruption-recovery path, not a
 mandatory fast-path step. It prints bounded state and exact next-command records
