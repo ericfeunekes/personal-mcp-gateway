@@ -1172,7 +1172,7 @@ func probeSyntheticHTTPMutation(ctx context.Context, gatewayBin, root string, re
 		return errors.New("synthetic HTTP MCP connection failed")
 	}
 	defer session.Close()
-	if count, err := requireExactToolList(ctx, session); err != nil || count != 10 {
+	if count, err := requireExactToolList(ctx, session); err != nil || count != candidateDescriptorCount {
 		return errors.New("synthetic HTTP descriptor gate failed")
 	}
 	if _, err := probeSyntheticMutation(ctx, session, root, report); err != nil {

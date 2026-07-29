@@ -102,10 +102,12 @@ The release fast path is:
 
 ```bash
 make release
-# Refresh server `obsidian` metadata; observe exactly `grep`, `ls`, `read`,
-# `read_many`, and `resolve` as read-only; and have a fresh model run select
-# `grep`, then `read_many`, then continue `read_many` with the same ordered
-# requests and aggregate budget plus the returned cursor.
+# Refresh server `obsidian` metadata and observe the exact eleven-tool combined
+# candidate: `grep`, `ls`, `read`, `read_many`, `resolve`, `stat`, `write`,
+# `edit`, `move`, `delete`, and `read_document`, with truthful read-only and
+# destructive annotations. Complete the mutation and PDF authenticated journeys
+# in `docs/TESTING.md`; obtain approval before the first installed vault effect,
+# then pause for second fresh approval immediately before permanent `delete`.
 make release-accept RELEASE_ID=<full-id>
 ```
 

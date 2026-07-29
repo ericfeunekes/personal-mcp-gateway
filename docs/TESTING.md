@@ -348,9 +348,9 @@ The release proof contract is split into three current-state cells:
      go test -count=1 ./internal/releaseactivation \
      -run '^TestLiveFirstInstallLaunchAgent(Rollback|Helper)$'
    ```
-3. In the authenticated OpenAI surface, refresh metadata for server `obsidian`
-   and observe exactly `grep`, `ls`, `read`, `read_many`, and `resolve`, all
-   read-only. In a fresh model run, require exactly `grep` -> `read_many` ->
+3. For the historical accepted five-tool phase, refresh metadata for server
+   `obsidian` and observe exactly `grep`, `ls`, `read`, `read_many`, and
+   `resolve`, all read-only. In a fresh model run, require exactly `grep` -> `read_many` ->
    continued `read_many`: both batch calls use the same three ordered requests
    and `max_bytes=300`, the first omits a cursor, and only the continuation
    supplies the returned cursor. Only then run exact-ID acceptance and prove the
@@ -358,13 +358,21 @@ The release proof contract is split into three current-state cells:
    `clear`. Later graph phases replace this prerequisite journey with their own
    newly activated representative calls.
 
-For the mutation release, replace cell 3's five-tool journey with an explicitly
-safe disposable-target journey. Authenticated refresh must show the accepted
-baseline plus exactly the five mutation tools with the annotations above. A
-fresh model run must perform `stat` on an
-allowed disposable file or directory as needed, then one complete
-`write(create)` -> `stat` -> structured multi-replacement `edit` -> `move` ->
-permanent `delete` journey on a single disposable allowed target. Sanitized
+For the current combined mutation and PDF release, replace cell 3's historical
+journey with an exact eleven-tool refresh: `grep`, `ls`, `read`, `read_many`,
+`resolve`, `stat`, `write`, `edit`, `move`, `delete`, and `read_document`. The
+five retrieval tools, `stat`, and `read_document` must be read-only and
+non-destructive; `write`, `edit`, `move`, and `delete` must be non-read-only and
+destructive. No ten-tool refresh or cached pre-candidate metadata satisfies
+this gate.
+
+After explicit approval to begin the live personal-vault journey, a fresh model
+run must perform `stat` on an allowed disposable file or directory as needed,
+then `write(create)` -> `stat` -> structured multi-replacement `edit` -> `move`
+on a single disposable allowed target. Follow-on `stat` and `resolve` must
+confirm the moved state, then the operator pauses and obtains a second fresh
+explicit approval immediately before the permanent `delete` call. Approval to
+begin the journey does not pre-authorize that final call. Sanitized
 JSONL and SQLite readback must show the corresponding operation kinds and
 outcomes without retaining the target, destination, content, patch values, or
 fingerprints. Only after that journey may exact-ID acceptance return the release
@@ -374,10 +382,38 @@ closed; local SDK success alone never authorizes acceptance.
 
 The installed-service step above is a real mutation of Eric's personal vault.
 Even though the target must be newly created, disposable, and allowed, the
-operator must obtain Eric's explicit authenticated approval immediately before
-running that live journey. Issue scope and a passing local candidate authorize
-implementation and preparation; they do not authorize the permanent-delete
-call against the installed personal-vault connector.
+operator must obtain Eric's explicit authenticated approval before its first
+effect and pause again for fresh approval immediately before permanent delete.
+If the second approval is withheld, leave the moved disposable target unchanged
+and report that cleanup still requires authorization. Issue scope and a passing
+local candidate authorize implementation and preparation; they do not authorize
+either live-vault effect or cleanup.
+
+For the current combined candidate, cell 3 also requires the PDF activation
+journey. Use only generated synthetic fixtures whose staging, use, and removal
+Eric has explicitly authorized at the live vault boundary; those are separate
+vault effects and are not implied by release authorization. In fresh
+authenticated ChatGPT runs, require model-selected `read_document` for a small text/visual PDF, a
+scanned visual/OCR PDF, and an exact 49,999,999-byte PDF. Generate expected
+text and visual challenge answers outside the model prompt and conversation;
+the prompt asks for the evidence but never supplies the expected values. The
+exact-ceiling fixture must place distinct answer-bearing evidence on its first
+and final logical pages, with the final evidence sourced from an object near the
+tail of the bound file; the model must report both correctly. Each run must use
+the connector-returned artifact through ChatGPT's one-time native-materialization
+consent without a manual download, upload, or reattachment. The operator
+compares the returned interpretation with the withheld fixture answers.
+Sanitized JSONL and SQLite readback must show PDF format, outcome, latency, and bounded
+byte counts without retaining the path, name, bytes, extracted content, or
+opaque identity. The local original-byte/MIME and capacity reports remain
+required but do not substitute for this authenticated client proof. Retain only
+the boolean challenge comparisons and sanitized journey outcome; discard the
+challenge values after evaluation.
+
+The combined release may be accepted only after both the disposable-target
+mutation journey and all three PDF journeys succeed. Failure of either lane
+requires the same exact rollback, authenticated refresh to the prior schema,
+and successful prior-contract call described above.
 
 Record sanitized release identity and hash prefixes, the authenticated surface,
 metadata observation, selected tool/journey, and terminal outcome. Do not record
