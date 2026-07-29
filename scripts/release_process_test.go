@@ -353,7 +353,8 @@ func TestLocalReleaseInstallsExactCandidate(t *testing.T) {
 	}
 	if got := strings.Count(string(logData), "go:run ./cmd/gateway-smoke"); got != 5 ||
 		!strings.Contains(string(logData), "--report-json") || !strings.Contains(string(logData), "--performance-json") ||
-		!strings.Contains(string(logData), "--document-transfer-json") || !strings.Contains(string(logData), "--resource-json") || !strings.Contains(string(logData), "--validate-report-set") ||
+		!strings.Contains(string(logData), "--document-transfer-json") || !strings.Contains(string(logData), "/document-vault/document-capacity.pdf") ||
+		!strings.Contains(string(logData), "--resource-json") || !strings.Contains(string(logData), "--validate-report-set") ||
 		strings.Count(string(logData), "--candidate-commit 0123456789abcdef0123456789abcdef01234567") != 5 ||
 		strings.Count(string(logData), "--candidate-sha256 "+string(candidateIdentity)) != 5 ||
 		strings.Count(string(logData), "--dependency-sha256 "+string(dependencyIdentity)) != 5 {

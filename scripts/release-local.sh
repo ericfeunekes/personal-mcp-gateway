@@ -148,7 +148,11 @@ functional_report="$report_dir/functional.json"
 performance_report="$report_dir/performance.json"
 resource_report="$report_dir/resource.json"
 document_report="$report_dir/document.json"
-document_artifact="$report_dir/document-capacity.pdf"
+document_vault="$report_dir/document-vault"
+if ! mkdir "$document_vault" 2>/dev/null || ! chmod 700 "$document_vault" 2>/dev/null; then
+  fail release_smoke_failed 'release report setup failed'
+fi
+document_artifact="$document_vault/document-capacity.pdf"
 cd "$repo_root" 2>/dev/null || fail release_config 'release configuration is invalid'
 
 if ! capture_report "$functional_report" "$go_command" run ./cmd/gateway-smoke \

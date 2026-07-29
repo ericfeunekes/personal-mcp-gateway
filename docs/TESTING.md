@@ -202,9 +202,10 @@ ISSUE4_EXACT_DOCUMENT_GATE=1 GOCACHE=$(pwd)/.gocache \
 ```
 
 `make release` runs the same document-capacity report unconditionally against
-the exact candidate SHA before installation. Its fixture is written only in
-the private release-report directory; validator backing is unlinked before any
-document bytes are written.
+the exact candidate SHA before installation. Its fixture is written only in an
+isolated proof-vault subdirectory of the private release-report directory, so
+candidate/report artifacts cannot enter the vault snapshot; validator backing
+is unlinked before any document bytes are written.
 
 ## Mutation Phase Proof Contract
 
