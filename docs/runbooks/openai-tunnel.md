@@ -111,9 +111,13 @@ make release
 make release-accept RELEASE_ID=<full-id>
 ```
 
-If metadata refresh or the model-selected journey fails, run the exact rollback
-command printed by release, refresh authenticated metadata back to the prior
-schema, and make one successful prior-contract call:
+If metadata refresh or the model-selected journey does not complete, apply the
+dispatch-based classification in `docs/TESTING.md`. Run the exact rollback
+command only when evidence implicates the candidate or installed runtime. Keep
+the candidate pending and unaccepted for a proven pre-dispatch ChatGPT policy,
+authentication, usage-limit, or client/UI failure while that external gate is
+resolved. After rollback, refresh authenticated metadata back to the prior
+schema and make one successful prior-contract call:
 
 ```bash
 make release-rollback RELEASE_ID=<full-id>

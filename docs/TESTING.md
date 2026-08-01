@@ -377,9 +377,29 @@ begin the journey does not pre-authorize that final call. Sanitized
 JSONL and SQLite readback must show the corresponding operation kinds and
 outcomes without retaining the target, destination, content, patch values, or
 fingerprints. Only after that journey may exact-ID acceptance return the release
-to `clear`. Any failure requires exact rollback, authenticated metadata refresh
-to the prior schema, and a successful prior-contract call before the attempt is
-closed; local SDK success alone never authorizes acceptance.
+to `clear`. Do not treat every unsuccessful ChatGPT turn as a candidate
+failure. First determine whether the requested tool call reached the installed
+gateway by correlating the authenticated turn with sanitized telemetry and the
+expected vault state:
+
+- Roll back when evidence implicates the candidate or installed runtime. This
+  includes an advertised tool or annotation mismatch, a dispatched call that
+  returns an unexpected error or result, a missing or unsafe telemetry record
+  for a dispatched call, an incorrect vault postcondition, an installed-hash
+  mismatch, or failed health/readiness.
+- Do not roll back for a failure outside the candidate that is proven to occur
+  before dispatch, such as a ChatGPT policy refusal, authentication failure,
+  usage limit, or client/UI outage. Keep the release `pending`, do not accept
+  it, record the no-dispatch evidence, and retry or resolve the external gate.
+- If dispatch cannot be established, inspect both sanitized telemetry and the
+  exact allowed target before acting. Keep the release pending while the cause
+  is resolved; roll back only if candidate/runtime failure is found or Eric
+  chooses to abandon the pending attempt.
+
+After a candidate/runtime failure, exact rollback, authenticated metadata
+refresh to the prior schema, and a successful prior-contract call are required
+before the attempt is closed. Local SDK success alone never authorizes
+acceptance.
 
 The installed-service step above is a real mutation of Eric's personal vault.
 Even though the target must be newly created, disposable, and allowed, the
@@ -413,8 +433,13 @@ challenge values after evaluation.
 
 The combined release may be accepted only after both the disposable-target
 mutation journey and all three PDF journeys succeed. Failure of either lane
-requires the same exact rollback, authenticated refresh to the prior schema,
-and successful prior-contract call described above.
+blocks acceptance. Apply the dispatch-based classification above: roll back for
+candidate or installed-runtime failure, but keep the candidate pending for a
+proven pre-dispatch client/platform failure while that external gate is
+resolved. A model interpretation mismatch after successful native delivery also
+blocks acceptance but does not by itself prove a gateway failure; inspect the
+fixture, transfer evidence, and client result before deciding whether rollback
+is warranted.
 
 Record sanitized release identity and hash prefixes, the authenticated surface,
 metadata observation, selected tool/journey, and terminal outcome. Do not record

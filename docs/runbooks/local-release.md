@@ -45,9 +45,14 @@ path is:
    fresh approval immediately before permanent `delete`; the first approval
    does not pre-authorize the final call.
 3. Run `make release-accept RELEASE_ID=<full-id>` only after both journeys
-   succeed. After either journey fails, run `make release-rollback
-   RELEASE_ID=<full-id>`, refresh authenticated metadata back to the prior
-   schema, and make one successful prior-contract call before closing the
+   succeed. If a journey does not complete, classify it using the dispatch
+   evidence required by `docs/TESTING.md`. Roll back only when telemetry,
+   vault postconditions, installed identity, or health/readiness implicates the
+   candidate or installed runtime. A ChatGPT policy refusal, authentication
+   failure, usage limit, or client/UI outage proven to occur before gateway
+   dispatch leaves the candidate `pending` and unaccepted while the external
+   gate is resolved. After rollback, refresh authenticated metadata back to the
+   prior schema and make one successful prior-contract call before closing the
    attempt.
 
 `make release-status` is the diagnostic and interruption-recovery path, not a
