@@ -373,10 +373,12 @@ then `write(create)` -> `stat` -> structured multi-replacement `edit` -> `move`
 on a single disposable allowed target. Follow-on `stat` and `resolve` must
 confirm the moved state, then the operator pauses and obtains a second fresh
 explicit approval immediately before the permanent `delete` call. Approval to
-begin the journey does not pre-authorize that final call. Sanitized
-JSONL and SQLite readback must show the corresponding operation kinds and
-outcomes without retaining the target, destination, content, patch values, or
-fingerprints. Only after that journey may exact-ID acceptance return the release
+begin the journey does not pre-authorize that final call. Sanitized readback
+from the installed runtime's configured telemetry sink must show the
+corresponding operation kinds and outcomes without retaining the target,
+destination, content, patch values, or fingerprints. The current LaunchAgent
+uses SQLite; the local candidate proof matrix separately covers equivalent
+JSONL output. Only after that journey may exact-ID acceptance return the release
 to `clear`. Do not treat every unsuccessful ChatGPT turn as a candidate
 failure. First determine whether the requested tool call reached the installed
 gateway by correlating the authenticated turn with sanitized telemetry and the
@@ -424,9 +426,11 @@ tail of the bound file; the model must report both correctly. Each run must use
 the connector-returned artifact through ChatGPT's one-time native-materialization
 consent without a manual download, upload, or reattachment. The operator
 compares the returned interpretation with the withheld fixture answers.
-Sanitized JSONL and SQLite readback must show PDF format, outcome, latency, and bounded
-byte counts without retaining the path, name, bytes, extracted content, or
-opaque identity. The local original-byte/MIME and capacity reports remain
+Sanitized readback from the installed runtime's configured telemetry sink must
+show PDF format, outcome, latency, and bounded byte counts without retaining the
+path, name, bytes, extracted content, or opaque identity. The current
+LaunchAgent uses SQLite; equivalent JSONL privacy is proven by the local
+candidate matrix. The local original-byte/MIME and capacity reports remain
 required but do not substitute for this authenticated client proof. Retain only
 the boolean challenge comparisons and sanitized journey outcome; discard the
 challenge values after evaluation.

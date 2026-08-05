@@ -110,4 +110,3 @@ The detailed schemas, limits, resolution rules, acceptance criteria, and perform
 - `GAP-OBS-008`: Descriptor-owned safe telemetry summaries are complete for the accepted five-tool core surface; summaries for links, traversal, backlinks, and path discovery are not implemented.
 - `GAP-OBS-009`: The accepted five-tool summaries have local JSONL/SQLite proof plus live model-driven `ls`, `grep`, and continued `read_many` telemetry; graph-tool summaries have not been proven.
 - `GAP-OBS-010`: Live request-local `backlinks` and `path_between` are not implemented for pre-activation benchmark and proof.
-- `GAP-OBS-012`: The public mutation surface and built-gateway disposable-fixture proof are complete locally; authenticated installed-connector discovery and the personal-vault disposable mutation journey remain release-gated and require Eric's explicit approval.

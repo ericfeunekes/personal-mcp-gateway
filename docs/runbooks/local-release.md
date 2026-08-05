@@ -38,7 +38,8 @@ path is:
    `read_document` are read-only and non-destructive; `write`, `edit`, `move`,
    and `delete` are non-read-only and destructive. Before acceptance, complete
    both release-gated journeys in `docs/TESTING.md`: the explicitly approved
-   disposable-target mutation journey with sanitized JSONL/SQLite readback, and
+   disposable-target mutation journey with sanitized readback from the
+   installed runtime's configured telemetry sink, and
    the PDF text/visual, scanned visual/OCR, and exact 7,000,000-byte native
    materialization journeys. The installed mutation journey requires Eric's
    explicit approval before its first vault effect, then a pause and second

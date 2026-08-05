@@ -183,17 +183,6 @@ ChatGPT connector, `launchd`, or always-on suitability.
 
 ## Current Gaps
 
-- `GAP-GW-002`: OpenAI Secure MCP Tunnel stdio startup, control-plane
-  polling, ChatGPT app installation, and connector `initialize`/`tools/list`
-  are proven, including exact discovery of the accepted five-tool surface. A
-  bounded model-driven ChatGPT `ls` call, a fresh ChatGPT core-retrieval
-  journey, and historical two-tool Codex `resolve` calls are proven; current
-  five-tool Codex/ChatGPT-web `resolve` calls are not independently proven.
 - `GAP-GW-003`: Current `launchd` readiness, bounded idle impact, and automatic
   crash recovery are proven. A multi-day soak and sleep/wake recovery cycle
   have not been measured.
-- `GAP-GW-006`: Sanitized model-driven ChatGPT `ls`, `grep`, and continued
-  `read_many` telemetry plus historical two-tool Codex `resolve` telemetry have
-  been harvested. Current five-tool Codex/ChatGPT-web `resolve` telemetry has
-  not. Local SDK subprocess and HTTP tests continue to prove the broader
-  server-side matrix only.
