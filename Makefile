@@ -54,7 +54,6 @@ build-release-controller:
 	@mkdir -p "$(BUILD_DIR)" "$(GOCACHE)"
 	@env CGO_ENABLED=1 GOCACHE="$(GOCACHE)" "$(GO)" build \
 		-buildvcs=false -trimpath \
-		-ldflags "-X main.rollbackOnlyBuild=enabled" \
 		-o "$(RELEASE_ACTIVATION_CANDIDATE)" ./cmd/release-activation
 
 release:
