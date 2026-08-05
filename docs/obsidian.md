@@ -10,7 +10,7 @@ covers:
 
 # Obsidian Domain
 
-The `obsidian` MCP server exposes narrow agent tools over one configured local vault. The accepted implementation combines read-only discovery and Markdown retrieval with the separately governed mutation surface; native-document capabilities remain activation-gated. Correctness must not depend on hidden server-side state.
+The `obsidian` MCP server exposes narrow agent tools over one configured local vault. The accepted implementation combines read-only discovery and Markdown retrieval with the separately governed mutation surface and activated native PDF reading; additional native-document representations remain activation-gated. Correctness must not depend on hidden server-side state.
 
 ## Tool Vocabulary
 
@@ -30,7 +30,7 @@ Target tool names:
 - `edit`
 - `move`
 - `delete`
-- `read_document` (activation-gated implementation and format support)
+- `read_document` (PDF activated; additional representations activation-gated)
 
 The MCP server name is the public integration boundary. Do not prefix tool names with `obsidian.` inside this server, and do not add non-Obsidian tools to this server. Do not expose separate `search`, `graph_search`, shell, or generic query tools: `grep` is the content-discovery entry point, `resolve` owns canonical path resolution and existence, and mutation-scoped `stat` owns opaque fingerprint acquisition for existing files and directories.
 
@@ -45,7 +45,7 @@ Implemented and accepted core tools:
 - `read`: select bounded content, heading, block, frontmatter, or outline evidence from one canonical Markdown path with source-bound continuation.
 - `read_many`: preserve one to 20 ordered read requests under one aggregate byte budget, isolate item errors, and continue with a request-vector-bound cursor.
 - `grep`: search Markdown content in deterministic canonical-path order with bounded context, explicit work budgets, truthful coverage, and stateless continuation.
-- `read_document`: activation-gated PDF candidate that captures one confined, validated source up to 7,000,000 bytes and returns its original bytes as `application/pdf`. Unsupported document families fail closed and remain absent from the support claim.
+- `read_document`: accepted PDF support that captures one confined, validated source up to 7,000,000 bytes and returns its original bytes as `application/pdf`. Unsupported document representations fail closed and remain absent from the support claim.
 - `stat`: return canonical safe metadata and an opaque mutation fingerprint for one allowed regular file or empty directory.
 - `write`: create an absent file or atomically replace one complete file value under an exact precondition and the 512 KiB decoded-value cap.
 - `edit`: validate and atomically apply one 1-to-64-operation exact-context patch against a fingerprinted source.
@@ -56,11 +56,10 @@ The local implementation derives registration, schemas, backend-ready names, and
 
 The 64 KiB encoded SDK result limit is the absolute context envelope for every Obsidian tool. Phase 2 retrieval may accept source/content work budgets up to 256 KiB, but it must page any larger selected work beneath that envelope with caller-carried cursors. Single-note Markdown parsing is capped at 8 MiB and 50,000 physical source lines so source-unit selection remains memory-bounded without another agent-facing option. `grep` keeps the 1 MiB materialization cap for regular expressions, while literal mode streams longer physical lines without retaining them whole and returns explicit bounded excerpts when line evidence would otherwise dominate the SDK envelope. Retrieval uses one shared coverage grammar; `grep` favors useful early pages and reports incomplete scope rather than continuing an expensive scan only to strengthen a completeness claim.
 
-Not implemented yet: `links`, `traverse`, `backlinks`, and `path_between`. The
-private vault-confined mutation foundation and public five-tool mutation delta
-are implemented and proven against built-gateway disposable local fixtures on
-macOS. Authenticated installed-connector discovery and the personal-vault
-disposable journey remain separate, explicitly authorized release work.
+Not implemented yet: `links`, `traverse`, `backlinks`, and `path_between`.
+The private vault-confined mutation foundation, public five-tool mutation
+delta, and authenticated installed-connector journey are implemented and
+proven. Issue #12 owns the remaining non-PDF native-document representations.
 
 ## Stateless Path Model
 

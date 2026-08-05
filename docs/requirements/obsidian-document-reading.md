@@ -1,6 +1,6 @@
 ---
 title: "Obsidian Native Document Reading"
-status: pdf-activation-candidate
+status: pdf-activated
 purpose: "Define native ChatGPT access to supported vault documents without widening the gateway into a generic file server."
 covers:
   - internal/tools/obsidian/
@@ -83,4 +83,6 @@ Small embedded PDF delivery passed the authenticated interaction boundary with t
 | Presentations | unsupported | Per-format validation and authenticated native interpretation |
 | Spreadsheets and delimited data | unsupported | Per-format validation and authenticated native interpretation |
 
-Issue #4 remains open until every target family is activated or explicitly dispositioned. A PDF-only merge is an activation slice, not completion of the whole issue.
+Issue #4 completed the activated PDF delivery. Issue #12 owns the remaining
+local document representations until each is activated or explicitly
+dispositioned under its scoped evidence and approval contract.
