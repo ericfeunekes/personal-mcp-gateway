@@ -31,30 +31,27 @@ and `pending`; it does not mean the candidate is accepted. The successful fast
 path is:
 
 1. Run `make release` and retain the printed full release ID.
-2. Complete the current tool phase's authenticated journey. The current combined
-   candidate must refresh metadata for server `obsidian` and observe exactly
-   `grep`, `ls`, `read`, `read_many`, `resolve`, `stat`, `write`, `edit`, `move`,
-   `delete`, and `read_document`. The five retrieval tools, `stat`, and
-   `read_document` are read-only and non-destructive; `write`, `edit`, `move`,
-   and `delete` are non-read-only and destructive. Before acceptance, complete
-   both release-gated journeys in `docs/TESTING.md`: the explicitly approved
-   disposable-target mutation journey with sanitized readback from the
-   installed runtime's configured telemetry sink, and
-   the PDF text/visual, scanned visual/OCR, and exact 7,000,000-byte native
-   materialization journeys. The installed mutation journey requires Eric's
-   explicit approval before its first vault effect, then a pause and second
-   fresh approval immediately before permanent `delete`; the first approval
-   does not pre-authorize the final call.
-3. Run `make release-accept RELEASE_ID=<full-id>` only after both journeys
-   succeed. If a journey does not complete, classify it using the dispatch
+2. Complete the applicable change-scoped proof selected from
+   `docs/TESTING.md`. For mixed changes, all applicable rows are cumulative.
+   Use the smallest set of real journeys that could falsify the behavior changed
+   by this release. Refresh and inspect connector metadata
+   only when tool names, schemas, descriptions, or annotations changed. Reuse
+   accepted activation proof for unaffected mutation, native-document, and
+   lifecycle surfaces; do not replay those journeys as general release
+   ceremony.
+   A lifecycle change's installed rollback drill consumes the first pending
+   transaction; after that drill returns `clear`, rerun `make release` from the
+   same clean commit and use the second pending ID for acceptance.
+3. Run `make release-accept RELEASE_ID=<full-id>` only after the selected proof
+   succeeds. If it does not complete, classify it using the dispatch
    evidence required by `docs/TESTING.md`. Roll back only when telemetry,
-   vault postconditions, installed identity, or health/readiness implicates the
-   candidate or installed runtime. A ChatGPT policy refusal, authentication
-   failure, usage limit, or client/UI outage proven to occur before gateway
-   dispatch leaves the candidate `pending` and unaccepted while the external
-   gate is resolved. After rollback, refresh authenticated metadata back to the
-   prior schema and make one successful prior-contract call before closing the
-   attempt.
+   relevant postconditions, installed identity, or health/readiness implicates
+   the candidate or installed runtime. An unrelated ChatGPT or model failure is
+   recorded separately and does not block acceptance of a journey that already
+   proved the changed boundary. After rollback, require a prior-contract call
+   only when the connector contract changed or the failure crossed that
+   boundary; otherwise the restored hash, ready runtime, and relevant
+   postconditions close the rollback.
 
 `make release-status` is the diagnostic and interruption-recovery path, not a
 mandatory fast-path step. It prints bounded state and exact next-command records
@@ -222,14 +219,15 @@ repeated-call resource, and 60-second idle gates passed; the installed bytes
 match the candidate; and the restarted tunnel became live and ready. It
 deliberately ends `pending`.
 
-Acceptance requires separate authenticated connector metadata refresh and
-model-selected proof, followed by the exact-ID accept command. Before treating
-the new lifecycle as proven, also complete the process/crash/concurrency suite,
-an isolated first-install unload check, and an installed pending-to-rollback
-drill that restores the previous hash and ready runtime. These checks prove
-process-crash recovery on the tested machine; they do not prove power-loss
-durability, sleep/wake recovery, multi-day soak behavior, every prompt
-formulation, or future-machine/vault performance.
+Acceptance requires the applicable change-scoped proof in `docs/TESTING.md`,
+followed by the exact-ID accept command. A lifecycle-only change uses the
+process/crash/concurrency suite, isolated first-install unload check, installed
+pending-to-rollback drill, then a fresh release of the same clean commit and
+`make verify-live`; it needs a fresh
+authenticated tool call only when the connector boundary also changed. These
+checks prove process-crash recovery on the tested machine; they do not prove
+power-loss durability, sleep/wake recovery, multi-day soak behavior, every
+prompt formulation, or future-machine/vault performance.
 
 Run the isolated first-install check with the opt-in command in
 `docs/TESTING.md`. It creates only a randomized temporary LaunchAgent, target,
@@ -237,5 +235,7 @@ and release store; success requires real `launchctl print` absence, target
 removal, and a clear transaction after rollback.
 
 The current accepted proof record is maintained in `docs/TESTING.md`. Repeat
-all three proof cells after changing lifecycle policy, dispatcher capture,
-installed-target replacement, supervision bindings, or advertised MCP tools.
+cells 1 and 2 after changing lifecycle policy, dispatcher capture,
+installed-target replacement, or supervision bindings. Add cell 3 only when
+the connector boundary also changed. Advertised MCP changes select their
+applicable cell-3 rows.

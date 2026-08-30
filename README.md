@@ -87,11 +87,14 @@ make release-rollback RELEASE_ID=<full-id>
 
 `make release` runs the local test, exact-candidate MCP, installation, restart,
 and readiness gates, then leaves the exact candidate `pending` with its previous
-runtime still recoverable. Refresh connector metadata and complete the required
-model-selected journey, then accept that full release ID; use exact rollback if
-the external proof fails. `make release-status` is a bounded diagnostic and
-recovery aid, not an extra step on the successful fast path. Local readiness is
-never treated as model proof.
+runtime still recoverable. Refresh connector metadata when model-visible
+descriptors changed; make a representative affected call when their wording or
+schema governs tool selection or arguments. Complete every other applicable
+change-scoped journey, then accept that full release ID; use exact rollback when
+evidence implicates the candidate.
+`make release-status` is a bounded diagnostic and recovery aid, not an extra
+step on the successful fast path. Local readiness is not substituted for model
+proof when model-visible behavior changed.
 
 Release/update and repo-owned restart/install/uninstall commands share one
 fail-fast lifecycle lock. `make update` may fetch without it, but revalidates a
@@ -99,7 +102,9 @@ clear release slot, clean `main`, and the fetched ref while holding the lock
 before fast-forwarding. An interrupted `prepared` release is resumed by rerunning
 `make release` with the same immutable candidate rather than rebuilding it.
 
-See `docs/runbooks/local-release.md` for setup, target details, and proof
+See the [local release runbook](docs/runbooks/local-release.md),
+[testing contract](docs/TESTING.md), [tunnel runbook](docs/runbooks/openai-tunnel.md),
+and [gateway behavior](docs/gateway.md) for setup, proof, and operational
 boundaries.
 
 Telemetry defaults to a local SQLite database under the user config directory.
