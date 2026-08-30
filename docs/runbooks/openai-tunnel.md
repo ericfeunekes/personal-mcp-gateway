@@ -102,22 +102,21 @@ The release fast path is:
 
 ```bash
 make release
-# Refresh server `obsidian` metadata and observe the exact eleven-tool combined
-# candidate: `grep`, `ls`, `read`, `read_many`, `resolve`, `stat`, `write`,
-# `edit`, `move`, `delete`, and `read_document`, with truthful read-only and
-# destructive annotations. Complete the mutation and PDF authenticated journeys
-# in `docs/TESTING.md`; obtain approval before the first installed vault effect,
-# then pause for second fresh approval immediately before permanent `delete`.
+# Run every applicable change-scoped proof row from `docs/TESTING.md`.
+# Refresh connector metadata only when its model-visible contract changed.
+# Mutation and native-document activation journeys apply only when those
+# surfaces changed; their explicit vault-effect approvals remain mandatory.
 make release-accept RELEASE_ID=<full-id>
 ```
 
-If metadata refresh or the model-selected journey does not complete, apply the
-dispatch-based classification in `docs/TESTING.md`. Run the exact rollback
-command only when evidence implicates the candidate or installed runtime. Keep
-the candidate pending and unaccepted for a proven pre-dispatch ChatGPT policy,
-authentication, usage-limit, or client/UI failure while that external gate is
-resolved. After rollback, refresh authenticated metadata back to the prior
-schema and make one successful prior-contract call:
+If the selected model journey does not complete, apply the dispatch-based
+classification in `docs/TESTING.md`. Run the exact rollback command only when
+evidence implicates the candidate or installed runtime. Keep the candidate
+pending for an external failure that prevents proof of the changed boundary;
+an unrelated client or model failure does not expand the acceptance gate. After
+rollback of a connector-affecting candidate, refresh prior metadata and make one
+successful prior-contract call. A lifecycle-only rollback closes on restored
+hash and readiness without waiting on ChatGPT:
 
 ```bash
 make release-rollback RELEASE_ID=<full-id>
@@ -125,9 +124,11 @@ make release-rollback RELEASE_ID=<full-id>
 
 `make release` must end `pending` after local readiness and retain the previous
 runtime. `make release-status` is available after interruption or for bounded
-diagnostics; it is not an extra mandatory step in the successful flow. Never
-accept based only on `/healthz`, `/readyz`, `make verify-live`, local MCP smoke,
-or an old model journey. Record only the authenticated surface, server, metadata
+diagnostics; it is not an extra mandatory step in the successful flow. For a
+connector-affecting release, never accept based only on `/healthz`, `/readyz`,
+`make verify-live`, local MCP smoke, or an old model journey. A lifecycle-only
+change follows cells 1 and 2 in `docs/TESTING.md` without inventing an unrelated
+model journey. Record only the authenticated surface, server, metadata
 observation, selected tool/journey, sanitized release/hash identity, and outcome;
 do not record prompts, note names/content, vault paths, credentials, or raw
 environment data.
@@ -136,8 +137,9 @@ The accepted five-tool core-retrieval implementation has passed the merge
 suite, installed rollback drills, and a fresh authenticated
 `grep` -> `read_many` -> continued `read_many` pending-to-accept journey.
 The sanitized accepted record is maintained in `docs/TESTING.md`. Repeat the
-same boundaries after changing the advertised tools or release lifecycle; the
-historical evidence below proves only the original tunnel setup.
+affected cell-3 rows after changing advertised tools. Release-lifecycle changes
+repeat cells 1 and 2 and add cell 3 only when the connector boundary also
+changed. The historical evidence below proves only the original tunnel setup.
 
 ## Current Boundary
 

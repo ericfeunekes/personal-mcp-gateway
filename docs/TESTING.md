@@ -359,25 +359,46 @@ The release proof contract is split into three current-state cells:
      go test -count=1 ./internal/releaseactivation \
      -run '^TestLiveFirstInstallLaunchAgent(Rollback|Helper)$'
    ```
-3. For the historical accepted five-tool phase, refresh metadata for server
-   `obsidian` and observe exactly `grep`, `ls`, `read`, `read_many`, and
-   `resolve`, all read-only. In a fresh model run, require exactly `grep` -> `read_many` ->
-   continued `read_many`: both batch calls use the same three ordered requests
-   and `max_bytes=300`, the first omits a cursor, and only the continuation
-   supplies the returned cursor. Only then run exact-ID acceptance and prove the
-   candidate hash remains installed, ready, and the transaction returns to
-   `clear`. Later graph phases replace this prerequisite journey with their own
-   newly activated representative calls.
 
-For the current combined mutation and PDF release, replace cell 3's historical
-journey with an exact eleven-tool refresh: `grep`, `ls`, `read`, `read_many`,
-`resolve`, `stat`, `write`, `edit`, `move`, `delete`, and `read_document`. The
-five retrieval tools, `stat`, and `read_document` must be read-only and
-non-destructive; `write`, `edit`, `move`, and `delete` must be non-read-only and
-destructive. No ten-tool refresh or cached pre-candidate metadata satisfies
-this gate.
+   The installed pending-to-rollback drill consumes that release ID and returns
+   the transaction to `clear`. After it passes, rerun `make release` from the
+   same clean commit. Apply any remaining current-change proof to the new
+   pending transaction and accept only its new full ID. A rolled-back ID is
+   never accept-capable.
+3. Select QA from every changed boundary. Before release, state in one sentence
+   what changed and which applicable rows below can falsify it. Applicable rows
+   are cumulative for mixed changes. A surface-specific row such as mutation or
+   native documents cannot be downgraded to the generic metadata row, although
+   metadata refresh still applies when its descriptor changed. Run no broader
+   journey merely because the server also exposes other capabilities.
 
-After explicit approval to begin the live personal-vault journey, a fresh model
+| Changed boundary | Required change-scoped proof |
+| --- | --- |
+| Tool names, schemas, descriptions, or annotations | Refresh server `obsidian` metadata, inspect the affected descriptors, and make a representative affected call when the wording or schema governs tool selection or arguments. |
+| Retrieval paths, output coordinates, batching, search, or cursors | Run one user-like read-only journey through the affected operations. Continue a cursor only when continuation changed. Prefer one coherent task over one call per tool. |
+| Mutation schemas, preconditions, fingerprints, result paths, or filesystem effects | Run the approved disposable mutation journey below and read back its sanitized telemetry and vault postconditions. |
+| Native-document capture, validation, MIME, admission limit, serializer, transport, or document-tool schema | Run the three PDF journeys below plus the local byte/MIME and capacity gates. Metadata-only wording changes need only metadata refresh and a representative call. |
+| Tunnel, authentication, MCP transport, or client handoff | Run a representative affected call through the authenticated tunnel and correlate sanitized dispatch evidence. |
+| Telemetry summaries or privacy | Exercise the affected tool/outcome and inspect the configured sink for the changed bounded fields and prohibited data. |
+| Release controller, installed replacement, supervision, or recovery | Run cells 1 and 2 and `make verify-live`; add an authenticated tool call only when the connector boundary also changed. |
+| Internal performance or allocation work with unchanged public behavior | Use the candidate-bound local performance/resource gates and one representative affected tool call. Do not replay unrelated destructive or native-document activation journeys. |
+| Documentation only | No binary release or authenticated model journey is required. Verify the documented commands and affected documentation neighborhood. |
+
+Examples: a retrieval-plus-telemetry change selects both rows and may satisfy
+them with one coherent retrieval journey plus sink readback. A lifecycle-only
+change selects the lifecycle row. A documentation-only change does not create a
+release transaction. After rollback of a lifecycle-only candidate, the restored
+hash and ready runtime close the tested boundary without waiting for ChatGPT.
+
+Exact tool-set and full activation journeys remain durable proof for the release
+that introduced or changed those surfaces. They are not universal prerequisites
+for every later release. Only the applicable current-change rows gate exact-ID
+acceptance. An unrelated ChatGPT/model issue discovered during exploratory QA is
+recorded as a separate finding; it does not block acceptance only when evidence
+shows it neither prevents nor contradicts any selected boundary.
+
+When the current change selects the mutation row, explicit approval to begin
+the live personal-vault journey is required. A fresh model
 run must perform `stat` on an allowed disposable file or directory as needed,
 then `write(create)` -> `stat` -> structured multi-replacement `edit` -> `move`
 on a single disposable allowed target. Follow-on `stat` and `resolve` must
@@ -408,10 +429,12 @@ expected vault state:
   is resolved; roll back only if candidate/runtime failure is found or Eric
   chooses to abandon the pending attempt.
 
-After a candidate/runtime failure, exact rollback, authenticated metadata
-refresh to the prior schema, and a successful prior-contract call are required
-before the attempt is closed. Local SDK success alone never authorizes
-acceptance.
+After a candidate/runtime failure, exact rollback must restore the prior hash,
+ready runtime, and relevant postconditions. When the connector contract changed
+or the failure crossed the authenticated connector boundary, also refresh prior
+metadata and make one successful prior-contract call. A lifecycle-only rollback
+does not wait on unrelated ChatGPT availability. Local SDK success alone never
+authorizes acceptance of a connector-affecting candidate.
 
 The installed-service step above is a real mutation of Eric's personal vault.
 Even though the target must be newly created, disposable, and allowed, the
@@ -422,10 +445,10 @@ and report that cleanup still requires authorization. Issue scope and a passing
 local candidate authorize implementation and preparation; they do not authorize
 either live-vault effect or cleanup.
 
-For the current combined candidate, cell 3 also requires the PDF activation
-journey. Use only generated synthetic fixtures whose staging, use, and removal
-Eric has explicitly authorized at the live vault boundary; those are separate
-vault effects and are not implied by release authorization. In fresh
+When the current change selects the native-document row, use only generated
+synthetic fixtures whose staging, use, and removal Eric has explicitly
+authorized at the live vault boundary; those are separate vault effects and are
+not implied by release authorization. In fresh
 authenticated ChatGPT runs, require model-selected `read_document` for a small text/visual PDF, a
 scanned visual/OCR PDF, and an exact 7,000,000-byte PDF. Generate expected
 text and visual challenge answers outside the model prompt and conversation;
@@ -445,15 +468,14 @@ required but do not substitute for this authenticated client proof. Retain only
 the boolean challenge comparisons and sanitized journey outcome; discard the
 challenge values after evaluation.
 
-The combined release may be accepted only after both the disposable-target
-mutation journey and all three PDF journeys succeed. Failure of either lane
-blocks acceptance. Apply the dispatch-based classification above: roll back for
-candidate or installed-runtime failure, but keep the candidate pending for a
-proven pre-dispatch client/platform failure while that external gate is
-resolved. A model interpretation mismatch after successful native delivery also
-blocks acceptance but does not by itself prove a gateway failure; inspect the
-fixture, transfer evidence, and client result before deciding whether rollback
-is warranted.
+Every applicable row must succeed; unaffected rows are not acceptance gates.
+Apply the dispatch-based classification above: roll back for candidate or
+installed-runtime failure, but keep the candidate pending for an external
+failure that prevents selected proof. A model interpretation mismatch after
+successful native delivery blocks when native interpretation is selected or
+when it contradicts another selected client-visible boundary. Otherwise it is
+a separate client QA finding, not a reason to hold the release transaction
+open.
 
 Record sanitized release identity and hash prefixes, the authenticated surface,
 metadata observation, selected tool/journey, and terminal outcome. Do not record

@@ -73,14 +73,15 @@ and latest foreground tunnel proof.
 The canonical always-on local deployment is `make release`, documented in
 `docs/runbooks/local-release.md`. It builds and probes the gateway binary before
 atomically replacing the configured `GATEWAY_BIN`, restarts and verifies the
-LaunchAgent, and then leaves the release pending authenticated metadata/model
-proof. Local readiness is necessary but does not accept a candidate.
+LaunchAgent, and then leaves the release pending change-scoped proof. Connector
+metadata and model proof apply when the release changed that boundary; local
+lifecycle proof applies to lifecycle-only changes.
 
 The public release contract has four commands: `make release`, diagnostic
 `make release-status`, and exact-ID `make release-accept` /
 `make release-rollback`. The normal fast path omits status: release, refresh
-connector metadata and complete the required model-selected journey, then
-accept or roll back that same full release ID. An interrupted `prepared`
+connector metadata when it changed and complete every applicable proof row in
+`docs/TESTING.md`, then accept or roll back that same full release ID. An interrupted `prepared`
 transaction resumes through `make release` with the same immutable candidate.
 Missing or malformed release IDs are rejected by the same controller grammar
 as every other invalid release command; Make adds only its ordinary bounded
