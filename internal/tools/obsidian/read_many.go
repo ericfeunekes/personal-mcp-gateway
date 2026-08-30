@@ -35,6 +35,7 @@ type readManyCursorState struct {
 }
 
 type readManyQuery struct {
+	Base     string                 `json:"base"`
 	Requests []readManyQueryRequest `json:"requests"`
 	MaxBytes int                    `json:"max_bytes"`
 }
@@ -46,6 +47,8 @@ type readManyQueryRequest struct {
 }
 
 type preparedReadManyRequest struct {
+	base         string
+	outputBase   string
 	request      ReadRequest
 	query        readManyQueryRequest
 	effectiveMax int
@@ -136,7 +139,7 @@ func (t *Tools) readManyPage(ctx context.Context, input ReadManyInput) (*sdk.Cal
 		}
 
 		readInput := ReadInput{
-			Path: request.request.Path, Base: request.request.Base,
+			Path: request.request.Path, Base: request.base,
 			Selector: request.request.Selector, MaxBytes: attemptMax, Cursor: innerCursor,
 		}
 		if request.selectorErr == nil {
@@ -196,7 +199,7 @@ func (t *Tools) readManyPage(ctx context.Context, input ReadManyInput) (*sdk.Cal
 					return readManyErrorResult(ErrResponseTooLarge, nil, work, index, len(prepared)-index)
 				}
 				if readInput.Cursor != "" {
-					rebased, rebaseErr := rebaseReadManyInnerCursor(t.vault, readInput.Cursor, request.query.Path, request.query.Selector, readInput.MaxBytes, lower)
+					rebased, rebaseErr := rebaseReadManyInnerCursor(t.vault, readInput.Cursor, request.outputBase, request.query.Path, request.query.Selector, readInput.MaxBytes, lower)
 					if rebaseErr != nil {
 						return readManyErrorResult(rebaseErr, nil, work, index, len(prepared)-index)
 					}
@@ -246,15 +249,19 @@ func prepareReadMany(input ReadManyInput) ([]preparedReadManyRequest, int, Curso
 		return nil, 0, CursorQueryHash{}, &fsx.Error{Code: fsx.CodeLimitExceeded}
 	}
 
+	coordinate, err := newPathCoordinate(input.Base)
+	if err != nil {
+		return nil, 0, CursorQueryHash{}, err
+	}
 	prepared := make([]preparedReadManyRequest, len(input.Requests))
-	query := readManyQuery{Requests: make([]readManyQueryRequest, len(input.Requests)), MaxBytes: aggregateMax}
+	query := readManyQuery{Base: coordinate.base, Requests: make([]readManyQueryRequest, len(input.Requests)), MaxBytes: aggregateMax}
 	for i, request := range input.Requests {
-		normalizedPath, pathErr := fsx.NormalizePath(request.Base, request.Path)
+		normalizedPath, pathErr := fsx.NormalizePath(input.Base, request.Path)
 		if pathErr != nil {
 			// Invalid path shapes remain item-local outcomes. Preserve their
 			// bounded raw identity in the query digest so continuation cannot
 			// change the failing request into another request.
-			normalizedPath = request.Base + "\x00" + request.Path
+			normalizedPath = coordinate.base + "\x00" + request.Path
 		}
 		_, selector, selectorErr := normalizeReadSelector(request.Selector)
 		if selectorErr != nil && request.Selector != nil {
@@ -268,7 +275,7 @@ func prepareReadMany(input ReadManyInput) ([]preparedReadManyRequest, int, Curso
 			Path: normalizedPath, Selector: selector, MaxBytes: maxBytes,
 		}
 		prepared[i] = preparedReadManyRequest{
-			request: request, query: queryRequest, effectiveMax: maxBytes,
+			base: input.Base, outputBase: coordinate.base, request: request, query: queryRequest, effectiveMax: maxBytes,
 			selectorErr: selectorErr, maxBytesErr: maxBytesErr,
 		}
 		query.Requests[i] = queryRequest
@@ -346,7 +353,7 @@ func (t *Tools) revalidateReadManyObservations(ctx context.Context, requests []p
 func (t *Tools) revalidateReadManyObservation(ctx context.Context, request preparedReadManyRequest, observation readManyObservation) (bool, error) {
 	switch observation.Outcome {
 	case readManyOutcomeFile:
-		file, err := t.vault.OpenFile(ctx, request.request.Base, request.request.Path)
+		file, err := t.vault.OpenFile(ctx, request.base, request.request.Path)
 		if err != nil {
 			if terminatingRetrievalError(err) {
 				return true, err
@@ -359,7 +366,7 @@ func (t *Tools) revalidateReadManyObservation(ctx context.Context, request prepa
 		}
 		return true, nil
 	case readManyOutcomeMissing:
-		file, err := t.vault.OpenFile(ctx, request.request.Base, request.request.Path)
+		file, err := t.vault.OpenFile(ctx, request.base, request.request.Path)
 		if file != nil {
 			_ = file.Close()
 			return true, ErrCursorStale
@@ -391,7 +398,7 @@ func (t *Tools) revalidateReadManyStatic(ctx context.Context, request preparedRe
 		}
 		return false, ErrCursorStale
 	}
-	file, err := t.vault.OpenFile(ctx, request.request.Base, request.request.Path)
+	file, err := t.vault.OpenFile(ctx, request.base, request.request.Path)
 	if file != nil {
 		_ = file.Close()
 		return true, ErrCursorStale
@@ -410,7 +417,7 @@ func (t *Tools) rebaseCurrentReadManyCursor(ctx context.Context, request prepare
 		return "", ErrCursorInvalid
 	}
 	oldQuery, err := RetrievalQueryHash(ToolRead, normalizedReadQuery{
-		Path: request.query.Path, Selector: request.query.Selector, MaxBytes: oldMax,
+		Base: request.outputBase, Path: request.query.Path, Selector: request.query.Selector, MaxBytes: oldMax,
 	})
 	if err != nil {
 		return "", err
@@ -419,7 +426,7 @@ func (t *Tools) rebaseCurrentReadManyCursor(ctx context.Context, request prepare
 	if err != nil {
 		return "", err
 	}
-	file, err := t.vault.OpenFile(ctx, request.request.Base, request.request.Path)
+	file, err := t.vault.OpenFile(ctx, request.base, request.request.Path)
 	if err != nil {
 		if terminatingRetrievalError(err) {
 			return "", err
@@ -431,7 +438,7 @@ func (t *Tools) rebaseCurrentReadManyCursor(ctx context.Context, request prepare
 		return "", ErrCursorStale
 	}
 	newQuery, err := RetrievalQueryHash(ToolRead, normalizedReadQuery{
-		Path: request.query.Path, Selector: request.query.Selector, MaxBytes: newMax,
+		Base: request.outputBase, Path: request.query.Path, Selector: request.query.Selector, MaxBytes: newMax,
 	})
 	if err != nil {
 		return "", err
@@ -584,11 +591,11 @@ func lowerReadManyAttempt(current, selected, excess int) int {
 	return max(basis-reduction, 1)
 }
 
-func rebaseReadManyInnerCursor(sealer cursorSealer, cursor, requestPath string, selector ReadSelector, oldMax, newMax int) (string, error) {
+func rebaseReadManyInnerCursor(sealer cursorSealer, cursor, outputBase, requestPath string, selector ReadSelector, oldMax, newMax int) (string, error) {
 	if requestPath == "" || oldMax < 1 || newMax < 1 || newMax >= oldMax {
 		return "", ErrCursorInvalid
 	}
-	oldQuery, err := RetrievalQueryHash(ToolRead, normalizedReadQuery{Path: requestPath, Selector: selector, MaxBytes: oldMax})
+	oldQuery, err := RetrievalQueryHash(ToolRead, normalizedReadQuery{Base: outputBase, Path: requestPath, Selector: selector, MaxBytes: oldMax})
 	if err != nil {
 		return "", err
 	}
@@ -596,7 +603,7 @@ func rebaseReadManyInnerCursor(sealer cursorSealer, cursor, requestPath string, 
 	if err != nil {
 		return "", err
 	}
-	newQuery, err := RetrievalQueryHash(ToolRead, normalizedReadQuery{Path: requestPath, Selector: selector, MaxBytes: newMax})
+	newQuery, err := RetrievalQueryHash(ToolRead, normalizedReadQuery{Base: outputBase, Path: requestPath, Selector: selector, MaxBytes: newMax})
 	if err != nil {
 		return "", err
 	}

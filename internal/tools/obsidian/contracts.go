@@ -4,7 +4,7 @@ const (
 	MaxCursorBytes           = 16 * 1024
 	MaxSDKResultBytes        = 64 * 1024
 	SDKResultReserve         = 1024
-	ResponseContractV1       = 1
+	ResponseContractV2       = 2
 	MaxMarkdownSourceBytes   = 8 * 1024 * 1024
 	MaxMarkdownSourceLines   = 50_000
 	MaxGrepPhysicalLineBytes = 1024 * 1024

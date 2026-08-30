@@ -23,6 +23,7 @@ const (
 )
 
 type normalizedReadQuery struct {
+	Base     string       `json:"base"`
 	Path     string       `json:"path"`
 	Selector ReadSelector `json:"selector"`
 	MaxBytes int          `json:"max_bytes"`
@@ -117,11 +118,15 @@ func (t *Tools) readPageCore(ctx context.Context, input ReadInput, meta *readPag
 		return readErrorResult(err, CoverageWork{})
 	}
 
+	coordinate, err := newPathCoordinate(input.Base)
+	if err != nil {
+		return readErrorResult(err, CoverageWork{})
+	}
 	requestPath, err := fsx.NormalizePath(input.Base, input.Path)
 	if err != nil {
 		return readErrorResult(err, CoverageWork{})
 	}
-	query := normalizedReadQuery{Path: requestPath, Selector: publicSelector, MaxBytes: maxBytes}
+	query := normalizedReadQuery{Base: coordinate.base, Path: requestPath, Selector: publicSelector, MaxBytes: maxBytes}
 	queryHash, err := RetrievalQueryHash(ToolRead, query)
 	if err != nil {
 		return readErrorResult(err, CoverageWork{})
@@ -161,12 +166,12 @@ func (t *Tools) readPageCore(ctx context.Context, input ReadInput, meta *readPag
 			return readErrorResult(ErrCursorStale, work)
 		}
 		if state.Mode == readCursorModeOutline {
-			return t.continueOutline(ctx, file, selector, publicSelector, maxBytes, queryHash, state, work, meta)
+			return t.continueOutline(ctx, file, coordinate.project(resolved.Rel), selector, publicSelector, maxBytes, queryHash, state, work, meta)
 		}
 		if state.Mode != readCursorModeContent || !validReadCursorState(state, resolved.Size) {
 			return readErrorResult(ErrCursorInvalid, work)
 		}
-		return t.continueContent(ctx, file, publicSelector, maxBytes, queryHash, state, work, meta)
+		return t.continueContent(ctx, file, coordinate.project(resolved.Rel), publicSelector, maxBytes, queryHash, state, work, meta)
 	}
 
 	reader := &contextFileReader{ctx: ctx, file: file}
@@ -197,13 +202,13 @@ func (t *Tools) readPageCore(ctx context.Context, input ReadInput, meta *readPag
 	if selection.Selector.Kind == SourceSelectorOutline {
 		state.Mode = readCursorModeOutline
 		state.OutlineCount = len(selection.Outline)
-		return fitOutlineRead(ctx, t.vault, resolved, publicSelector, selection.Outline, source, 0, maxBytes, queryHash, state, work, meta)
+		return fitOutlineRead(ctx, t.vault, resolved, coordinate.project(resolved.Rel), publicSelector, selection.Outline, source, 0, maxBytes, queryHash, state, work, meta)
 	}
 	state.Mode = readCursorModeContent
-	return fitContentRead(ctx, t.vault, resolved, publicSelector, selection.Content, maxBytes, queryHash, state, work, meta)
+	return fitContentRead(ctx, t.vault, resolved, coordinate.project(resolved.Rel), publicSelector, selection.Content, maxBytes, queryHash, state, work, meta)
 }
 
-func (t *Tools) continueContent(ctx context.Context, file *fsx.File, selector ReadSelector, maxBytes int, queryHash CursorQueryHash, state readCursorState, work CoverageWork, meta *readPageMeta) (*sdk.CallToolResult, ReadOutput, error) {
+func (t *Tools) continueContent(ctx context.Context, file *fsx.File, outputPath string, selector ReadSelector, maxBytes int, queryHash CursorQueryHash, state readCursorState, work CoverageWork, meta *readPageMeta) (*sdk.CallToolResult, ReadOutput, error) {
 	remaining := state.UnitEnd - state.NextByte
 	readLen := min(remaining, maxBytes)
 	if readLen < 0 {
@@ -227,10 +232,10 @@ func (t *Tools) continueContent(ctx context.Context, file *fsx.File, selector Re
 	if err := file.Revalidate(ctx); err != nil {
 		return readErrorResult(err, work)
 	}
-	return fitContentRead(ctx, t.vault, file.Resolved(), selector, content, maxBytes, queryHash, state, work, meta)
+	return fitContentRead(ctx, t.vault, file.Resolved(), outputPath, selector, content, maxBytes, queryHash, state, work, meta)
 }
 
-func (t *Tools) continueOutline(ctx context.Context, file *fsx.File, selector SourceSelector, publicSelector ReadSelector, maxBytes int, queryHash CursorQueryHash, state readCursorState, work CoverageWork, meta *readPageMeta) (*sdk.CallToolResult, ReadOutput, error) {
+func (t *Tools) continueOutline(ctx context.Context, file *fsx.File, outputPath string, selector SourceSelector, publicSelector ReadSelector, maxBytes int, queryHash CursorQueryHash, state readCursorState, work CoverageWork, meta *readPageMeta) (*sdk.CallToolResult, ReadOutput, error) {
 	if state.NextOutline < 0 || state.OutlineCount < 0 || state.NextOutline > state.OutlineCount {
 		return readErrorResult(ErrCursorInvalid, work)
 	}
@@ -254,10 +259,10 @@ func (t *Tools) continueOutline(ctx context.Context, file *fsx.File, selector So
 	if state.UnitStart != selection.StartByte || state.UnitEnd != selection.EndByte || state.TotalLines != source.LineCount() || state.OutlineCount != len(selection.Outline) {
 		return readErrorResult(ErrCursorInvalid, work)
 	}
-	return fitOutlineRead(ctx, t.vault, file.Resolved(), publicSelector, selection.Outline, source, state.NextOutline, maxBytes, queryHash, state, work, meta)
+	return fitOutlineRead(ctx, t.vault, file.Resolved(), outputPath, publicSelector, selection.Outline, source, state.NextOutline, maxBytes, queryHash, state, work, meta)
 }
 
-func fitContentRead(ctx context.Context, sealer cursorSealer, resolved fsx.Resolved, selector ReadSelector, available []byte, maxBytes int, queryHash CursorQueryHash, state readCursorState, work CoverageWork, meta *readPageMeta) (*sdk.CallToolResult, ReadOutput, error) {
+func fitContentRead(ctx context.Context, sealer cursorSealer, resolved fsx.Resolved, outputPath string, selector ReadSelector, available []byte, maxBytes int, queryHash CursorQueryHash, state readCursorState, work CoverageWork, meta *readPageMeta) (*sdk.CallToolResult, ReadOutput, error) {
 	if err := fitContextError(ctx); err != nil {
 		return readErrorResult(err, work)
 	}
@@ -282,7 +287,7 @@ func fitContentRead(ctx context.Context, sealer cursorSealer, resolved fsx.Resol
 		content := string(available[:count])
 		totalLines := state.TotalLines
 		result := ReadResult{
-			Path:        resolved.Rel,
+			Path:        outputPath,
 			Selector:    &selector,
 			StartLine:   startLine,
 			EndLine:     endLine,
@@ -365,7 +370,7 @@ func largestFittingContentPrefix(content []byte, build func(int) (ReadOutput, in
 	return best, nil
 }
 
-func fitOutlineRead(ctx context.Context, sealer cursorSealer, resolved fsx.Resolved, selector ReadSelector, outline []OutlineEntry, source *MarkdownSource, start, maxBytes int, queryHash CursorQueryHash, state readCursorState, work CoverageWork, meta *readPageMeta) (*sdk.CallToolResult, ReadOutput, error) {
+func fitOutlineRead(ctx context.Context, sealer cursorSealer, resolved fsx.Resolved, outputPath string, selector ReadSelector, outline []OutlineEntry, source *MarkdownSource, start, maxBytes int, queryHash CursorQueryHash, state readCursorState, work CoverageWork, meta *readPageMeta) (*sdk.CallToolResult, ReadOutput, error) {
 	if start < 0 || start > len(outline) {
 		return readErrorResult(ErrCursorInvalid, work)
 	}
@@ -395,7 +400,7 @@ func fitOutlineRead(ctx context.Context, sealer cursorSealer, resolved fsx.Resol
 			startLine, endLine = page[0].Line, page[len(page)-1].Line
 		}
 		out := ReadOutput{OK: true, ReadResult: ReadResult{
-			Path: resolved.Rel, Selector: &selector, StartLine: startLine, EndLine: endLine,
+			Path: outputPath, Selector: &selector, StartLine: startLine, EndLine: endLine,
 			TotalLines: &totalLines, Modified: resolved.Modified.Format("2006-01-02T15:04:05.999999999Z07:00"),
 			Fingerprint: state.Fingerprint, Outline: &page,
 		}}

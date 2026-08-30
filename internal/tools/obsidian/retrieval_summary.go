@@ -33,7 +33,7 @@ func summarizeReadManyArgs(builder *localmcp.SafeSummaryBuilder, raw json.RawMes
 		}
 		return builder.Enum(localmcp.SectionArguments, localmcp.EnumShape, localmcp.ValueInvalidJSON)
 	}
-	if err := builder.UnknownArgumentKeys(object, "requests", "max_bytes", "cursor"); err != nil {
+	if err := builder.UnknownArgumentKeys(object, "base", "requests", "max_bytes", "cursor"); err != nil {
 		return err
 	}
 	if requests, ok := object["requests"].([]any); ok {

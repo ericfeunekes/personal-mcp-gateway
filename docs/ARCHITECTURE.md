@@ -68,7 +68,7 @@ The expanded read and graph tools share identity, bounded I/O, continuation, cov
 - `internal/mcp` owns only the generic descriptor/telemetry-summary handoff contract. MCP middleware must not infer every Obsidian schema itself or import the Obsidian package.
 - `internal/audit` owns bounded event persistence and degradation behavior; it does not know note, selector, link, graph, or cursor semantics.
 
-`resolve` returns canonical identity and metadata but does not invent scan coverage. Scan and graph tools report coverage for the work they actually perform. Result-size enforcement happens before the domain returns structured content to the SDK; transport input limits are not output limits.
+`resolve` retains canonical identity internally but returns model-visible identity and metadata relative to the request's normalized `base`; it does not invent scan coverage. Scan and graph tools report coverage for the work they actually perform. Result-size enforcement happens after model-visible path projection and before the domain returns structured content to the SDK; transport input limits are not output limits.
 
 ## State Ownership
 

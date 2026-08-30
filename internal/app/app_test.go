@@ -395,9 +395,10 @@ func TestSQLiteMutationTelemetryDoesNotPersistVaultData(t *testing.T) {
 	}
 	const (
 		runID       = "mutation-sqlite-nondisclosure"
-		source      = "home/projects/alpha.md"
+		base        = "home/projects"
+		source      = "alpha.md"
 		writePath   = ".obsidian/telemetry-write-private.md"
-		destination = "telemetry-move-private.md"
+		destination = "../../telemetry-move-private.md"
 		writeValue  = "write-content-never-persist"
 		patchOld    = "patch-old-never-persist"
 		patchNew    = "patch-new-never-persist"
@@ -420,8 +421,8 @@ func TestSQLiteMutationTelemetryDoesNotPersistVaultData(t *testing.T) {
 	defer cancel()
 	session, stop := connectPipeTransport(t, ctx, application)
 
-	stat := callTool[obsidian.StatOutput](t, ctx, session, obsidian.ToolStat, map[string]any{"path": source})
-	if !stat.OK || stat.Fingerprint == "" {
+	stat := callTool[obsidian.StatOutput](t, ctx, session, obsidian.ToolStat, map[string]any{"base": base, "path": source})
+	if !stat.OK || stat.Path != source || stat.Fingerprint == "" {
 		t.Fatalf("stat output = %#v", stat)
 	}
 	stale := alternateTestFingerprint(stat.Fingerprint)
@@ -440,17 +441,17 @@ func TestSQLiteMutationTelemetryDoesNotPersistVaultData(t *testing.T) {
 		"precondition": map[string]any{"kind": obsidian.MutationPreconditionAbsent},
 	})
 	callMutationError(obsidian.ToolEdit, map[string]any{
-		"path": source, "fingerprint": stat.Fingerprint, "encoding": obsidian.MutationEncodingUTF8,
+		"base": base, "path": source, "fingerprint": stat.Fingerprint, "encoding": obsidian.MutationEncodingUTF8,
 		"replacements": []map[string]any{{"old": patchOld, "new": patchNew}},
 	})
 	moved := callTool[obsidian.MutationOutput](t, ctx, session, obsidian.ToolMove, map[string]any{
-		"source": source, "destination": destination, "fingerprint": stat.Fingerprint,
+		"base": base, "source": source, "destination": destination, "fingerprint": stat.Fingerprint,
 		"destination_precondition": map[string]any{"kind": obsidian.MutationPreconditionAbsent},
 	})
 	if !moved.OK || moved.Path != destination {
 		t.Fatalf("move output = %#v", moved)
 	}
-	callMutationError(obsidian.ToolDelete, map[string]any{"path": source, "fingerprint": stale})
+	callMutationError(obsidian.ToolDelete, map[string]any{"base": base, "path": source, "fingerprint": stale})
 	stop()
 	if err := log.Close(); err != nil {
 		t.Fatal(err)
@@ -479,7 +480,7 @@ func TestSQLiteMutationTelemetryDoesNotPersistVaultData(t *testing.T) {
 			t.Fatalf("%s body_json invalid: %v", tool, err)
 		}
 		decodedBody := mustJSON(t, decoded)
-		for _, forbidden := range []string{root, source, writePath, destination, writeValue, patchOld, patchNew, stat.Fingerprint, stale} {
+		for _, forbidden := range []string{root, base, source, writePath, destination, writeValue, patchOld, patchNew, stat.Fingerprint, stale} {
 			if strings.Contains(indexed, forbidden) {
 				t.Fatalf("%s indexed columns leaked %q: %s", tool, forbidden, indexed)
 			}
@@ -927,12 +928,13 @@ func TestStreamableHTTPTransportAndHealthReadiness(t *testing.T) {
 		t.Fatalf("read over HTTP = %#v", read)
 	}
 	batch := callTool[obsidian.ReadManyOutput](t, ctx, session, obsidian.ToolReadMany, map[string]any{
+		"base": "home/projects",
 		"requests": []any{
-			map[string]any{"path": "home/projects/alpha.md"},
-			map[string]any{"path": "home/projects/beta.md"},
+			map[string]any{"path": "alpha.md"},
+			map[string]any{"path": "beta.md"},
 		},
 	})
-	if !batch.OK || len(batch.Items) != 2 || batch.Coverage.Continuation != "complete" {
+	if !batch.OK || len(batch.Items) != 2 || batch.Items[0].Path != "alpha.md" || batch.Items[1].Path != "beta.md" || batch.Coverage.Continuation != "complete" {
 		t.Fatalf("read_many over HTTP = %#v", batch)
 	}
 	grep := callTool[obsidian.GrepOutput](t, ctx, session, obsidian.ToolGrep, map[string]any{

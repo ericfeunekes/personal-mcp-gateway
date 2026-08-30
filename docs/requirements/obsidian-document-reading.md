@@ -19,7 +19,7 @@ The support target is the current official OpenAI accepted-file list at https://
 
 ## Public Capability
 
-`obsidian` adds `read_document`, a native document-reading capability distinct from Markdown `read`, `read_many`, and `grep`. It accepts one explicit vault-relative file path plus a bounded request shape and returns unaltered original bytes with an accurate media type through an MCP result form ChatGPT can consume natively. Markdown source-unit selection, graph links, and `grep` remain Markdown-specific.
+`obsidian` adds `read_document`, a native document-reading capability distinct from Markdown `read`, `read_many`, and `grep`. It accepts one explicit file path relative to optional vault-relative `base` plus a bounded request shape and returns unaltered original bytes with an accurate media type through an MCP result form ChatGPT can consume natively. Ordinary `..` may move between vault folders but may not escape the vault. Markdown source-unit selection, graph links, and `grep` remain Markdown-specific.
 
 The MCP content representation remains activation-gated: local-SDK and authenticated ChatGPT-through-tunnel proof must establish that the SDK, tunnel, and client carry the original as a native file. ChatGPT's built-in one-time consent to materialize a connector-returned file is an acceptable native security boundary; manual download, upload, or reattachment by the operator is not. A URL, local path, base64 text, or extraction is not equivalent evidence unless the live client demonstrably uses it as the original document.
 

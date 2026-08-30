@@ -116,16 +116,15 @@ func (d *Directory) ListPage(ctx context.Context, opts ListOptions) (ListPage, e
 		if err := ctx.Err(); err != nil {
 			return page, contextError(err)
 		}
-		entries, readErr := d.file.ReadDir(64)
+		entries, readErr := d.file.Readdirnames(64)
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			return page, mapReadDirError(readErr)
 		}
-		for _, dirEntry := range entries {
+		for _, name := range entries {
 			page.FilesScanned++
 			if err := ctx.Err(); err != nil {
 				return page, contextError(err)
 			}
-			name := dirEntry.Name()
 			if deniedSegment(name) {
 				continue
 			}

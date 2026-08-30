@@ -71,13 +71,13 @@ func TestPhase1DescriptorsTeachCanonicalContinuation(t *testing.T) {
 	}
 	input := schemaObject(t, ls.InputSchema)
 	path := schemaProperty(t, input, "path")
-	if description, _ := path["description"].(string); !strings.Contains(description, "use . for the vault root") ||
+	if description, _ := path["description"].(string); !strings.Contains(description, "use . for the working directory") ||
 		!strings.Contains(description, "never place a continuation token here") {
 		t.Fatalf("path schema description = %q", description)
 	}
 	base := schemaProperty(t, input, "base")
-	if description, _ := base["description"].(string); !strings.Contains(description, "used only to resolve path") ||
-		!strings.Contains(description, "when no separate base is needed") || !strings.Contains(description, "never place coverage.next_cursor here") {
+	if description, _ := base["description"].(string); !strings.Contains(description, "working directory") ||
+		!strings.Contains(description, "express returned directory and entry paths") || !strings.Contains(description, "never place coverage.next_cursor here") {
 		t.Fatalf("base schema description = %q", description)
 	}
 	limit := schemaProperty(t, input, "limit")

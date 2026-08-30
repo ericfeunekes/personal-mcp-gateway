@@ -36,6 +36,7 @@ var grepPrefixDomain = []byte("personal-mcp-gateway/obsidian/grep-prefix/v1\x00"
 const grepFastFileBytes = 256 * 1024
 
 type normalizedGrepQuery struct {
+	Base          string `json:"base"`
 	Pattern       string `json:"pattern"`
 	Path          string `json:"path"`
 	Regex         bool   `json:"regex"`
@@ -107,6 +108,8 @@ type grepRun struct {
 	tools          *Tools
 	query          normalizedGrepQuery
 	canonical      string
+	outputPath     string
+	coordinate     pathCoordinate
 	queryHash      CursorQueryHash
 	re             *regexp.Regexp
 	work           CoverageWork
@@ -134,16 +137,18 @@ func (t *Tools) grep(ctx context.Context, input GrepInput, hooks *grepConcurrent
 	if err != nil {
 		return grepErrorOutput("", nil, CoverageWork{}, err)
 	}
+	coordinate := normalizedPathCoordinate(query.Base)
 	queryHash, err := RetrievalQueryHash(ToolGrep, query)
 	if err != nil {
 		return grepErrorOutput("", nil, CoverageWork{}, err)
 	}
 	run := &grepRun{
-		tools:     t,
-		query:     query,
-		queryHash: queryHash,
-		re:        re,
-		prefix:    sha256.Sum256(grepPrefixDomain),
+		tools:      t,
+		query:      query,
+		queryHash:  queryHash,
+		re:         re,
+		coordinate: coordinate,
+		prefix:     sha256.Sum256(grepPrefixDomain),
 	}
 	if input.Cursor != "" {
 		state, cursorErr := DecodeCursorState[grepCursorState](t.vault, input.Cursor, ToolGrep, queryHash)
@@ -168,31 +173,33 @@ func (t *Tools) grep(ctx context.Context, input GrepInput, hooks *grepConcurrent
 		return grepErrorOutput("", nil, run.work, err)
 	}
 	canonical := resolved.Rel
+	outputPath := coordinate.project(canonical)
 	if !resolved.Exists {
 		if run.resume != nil {
-			return grepErrorOutput(canonical, nil, run.work, ErrCursorStale)
+			return grepErrorOutput(outputPath, nil, run.work, ErrCursorStale)
 		}
-		return grepErrorOutput(canonical, nil, run.work, &fsx.Error{Code: fsx.CodeNotFound})
+		return grepErrorOutput(outputPath, nil, run.work, &fsx.Error{Code: fsx.CodeNotFound})
 	}
 	if resolved.Kind == fsx.KindSymlink {
 		if run.resume != nil {
-			return grepErrorOutput(canonical, nil, run.work, ErrCursorStale)
+			return grepErrorOutput(outputPath, nil, run.work, ErrCursorStale)
 		}
-		return grepErrorOutput(canonical, nil, run.work, &fsx.Error{Code: fsx.CodeSymlinkDenied})
+		return grepErrorOutput(outputPath, nil, run.work, &fsx.Error{Code: fsx.CodeSymlinkDenied})
 	}
 	if resolved.Kind == fsx.KindFile && !isMarkdownPath(resolved.Rel) {
 		if run.resume != nil {
-			return grepErrorOutput(canonical, nil, run.work, ErrCursorStale)
+			return grepErrorOutput(outputPath, nil, run.work, ErrCursorStale)
 		}
-		return grepErrorOutput(canonical, nil, run.work, errUnsupported)
+		return grepErrorOutput(outputPath, nil, run.work, errUnsupported)
 	}
 	if resolved.Kind != fsx.KindFile && resolved.Kind != fsx.KindDir {
 		if run.resume != nil {
-			return grepErrorOutput(canonical, nil, run.work, ErrCursorStale)
+			return grepErrorOutput(outputPath, nil, run.work, ErrCursorStale)
 		}
-		return grepErrorOutput(canonical, nil, run.work, errUnsupported)
+		return grepErrorOutput(outputPath, nil, run.work, errUnsupported)
 	}
 	run.canonical = canonical
+	run.outputPath = outputPath
 
 	walkErr := run.walkConcurrentWithHooks(toolCtx, hooks)
 	if walkErr != nil {
@@ -200,22 +207,22 @@ func (t *Tools) grep(ctx context.Context, input GrepInput, hooks *grepConcurrent
 			!errors.Is(walkErr, ErrCursorStale) && !errors.Is(walkErr, ErrResponseTooLarge) {
 			walkErr = ErrCursorStale
 		}
-		return grepErrorOutput(canonical, run.matches, run.work, walkErr)
+		return grepErrorOutput(outputPath, run.matches, run.work, walkErr)
 	}
 	if run.resume != nil && !run.boundarySeen {
-		return grepErrorOutput(canonical, run.matches, run.work, ErrCursorStale)
+		return grepErrorOutput(outputPath, run.matches, run.work, ErrCursorStale)
 	}
 	if run.stop != nil {
-		return run.cursorOutput(canonical, run.stop.reason, run.stop.state)
+		return run.cursorOutput(outputPath, run.stop.reason, run.stop.state)
 	}
 	out := GrepOutput{
 		OK:       true,
-		Path:     canonical,
+		Path:     outputPath,
 		Matches:  nonNilMatches(run.matches),
 		Coverage: NewCompleteCoverage(run.work),
 	}
 	if err := requireGrepOutputFits(out); err != nil {
-		return grepErrorOutput(canonical, nil, run.work, err)
+		return grepErrorOutput(outputPath, nil, run.work, err)
 	}
 	return successCallResult(), out, nil
 }
@@ -270,11 +277,16 @@ func normalizeGrep(input GrepInput) (normalizedGrepQuery, *regexp.Regexp, error)
 	if scope == "" {
 		scope = "."
 	}
+	coordinate, err := newPathCoordinate(input.Base)
+	if err != nil {
+		return normalizedGrepQuery{}, nil, err
+	}
 	normalizedScope, err := fsx.NormalizePath(input.Base, scope)
 	if err != nil {
 		return normalizedGrepQuery{}, nil, err
 	}
 	query := normalizedGrepQuery{
+		Base:          coordinate.base,
 		Pattern:       input.Pattern,
 		Path:          normalizedScope,
 		Regex:         regexMode,
@@ -369,7 +381,7 @@ func (g *grepRun) emit(ctx context.Context, candidate pendingGrepMatch) (bool, e
 	if err != nil {
 		return false, err
 	}
-	out := GrepOutput{OK: true, Path: g.canonical, Matches: prospective, Truncated: true, Coverage: coverage}
+	out := GrepOutput{OK: true, Path: g.outputPath, Matches: prospective, Truncated: true, Coverage: coverage}
 	if err := requireGrepOutputFits(out); err != nil {
 		return g.stopForUnfitGrepCandidate()
 	}
