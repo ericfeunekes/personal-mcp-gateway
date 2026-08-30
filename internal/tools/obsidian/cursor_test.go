@@ -13,7 +13,7 @@ import (
 
 func TestCursorRoundTripAndValidation(t *testing.T) {
 	vault := newCursorTestVault(t, t.TempDir())
-	query := LSQueryHash("Projects/Élan", 100)
+	query := LSQueryHash("Projects/Élan", ".", 100)
 	source := fsx.SourceFingerprint(sha256.Sum256([]byte("source")))
 	want := fsx.Position{NFC: "é.md", Stored: "é.md"}
 
@@ -41,7 +41,7 @@ func TestCursorSealIsRestartStableAndDifferentRootInvalid(t *testing.T) {
 	root := t.TempDir()
 	first := newCursorTestVault(t, root)
 	second := newCursorTestVault(t, root)
-	query := LSQueryHash(".", 1)
+	query := LSQueryHash(".", ".", 1)
 	source := fsx.SourceFingerprint(sha256.Sum256([]byte("source")))
 	token, err := EncodeCursor(first, ToolLS, query, source, fsx.Position{NFC: "a", Stored: "a"})
 	if err != nil {
@@ -57,21 +57,24 @@ func TestCursorSealIsRestartStableAndDifferentRootInvalid(t *testing.T) {
 }
 
 func TestLSQueryHashBindsCanonicalPathLimitAndResponseContract(t *testing.T) {
-	base := LSQueryHash("Projects/Élan", 100)
-	if base != LSQueryHash("Projects/Élan", 100) {
+	base := LSQueryHash("Projects/Élan", ".", 100)
+	if base != LSQueryHash("Projects/Élan", ".", 100) {
 		t.Fatal("identical normalized query produced different hashes")
 	}
-	if base == LSQueryHash("projects/élan", 100) {
+	if base == LSQueryHash("projects/élan", ".", 100) {
 		t.Fatal("canonical path change did not change hash")
 	}
-	if base == LSQueryHash("Projects/Élan", 99) {
+	if base == LSQueryHash("Projects/Élan", ".", 99) {
 		t.Fatal("effective limit change did not change hash")
+	}
+	if base == LSQueryHash("Projects/Élan", "Projects", 100) {
+		t.Fatal("output base change did not change hash")
 	}
 }
 
 func TestValidateCursorMapsMismatchAndStaleness(t *testing.T) {
 	vault := newCursorTestVault(t, t.TempDir())
-	query := LSQueryHash(".", 1)
+	query := LSQueryHash(".", ".", 1)
 	source := fsx.SourceFingerprint(sha256.Sum256([]byte("source")))
 	encoded, err := EncodeCursor(vault, ToolLS, query, source, fsx.Position{NFC: "a", Stored: "a"})
 	if err != nil {
@@ -88,7 +91,7 @@ func TestValidateCursorMapsMismatchAndStaleness(t *testing.T) {
 		code   string
 	}{
 		{name: "tool", tool: "read", query: query, source: source, want: ErrCursorMismatch, code: CursorMismatchCode},
-		{name: "query", tool: ToolLS, query: LSQueryHash(".", 2), source: source, want: ErrCursorMismatch, code: CursorMismatchCode},
+		{name: "query", tool: ToolLS, query: LSQueryHash(".", ".", 2), source: source, want: ErrCursorMismatch, code: CursorMismatchCode},
 		{name: "source", tool: ToolLS, query: query, source: otherSource, want: ErrCursorStale, code: CursorStaleCode},
 	}
 	for _, tt := range tests {
@@ -103,7 +106,7 @@ func TestValidateCursorMapsMismatchAndStaleness(t *testing.T) {
 
 func TestCursorSealRejectsEveryRangeValidEnvelopeFieldEdit(t *testing.T) {
 	vault := newCursorTestVault(t, t.TempDir())
-	query := LSQueryHash(".", 1)
+	query := LSQueryHash(".", ".", 1)
 	source := fsx.SourceFingerprint(sha256.Sum256([]byte("source")))
 	lsToken, err := EncodeCursor(vault, ToolLS, query, source, fsx.Position{NFC: "a", Stored: "a"})
 	if err != nil {
@@ -141,7 +144,7 @@ func TestCursorSealRejectsEveryRangeValidEnvelopeFieldEdit(t *testing.T) {
 
 func TestDecodeCursorRejectsMalformedStrictly(t *testing.T) {
 	vault := newCursorTestVault(t, t.TempDir())
-	query := LSQueryHash(".", 1)
+	query := LSQueryHash(".", ".", 1)
 	source := fsx.SourceFingerprint(sha256.Sum256([]byte("source")))
 	valid, err := EncodeCursor(vault, ToolLS, query, source, fsx.Position{NFC: "a", Stored: "a"})
 	if err != nil {
@@ -174,7 +177,7 @@ func TestDecodeCursorRejectsMalformedStrictly(t *testing.T) {
 
 func TestEncodeCursorRejectsOverBoundedFields(t *testing.T) {
 	vault := newCursorTestVault(t, t.TempDir())
-	query := LSQueryHash(".", 1)
+	query := LSQueryHash(".", ".", 1)
 	source := fsx.SourceFingerprint(sha256.Sum256([]byte("source")))
 	exact := strings.Repeat("a", maxCursorFieldBytes)
 	encoded, err := EncodeCursor(vault, ToolLS, query, source, fsx.Position{NFC: exact, Stored: exact})

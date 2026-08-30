@@ -54,9 +54,10 @@ type grepScanEvent struct {
 }
 
 type grepScanJob struct {
-	sequence int
-	entry    fsx.WalkFile
-	file     *fsx.File
+	sequence   int
+	entry      fsx.WalkFile
+	outputPath string
+	file       *fsx.File
 
 	fingerprint fsx.SourceFingerprint
 	partial     *grepPartialCursor
@@ -300,6 +301,7 @@ func (s *grepConcurrentState) schedule(ctx context.Context, entry fsx.WalkFile, 
 	job := &grepScanJob{
 		sequence:    s.nextSequence,
 		entry:       entry,
+		outputPath:  s.run.coordinate.project(entry.Resolved.Rel),
 		file:        file,
 		fingerprint: file.Fingerprint(),
 		partial:     partial,
@@ -567,7 +569,7 @@ func (s *grepConcurrentState) scan(job *grepScanJob) {
 			}
 			emissionOffset, emissionLine := grepResumeContext(before, line, s.run.query.ContextLines)
 			pending = append(pending, grepScannedCandidate{
-				match: GrepMatch{Path: job.entry.Resolved.Rel, Line: line.number, Column: match.Column, Occurrences: match.Occurrences,
+				match: GrepMatch{Path: job.outputPath, Line: line.number, Column: match.Column, Occurrences: match.Occurrences,
 					Text: match.Text, TextTruncated: match.TextTruncated, TextStartColumn: match.TextStartColumn,
 					TextEndColumn: match.TextEndColumn, LineBytes: match.LineBytes, Before: beforeContext,
 					After: []GrepContextLine{}, Fingerprint: encodeDigest(job.fingerprint[:])},

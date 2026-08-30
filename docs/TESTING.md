@@ -51,6 +51,16 @@ build cache, keep the build cache repo-local:
 GOCACHE=$(pwd)/.gocache make test
 ```
 
+For shallow-list enumeration changes, run the fixed 1,000-entry, ten-result
+filesystem and non-root tool-boundary benchmarks with allocation reporting.
+Compare the same command and machine conditions before and after the candidate;
+keep a hill-climb only when allocations improve and median latency does not
+regress by more than five percent:
+
+```bash
+GOCACHE=$(pwd)/.gocache go test -run '^$' -bench '^Benchmark(ListPage|LS)LargeDirectory' -benchmem -count=5 ./internal/fsx ./internal/tools/obsidian
+```
+
 The canonical suite includes the existing gateway proof below. The pending
 release implementation must add the stated lifecycle coverage before it is
 treated as accepted:

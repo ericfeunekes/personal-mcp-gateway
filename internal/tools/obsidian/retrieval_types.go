@@ -5,9 +5,9 @@ const (
 	ToolReadMany = "read_many"
 	ToolGrep     = "grep"
 
-	ReadDescription     = "Read one bounded Markdown source unit from a canonical vault path. Choose content, heading, block, frontmatter, or outline with selector; preserve the same path, selector, and max_bytes when continuing with coverage.next_cursor. Use grep to discover notes and read_many to fetch several known notes."
-	ReadManyDescription = "Read one to 20 known Markdown source units in input order with one aggregate byte budget; use it after grep has found the paths you need. Item errors do not discard other results. Accumulate only the new items returned on each page; an item split across pages repeats its index with the next non-overlapping range. Continue with the identical requests and max_bytes plus coverage.next_cursor."
-	GrepDescription     = "Search Markdown contents in deterministic canonical-path order, then use returned canonical paths with read_many. This is content grep, not filename ranking or semantic search. Results are matching lines with bounded context; follow coverage.next_cursor with the identical pattern, scope, mode, context, result limit, and scan budgets until complete, and restart without a cursor only when continuation is restart."
+	ReadDescription     = "Read one bounded Markdown source unit. Path is relative to optional base, and the returned path uses that same coordinate system; ordinary .. segments may reach another vault folder but may not escape the vault. Choose content, heading, block, frontmatter, or outline with selector; preserve the same path, base, selector, and max_bytes when continuing with coverage.next_cursor. Use grep to discover notes and read_many to fetch several known notes."
+	ReadManyDescription = "Read one to 20 known Markdown source units in input order with one aggregate byte budget. Every request path is relative to the one optional top-level base, and returned paths use that same coordinate system. Item errors do not discard other results. Accumulate only the new items returned on each page; an item split across pages repeats its index with the next non-overlapping range. Continue with the identical base, requests, and max_bytes plus coverage.next_cursor."
+	GrepDescription     = "Search Markdown contents in deterministic canonical-path order. The scope is relative to optional base, and returned scope and match paths use that same coordinate system; ordinary .. segments may reach another vault folder but may not escape the vault. This is content grep, not filename ranking or semantic search. Follow coverage.next_cursor with the identical pattern, path, base, mode, context, result limit, and scan budgets until complete, and restart without a cursor only when continuation is restart."
 )
 
 const (
@@ -39,16 +39,15 @@ type ReadSelector struct {
 }
 
 type ReadInput struct {
-	Path     string        `json:"path" jsonschema:"canonical vault-relative Markdown path returned by resolve, ls, or grep"`
-	Base     string        `json:"base,omitempty" jsonschema:"optional vault-relative base used only to resolve path"`
+	Path     string        `json:"path" jsonschema:"Markdown path relative to base, or to the vault root when base is omitted; ordinary .. segments are allowed when the final target remains inside the vault"`
+	Base     string        `json:"base,omitempty" jsonschema:"optional vault-relative working directory used to resolve path and express the returned path"`
 	Selector *ReadSelector `json:"selector,omitempty" jsonschema:"closed source-unit selector; defaults to content from line 1"`
 	MaxBytes int           `json:"max_bytes,omitempty" jsonschema:"selected source-byte work for this call, 1 through 262144; defaults to 65536 and never widens the 65536-byte complete SDK result cap"`
 	Cursor   string        `json:"cursor,omitempty" jsonschema:"coverage.next_cursor from the prior read page; repeat the identical path, base, selector, and max_bytes"`
 }
 
 type ReadRequest struct {
-	Path     string        `json:"path" jsonschema:"canonical vault-relative Markdown path returned by resolve, ls, or grep"`
-	Base     string        `json:"base,omitempty" jsonschema:"optional vault-relative base used only to resolve path"`
+	Path     string        `json:"path" jsonschema:"Markdown path relative to the read_many top-level base, or to the vault root when base is omitted"`
 	Selector *ReadSelector `json:"selector,omitempty" jsonschema:"closed source-unit selector; defaults to content from line 1"`
 	MaxBytes int           `json:"max_bytes,omitempty" jsonschema:"selected source-byte work for this item, 1 through 262144; defaults to 65536"`
 }
@@ -82,9 +81,10 @@ type ReadOutput struct {
 }
 
 type ReadManyInput struct {
+	Base     string        `json:"base,omitempty" jsonschema:"optional vault-relative working directory shared by every request and used to express returned item paths"`
 	Requests []ReadRequest `json:"requests" jsonschema:"one to 20 first-call read request shapes, processed strictly in order"`
 	MaxBytes int           `json:"max_bytes,omitempty" jsonschema:"aggregate selected source-byte work for this page, 1 through 262144; defaults to 65536"`
-	Cursor   string        `json:"cursor,omitempty" jsonschema:"coverage.next_cursor from the prior read_many page; repeat the identical ordered requests and max_bytes"`
+	Cursor   string        `json:"cursor,omitempty" jsonschema:"coverage.next_cursor from the prior read_many page; repeat the identical base, ordered requests, and max_bytes"`
 }
 
 type ReadManyItem struct {
@@ -106,8 +106,8 @@ type ReadManyOutput struct {
 
 type GrepInput struct {
 	Pattern       string `json:"pattern" jsonschema:"non-empty UTF-8 Go RE2 pattern or literal, at most 4096 bytes; never retained in telemetry"`
-	Path          string `json:"path,omitempty" jsonschema:"vault-relative directory or Markdown file scope; defaults to ."`
-	Base          string `json:"base,omitempty" jsonschema:"optional vault-relative base used only to resolve path"`
+	Path          string `json:"path,omitempty" jsonschema:"directory or Markdown file scope relative to base, or to the vault root when base is omitted; defaults to ."`
+	Base          string `json:"base,omitempty" jsonschema:"optional vault-relative working directory used to resolve path and express returned scope and match paths"`
 	Regex         *bool  `json:"regex,omitempty" jsonschema:"true for Go RE2 syntax and false for a literal; defaults to true"`
 	CaseSensitive bool   `json:"case_sensitive,omitempty" jsonschema:"case-sensitive matching when true; defaults to false"`
 	ContextLines  *int   `json:"context_lines,omitempty" jsonschema:"bounded source-line evidence before and after each match, 0 through 3; defaults to 1"`

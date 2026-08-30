@@ -142,6 +142,7 @@ func TestPhase2TelemetryKeepsRetrievalEvidencePrivate(t *testing.T) {
 	const (
 		runID           = "phase2-privacy-run"
 		privatePath     = "private-workout-source.md"
+		privateBase     = "home/projects"
 		privatePattern  = "sensitive-health-pattern"
 		privateContents = "sensitive-health-pattern private medical content\n"
 	)
@@ -171,7 +172,8 @@ func TestPhase2TelemetryKeepsRetrievalEvidencePrivate(t *testing.T) {
 		t.Fatalf("privacy read setup = %#v", readOut)
 	}
 	_ = phase1Call(t, ctx, session, obsidian.ToolReadMany, map[string]any{
-		"requests": []any{map[string]any{"path": privatePath, "selector": map[string]any{"kind": obsidian.SelectorContent, "start_line": 1}}},
+		"base":     privateBase,
+		"requests": []any{map[string]any{"path": "../../" + privatePath, "selector": map[string]any{"kind": obsidian.SelectorContent, "start_line": 1}}},
 	})
 	_ = phase1Call(t, ctx, session, obsidian.ToolGrep, map[string]any{
 		"pattern": privatePattern, "path": ".", "regex": false, "context_lines": 0,
@@ -197,6 +199,7 @@ func TestPhase2TelemetryKeepsRetrievalEvidencePrivate(t *testing.T) {
 	encoded := telemetry.String()
 	for _, forbidden := range []string{
 		privatePath,
+		privateBase,
 		privatePattern,
 		privateContents,
 		readOut.Coverage.NextCursor,
@@ -277,7 +280,8 @@ func assertPhase2ToolDescriptors(t *testing.T, tools map[string]*sdk.Tool) {
 	assertSelectorContract(t, schemaProperty(t, read, "selector"))
 
 	readMany := schemaObject(t, tools[obsidian.ToolReadMany].InputSchema)
-	assertExactObjectGrammar(t, readMany, []string{"cursor", "max_bytes", "requests"}, []string{"requests"})
+	assertExactObjectGrammar(t, readMany, []string{"base", "cursor", "max_bytes", "requests"}, []string{"requests"})
+	assertPropertyType(t, readMany, "base", "string")
 	assertPropertyType(t, readMany, "cursor", "string")
 	assertIntegerContract(t, schemaProperty(t, readMany, "max_bytes"), 1, obsidian.MaxReadManyBytes, obsidian.DefaultReadManyBytes)
 	requests := schemaProperty(t, readMany, "requests")
@@ -288,10 +292,8 @@ func assertPhase2ToolDescriptors(t *testing.T, tools map[string]*sdk.Tool) {
 	if !ok {
 		t.Fatalf("read_many request items = %#v", requests["items"])
 	}
-	assertExactObjectGrammar(t, request, []string{"base", "max_bytes", "path", "selector"}, []string{"path"})
-	for _, name := range []string{"path", "base"} {
-		assertPropertyType(t, request, name, "string")
-	}
+	assertExactObjectGrammar(t, request, []string{"max_bytes", "path", "selector"}, []string{"path"})
+	assertPropertyType(t, request, "path", "string")
 	assertIntegerContract(t, schemaProperty(t, request, "max_bytes"), 1, obsidian.MaxReadBytes, obsidian.DefaultReadBytes)
 	assertSelectorContract(t, schemaProperty(t, request, "selector"))
 

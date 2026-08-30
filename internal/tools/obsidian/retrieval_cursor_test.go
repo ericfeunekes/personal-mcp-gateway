@@ -14,7 +14,7 @@ type retrievalCursorTestState struct {
 func TestRetrievalCursorUsesSharedStrictEnvelope(t *testing.T) {
 	vault := newCursorTestVault(t, t.TempDir())
 	query, err := RetrievalQueryHash(ToolRead, normalizedReadQuery{
-		Path: "note.md", Selector: ReadSelector{Kind: SelectorContent, StartLine: 1}, MaxBytes: 8,
+		Base: ".", Path: "note.md", Selector: ReadSelector{Kind: SelectorContent, StartLine: 1}, MaxBytes: 8,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -35,13 +35,22 @@ func TestRetrievalCursorUsesSharedStrictEnvelope(t *testing.T) {
 		t.Fatalf("tool mismatch = %v", err)
 	}
 	other, err := RetrievalQueryHash(ToolRead, normalizedReadQuery{
-		Path: "note.md", Selector: ReadSelector{Kind: SelectorContent, StartLine: 1}, MaxBytes: 9,
+		Base: ".", Path: "note.md", Selector: ReadSelector{Kind: SelectorContent, StartLine: 1}, MaxBytes: 9,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := DecodeCursorState[retrievalCursorTestState](vault, encoded, ToolRead, other); !errors.Is(err, ErrCursorMismatch) {
 		t.Fatalf("query mismatch = %v", err)
+	}
+	otherBase, err := RetrievalQueryHash(ToolRead, normalizedReadQuery{
+		Base: "finance", Path: "note.md", Selector: ReadSelector{Kind: SelectorContent, StartLine: 1}, MaxBytes: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeCursorState[retrievalCursorTestState](vault, encoded, ToolRead, otherBase); !errors.Is(err, ErrCursorMismatch) {
+		t.Fatalf("base mismatch = %v", err)
 	}
 }
 

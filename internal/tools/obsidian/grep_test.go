@@ -721,18 +721,20 @@ func TestGrepIndivisibleMatchReturnsResponseTooLarge(t *testing.T) {
 func TestGrepResponseLimitReturnsLargestEmittedPrefixAndContinues(t *testing.T) {
 	root := t.TempDir()
 	line := "hit " + strings.Repeat("x", 34*1024)
-	writeGrepFile(t, root, "note.md", line+"\n"+line+"\n")
+	writeGrepFile(t, root, "home/note.md", line+"\n"+line+"\n")
 	tools := grepTools(t, root)
 	zero := 0
-	input := GrepInput{Pattern: "hit", ContextLines: &zero}
+	base := strings.TrimSuffix(strings.Repeat("deep/", 20), "/")
+	path := strings.Repeat("../", 20) + "home/note.md"
+	input := GrepInput{Pattern: "hit", Base: base, Path: path, ContextLines: &zero}
 
 	_, first, err := tools.Grep(context.Background(), nil, input)
-	if err != nil || !first.OK || len(first.Matches) != 1 || first.Coverage.StoppedBy != string(CursorStopResponseLimit) || first.Coverage.NextCursor == "" {
+	if err != nil || !first.OK || len(first.Matches) != 1 || first.Matches[0].Path != path || first.Coverage.StoppedBy != string(CursorStopResponseLimit) || first.Coverage.NextCursor == "" {
 		t.Fatalf("first matches=%d coverage=%#v error=%#v err=%v", len(first.Matches), first.Coverage, first.Error, err)
 	}
 	input.Cursor = first.Coverage.NextCursor
 	_, second, err := tools.Grep(context.Background(), nil, input)
-	if err != nil || !second.OK || len(second.Matches) != 1 || second.Matches[0].Line != 2 {
+	if err != nil || !second.OK || len(second.Matches) != 1 || second.Matches[0].Path != path || second.Matches[0].Line != 2 {
 		t.Fatalf("second matches=%#v coverage=%#v error=%#v err=%v", second.Matches, second.Coverage, second.Error, err)
 	}
 }

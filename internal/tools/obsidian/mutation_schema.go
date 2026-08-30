@@ -24,12 +24,12 @@ func mutationValueSchema(description string) map[string]any {
 }
 
 func statInputSchema() map[string]any {
-	return objectSchema(map[string]any{"path": stringSchema("vault-relative existing regular file or empty directory"), "base": stringSchema("optional vault-relative base path")}, "path")
+	return objectSchema(map[string]any{"path": stringSchema("existing regular file or empty directory relative to base, or to the vault root when base is omitted"), "base": stringSchema("optional vault-relative working directory used to resolve path and express the returned path")}, "path")
 }
 
 func writeInputSchema() map[string]any {
 	return objectSchema(map[string]any{
-		"path": stringSchema("vault-relative file to create or replace"), "base": stringSchema("optional vault-relative base path"),
+		"path": stringSchema("file to create or replace relative to base, or to the vault root when base is omitted"), "base": stringSchema("optional vault-relative working directory used to resolve path and express the returned path"),
 		"encoding": mutationEncodingSchema(), "value": mutationValueSchema("complete decoded file value, at most 524288 bytes"),
 		"precondition": mutationPreconditionSchema(true),
 	}, "path", "encoding", "value", "precondition")
@@ -38,7 +38,7 @@ func writeInputSchema() map[string]any {
 func editInputSchema() map[string]any {
 	replacement := objectSchema(map[string]any{"old": nonEmptyStringSchema("non-empty exact original value"), "new": mutationValueSchema("replacement value")}, "old", "new")
 	return objectSchema(map[string]any{
-		"path": stringSchema("vault-relative existing regular file to patch"), "base": stringSchema("optional vault-relative base path"),
+		"path": stringSchema("existing regular file to patch relative to base, or to the vault root when base is omitted"), "base": stringSchema("optional vault-relative working directory used to resolve path and express the returned path"),
 		"fingerprint": fingerprintSchema(), "encoding": mutationEncodingSchema(),
 		"replacements": map[string]any{"type": "array", "description": "one through 64 ordered exact replacements validated together against the original source", "items": replacement, "minItems": 1, "maxItems": MutationMaxReplacements},
 	}, "path", "fingerprint", "encoding", "replacements")
@@ -46,11 +46,11 @@ func editInputSchema() map[string]any {
 
 func moveInputSchema() map[string]any {
 	return objectSchema(map[string]any{
-		"source": stringSchema("vault-relative existing source file or empty directory"), "destination": stringSchema("vault-relative absent destination"), "base": stringSchema("optional vault-relative base path used for both paths"),
+		"source": stringSchema("existing source file or empty directory relative to base, or to the vault root when base is omitted"), "destination": stringSchema("absent destination relative to the same base"), "base": stringSchema("optional vault-relative working directory used for both paths and the returned destination path"),
 		"fingerprint": fingerprintSchema(), "destination_precondition": mutationPreconditionSchema(false),
 	}, "source", "destination", "fingerprint", "destination_precondition")
 }
 
 func deleteInputSchema() map[string]any {
-	return objectSchema(map[string]any{"path": stringSchema("vault-relative existing regular file or empty directory to permanently remove"), "base": stringSchema("optional vault-relative base path"), "fingerprint": fingerprintSchema()}, "path", "fingerprint")
+	return objectSchema(map[string]any{"path": stringSchema("existing regular file or empty directory to permanently remove relative to base, or to the vault root when base is omitted"), "base": stringSchema("optional vault-relative working directory used to resolve path and express the returned path"), "fingerprint": fingerprintSchema()}, "path", "fingerprint")
 }

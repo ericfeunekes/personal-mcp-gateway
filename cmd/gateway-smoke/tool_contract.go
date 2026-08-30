@@ -69,7 +69,7 @@ func exactToolGrammar(tools []*sdk.Tool, surface toolSurface) bool {
 		return false
 	}
 	readMany, ok := normalizedSchema(byName[obsidian.ToolReadMany].InputSchema)
-	if !ok || !closedObjectGrammar(readMany, []string{"cursor", "max_bytes", "requests"}, []string{"requests"}) ||
+	if !ok || !closedObjectGrammar(readMany, []string{"base", "cursor", "max_bytes", "requests"}, []string{"requests"}) ||
 		!integerGrammar(property(readMany, "max_bytes"), 65_536, 1, 262_144) {
 		return false
 	}
@@ -78,7 +78,7 @@ func exactToolGrammar(tools []*sdk.Tool, surface toolSurface) bool {
 		return false
 	}
 	request, ok := requests["items"].(map[string]any)
-	if !ok || !closedObjectGrammar(request, []string{"base", "max_bytes", "path", "selector"}, []string{"path"}) ||
+	if !ok || !closedObjectGrammar(request, []string{"max_bytes", "path", "selector"}, []string{"path"}) ||
 		!integerGrammar(property(request, "max_bytes"), 65_536, 1, 262_144) ||
 		!defaultObject(property(request, "selector"), map[string]any{"kind": "content", "start_line": float64(1)}) ||
 		!selectorGrammar(property(request, "selector")) {

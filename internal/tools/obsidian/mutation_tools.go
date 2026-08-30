@@ -20,7 +20,7 @@ const (
 	StatDescription   = "Return safe metadata and the current opaque fingerprint for one allowed existing regular file or empty directory. It does not return content and does not modify the vault."
 	WriteDescription  = "Create an absent file or replace one complete existing file only when the explicit absence or fingerprint precondition matches. Values are bounded and atomically visible as complete prior or final bytes; this is not a full CAS guarantee."
 	EditDescription   = "Apply one bounded, atomic structured patch to an existing regular file only when its fingerprint and every exact replacement context match the same original source. Patches never infer an encoding."
-	MoveDescription   = "Move one allowed file or empty directory to an explicitly absent vault-relative destination only when the source fingerprint and absent-destination precondition match. The source path is removed."
+	MoveDescription   = "Move one allowed file or empty directory to an explicitly absent destination relative to optional base only when the source fingerprint and absent-destination precondition match. The returned destination path uses that same base-relative coordinate, and the source path is removed."
 	DeleteDescription = "Permanently remove one allowed file or empty directory only when its current fingerprint matches. This is destructive and has no trash, undo, or recovery promise."
 )
 
@@ -73,16 +73,24 @@ func mutationWriteAnnotations() *sdk.ToolAnnotations {
 func (t *Tools) Stat(ctx context.Context, _ *sdk.CallToolRequest, input StatInput) (*sdk.CallToolResult, StatOutput, error) {
 	toolCtx, cancel := context.WithTimeout(ctx, limits.ToolOperationTimeout)
 	defer cancel()
+	coordinate, err := newPathCoordinate(input.Base)
+	if err != nil {
+		return mutationStatError(err)
+	}
 	target, err := t.mutator.StatMutationTarget(toolCtx, input.Base, input.Path)
 	if err != nil {
 		return mutationStatError(err)
 	}
-	return successCallResult(), statOutput(target), nil
+	return successCallResult(), statOutput(target, coordinate), nil
 }
 
 func (t *Tools) Write(ctx context.Context, _ *sdk.CallToolRequest, input WriteInput) (*sdk.CallToolResult, MutationOutput, error) {
 	toolCtx, cancel := context.WithTimeout(ctx, limits.ToolOperationTimeout)
 	defer cancel()
+	coordinate, err := newPathCoordinate(input.Base)
+	if err != nil {
+		return mutationError(err)
+	}
 	payload, err := decodeMutationValue(input.Encoding, input.Value, MutationMaxValueBytes)
 	if err != nil {
 		return mutationError(err)
@@ -91,7 +99,7 @@ func (t *Tools) Write(ctx context.Context, _ *sdk.CallToolRequest, input WriteIn
 	if err != nil {
 		return mutationError(err)
 	}
-	return successCallResult(), mutationOutput(result), nil
+	return successCallResult(), mutationOutput(result, coordinate), nil
 }
 
 func mutationWrite(mutator *fsx.Mutator, ctx context.Context, input WriteInput, payload []byte) (fsx.MutationResult, error) {
@@ -115,6 +123,10 @@ func mutationWrite(mutator *fsx.Mutator, ctx context.Context, input WriteInput, 
 func (t *Tools) Edit(ctx context.Context, _ *sdk.CallToolRequest, input EditInput) (*sdk.CallToolResult, MutationOutput, error) {
 	toolCtx, cancel := context.WithTimeout(ctx, limits.ToolOperationTimeout)
 	defer cancel()
+	coordinate, err := newPathCoordinate(input.Base)
+	if err != nil {
+		return mutationError(err)
+	}
 	fingerprint, err := decodeMutationFingerprint(input.Fingerprint)
 	if err != nil {
 		return mutationError(err)
@@ -131,12 +143,16 @@ func (t *Tools) Edit(ctx context.Context, _ *sdk.CallToolRequest, input EditInpu
 	if err != nil {
 		return mutationError(err)
 	}
-	return successCallResult(), mutationOutput(result), nil
+	return successCallResult(), mutationOutput(result, coordinate), nil
 }
 
 func (t *Tools) Move(ctx context.Context, _ *sdk.CallToolRequest, input MoveInput) (*sdk.CallToolResult, MutationOutput, error) {
 	toolCtx, cancel := context.WithTimeout(ctx, limits.ToolOperationTimeout)
 	defer cancel()
+	coordinate, err := newPathCoordinate(input.Base)
+	if err != nil {
+		return mutationError(err)
+	}
 	if input.DestinationPrecondition.Kind != MutationPreconditionAbsent || input.DestinationPrecondition.Fingerprint != "" {
 		return mutationError(errMutationPatch)
 	}
@@ -148,12 +164,16 @@ func (t *Tools) Move(ctx context.Context, _ *sdk.CallToolRequest, input MoveInpu
 	if err != nil {
 		return mutationError(err)
 	}
-	return successCallResult(), mutationOutput(result), nil
+	return successCallResult(), mutationOutput(result, coordinate), nil
 }
 
 func (t *Tools) Delete(ctx context.Context, _ *sdk.CallToolRequest, input DeleteInput) (*sdk.CallToolResult, DeleteOutput, error) {
 	toolCtx, cancel := context.WithTimeout(ctx, limits.ToolOperationTimeout)
 	defer cancel()
+	coordinate, err := newPathCoordinate(input.Base)
+	if err != nil {
+		return mutationDeleteError(err)
+	}
 	fingerprint, err := decodeMutationFingerprint(input.Fingerprint)
 	if err != nil {
 		return mutationDeleteError(err)
@@ -162,7 +182,7 @@ func (t *Tools) Delete(ctx context.Context, _ *sdk.CallToolRequest, input Delete
 	if err != nil {
 		return mutationDeleteError(err)
 	}
-	return successCallResult(), DeleteOutput{OK: true, Path: result.Resolved.Rel, Permanent: true}, nil
+	return successCallResult(), deleteOutput(result, coordinate), nil
 }
 
 func mutationSource(ctx context.Context, vault *fsx.Vault, base, path string, fingerprint fsx.SourceFingerprint) ([]byte, error) {
@@ -293,14 +313,18 @@ func decodeMutationValue(encoding, value string, maxBytes int) ([]byte, error) {
 	return decoded, nil
 }
 
-func statOutput(target fsx.MutationTarget) StatOutput {
+func statOutput(target fsx.MutationTarget, coordinate pathCoordinate) StatOutput {
 	r := target.Resolved
-	return StatOutput{OK: true, Path: r.Rel, Type: string(r.Kind), Size: r.Size, Modified: r.Modified.UTC().Format("2006-01-02T15:04:05.999999999Z07:00"), Fingerprint: fingerprintString(target.Fingerprint)}
+	return StatOutput{OK: true, Path: coordinate.project(r.Rel), Type: string(r.Kind), Size: r.Size, Modified: r.Modified.UTC().Format("2006-01-02T15:04:05.999999999Z07:00"), Fingerprint: fingerprintString(target.Fingerprint)}
 }
 
-func mutationOutput(result fsx.MutationResult) MutationOutput {
+func mutationOutput(result fsx.MutationResult, coordinate pathCoordinate) MutationOutput {
 	r := result.Resolved
-	return MutationOutput{OK: true, Path: r.Rel, Type: string(r.Kind), Size: r.Size, Modified: r.Modified.UTC().Format("2006-01-02T15:04:05.999999999Z07:00"), Fingerprint: fingerprintString(result.Fingerprint)}
+	return MutationOutput{OK: true, Path: coordinate.project(r.Rel), Type: string(r.Kind), Size: r.Size, Modified: r.Modified.UTC().Format("2006-01-02T15:04:05.999999999Z07:00"), Fingerprint: fingerprintString(result.Fingerprint)}
+}
+
+func deleteOutput(result fsx.DeleteResult, coordinate pathCoordinate) DeleteOutput {
+	return DeleteOutput{OK: true, Path: coordinate.project(result.Resolved.Rel), Permanent: true}
 }
 
 func mutationError(err error) (*sdk.CallToolResult, MutationOutput, error) {

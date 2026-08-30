@@ -200,7 +200,7 @@ func assertStdioPhase2DescriptorGrammar(t *testing.T, tool *sdk.Tool) {
 		assertStdioIntegerContract(t, stdioSchemaProperty(t, schema, "max_bytes"), 1, obsidian.MaxReadBytes, obsidian.DefaultReadBytes)
 		assertStdioSelectorGrammar(t, stdioSchemaProperty(t, schema, "selector"))
 	case obsidian.ToolReadMany:
-		assertStdioObjectShape(t, schema, []string{"cursor", "max_bytes", "requests"}, []string{"requests"})
+		assertStdioObjectShape(t, schema, []string{"base", "cursor", "max_bytes", "requests"}, []string{"requests"})
 		assertStdioIntegerContract(t, stdioSchemaProperty(t, schema, "max_bytes"), 1, obsidian.MaxReadManyBytes, obsidian.DefaultReadManyBytes)
 		requests := stdioSchemaProperty(t, schema, "requests")
 		assertStdioSchemaValue(t, requests, "type", "array")
@@ -210,7 +210,7 @@ func assertStdioPhase2DescriptorGrammar(t *testing.T, tool *sdk.Tool) {
 		if !ok {
 			t.Fatalf("read_many items = %#v", requests["items"])
 		}
-		assertStdioObjectShape(t, request, []string{"base", "max_bytes", "path", "selector"}, []string{"path"})
+		assertStdioObjectShape(t, request, []string{"max_bytes", "path", "selector"}, []string{"path"})
 		assertStdioIntegerContract(t, stdioSchemaProperty(t, request, "max_bytes"), 1, obsidian.MaxReadBytes, obsidian.DefaultReadBytes)
 		assertStdioSelectorGrammar(t, stdioSchemaProperty(t, request, "selector"))
 	case obsidian.ToolGrep:

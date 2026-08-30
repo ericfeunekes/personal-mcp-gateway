@@ -17,8 +17,8 @@ const (
 	ToolResolve = "resolve"
 	ToolLS      = "ls"
 
-	ResolveDescription = "Return the canonical stored vault path and metadata for one vault-relative path. Use the returned path in follow-on calls; missing paths return `exists:false`. This does not read file content."
-	LSDescription      = "Set `limit` to the exact requested batch size: one item per tool result means `limit:1`. For continuation, put `coverage.next_cursor` only in `cursor`, never in `path` or `base`. Returned entries already exclude hidden and denied items and include their inspectable metadata, so do not overfetch or call `resolve` merely to inspect an entry returned by `ls`. Continue a partial listing only with the identical `path`, `base`, and `limit`. Never omit `cursor` or change `limit` to continue: omitting `cursor` restarts at the first entry and repeats results, while changing `limit` with the prior cursor returns `cursor_mismatch`. List one directory level in deterministic canonical order; follow cursors until `coverage.continuation` is `complete`, and restart without a cursor only when it is `restart`. This lists metadata, not file content or recursive search."
+	ResolveDescription = "Return stored-path metadata for one path relative to optional base. The returned path uses the same base-relative coordinate system and may be reused unchanged with that base; ordinary .. segments may reach another vault folder but may not escape the vault. Missing paths return `exists:false`. This does not read file content."
+	LSDescription      = "Set `limit` to the exact requested batch size: one item per tool result means `limit:1`. For continuation, put `coverage.next_cursor` only in `cursor`, never in `path` or `base`. Returned directory and entry paths use the optional base as their working directory and can be reused unchanged with that base. Returned entries already exclude hidden and denied items and include their inspectable metadata, so do not overfetch or call `resolve` merely to inspect an entry returned by `ls`. Continue a partial listing only with the identical `path`, `base`, and `limit`. Never omit `cursor` or change `limit` to continue: omitting `cursor` restarts at the first entry and repeats results, while changing `limit` with the prior cursor returns `cursor_mismatch`. List one directory level in deterministic canonical order; follow cursors until `coverage.continuation` is `complete`, and restart without a cursor only when it is `restart`. This lists metadata, not file content or recursive search."
 )
 
 type Tools struct {
@@ -163,8 +163,8 @@ func readOnlyToolAnnotations() *sdk.ToolAnnotations {
 }
 
 type ResolveInput struct {
-	Path string `json:"path" jsonschema:"vault-relative path to resolve"`
-	Base string `json:"base,omitempty" jsonschema:"optional vault-relative base path"`
+	Path string `json:"path" jsonschema:"path relative to base, or to the vault root when base is omitted; ordinary .. segments are allowed when the final target remains inside the vault"`
+	Base string `json:"base,omitempty" jsonschema:"optional vault-relative working directory used to resolve path and express the returned path"`
 }
 
 type ResolveOutput struct {
@@ -178,8 +178,8 @@ type ResolveOutput struct {
 }
 
 type LSInput struct {
-	Path   string `json:"path" jsonschema:"vault-relative directory path to list; use . for the vault root; never place a continuation token here"`
-	Base   string `json:"base,omitempty" jsonschema:"optional vault-relative path prefix used only to resolve path; omit it for the vault root when no separate base is needed; never place coverage.next_cursor here"`
+	Path   string `json:"path" jsonschema:"directory path relative to base, or to the vault root when base is omitted; use . for the working directory; never place a continuation token here"`
+	Base   string `json:"base,omitempty" jsonschema:"optional vault-relative working directory used to resolve path and express returned directory and entry paths; never place coverage.next_cursor here"`
 	Limit  int    `json:"limit,omitempty" jsonschema:"exact requested batch size after hidden and denied entries are filtered; one item per result means 1, so do not overfetch; choose it on the first call and keep it identical for every cursor continuation; increasing it without a cursor restarts at the first entry; defaults to 100 when omitted; valid values are 1 through 500"`
 	Cursor string `json:"cursor,omitempty" jsonschema:"the only field for coverage.next_cursor; required to continue whenever the previous ls returned coverage.continuation cursor; pass coverage.next_cursor unchanged here, never in path or base, and repeat the identical path, base, and limit; omitting it restarts at the first entry"`
 }
@@ -210,6 +210,10 @@ func (t *Tools) Resolve(ctx context.Context, _ *sdk.CallToolRequest, input Resol
 	toolCtx, cancel := context.WithTimeout(ctx, limits.ToolOperationTimeout)
 	defer cancel()
 
+	coordinate, err := newPathCoordinate(input.Base)
+	if err != nil {
+		return resolveError(err)
+	}
 	resolved, err := t.vault.Resolve(toolCtx, input.Base, input.Path)
 	if err != nil {
 		return resolveError(err)
@@ -217,7 +221,7 @@ func (t *Tools) Resolve(ctx context.Context, _ *sdk.CallToolRequest, input Resol
 
 	out := ResolveOutput{
 		OK:     true,
-		Path:   resolved.Rel,
+		Path:   coordinate.project(resolved.Rel),
 		Exists: resolved.Exists,
 	}
 	if resolved.Exists {
@@ -233,6 +237,10 @@ func (t *Tools) LS(ctx context.Context, _ *sdk.CallToolRequest, input LSInput) (
 	toolCtx, cancel := context.WithTimeout(ctx, limits.ToolOperationTimeout)
 	defer cancel()
 
+	coordinate, err := newPathCoordinate(input.Base)
+	if err != nil {
+		return lsErrorWithWork(err, CoverageWork{}, RestartStopError)
+	}
 	limit, err := effectiveLimit(input.Limit)
 	if err != nil {
 		return lsErrorWithWork(err, CoverageWork{}, RestartStopError)
@@ -255,7 +263,8 @@ func (t *Tools) LS(ctx context.Context, _ *sdk.CallToolRequest, input LSInput) (
 	defer directory.Close()
 
 	canonical := directory.Resolved().Rel
-	query := LSQueryHash(canonical, limit)
+	outputDirectory := coordinate.project(canonical)
+	query := LSQueryHash(canonical, coordinate.base, limit)
 	var after *fsx.Position
 	if decoded != nil {
 		if decoded.Query != query {
@@ -288,14 +297,14 @@ func (t *Tools) LS(ctx context.Context, _ *sdk.CallToolRequest, input LSInput) (
 	for _, entry := range entries {
 		candidates = append(candidates, LSFitCandidate{Entry: LSEntry{
 			Name:     entry.Name,
-			Path:     entry.Rel,
+			Path:     projectChild(outputDirectory, entry.Name),
 			Type:     string(entry.Kind),
 			Size:     entry.Size,
 			Modified: entry.Modified.Format("2006-01-02T15:04:05Z07:00"),
 		}, Position: entry.Position})
 	}
 	out, err := FitLSOutput(toolCtx, LSFitRequest{
-		Path:       canonical,
+		Path:       outputDirectory,
 		Candidates: candidates,
 		HasMore:    hasMore,
 		Work:       work,

@@ -7,8 +7,8 @@ package obsidian
 
 func readInputSchema() map[string]any {
 	return objectSchema(map[string]any{
-		"path":      stringSchema("canonical vault-relative Markdown path returned by resolve, ls, or grep"),
-		"base":      stringSchema("optional vault-relative base used only to resolve path"),
+		"path":      stringSchema("Markdown path relative to base, or to the vault root when base is omitted; ordinary .. segments are allowed when the final target remains inside the vault"),
+		"base":      stringSchema("optional vault-relative working directory used to resolve path and express the returned path"),
 		"selector":  withDefault(selectorSchema(), map[string]any{"kind": SelectorContent, "start_line": 1}),
 		"max_bytes": integerSchema("selected source-byte work for this call; this never widens the complete SDK result cap", 1, MaxReadBytes, DefaultReadBytes),
 		"cursor":    stringSchema("coverage.next_cursor from the prior read page; repeat path, base, selector, and max_bytes unchanged"),
@@ -17,12 +17,12 @@ func readInputSchema() map[string]any {
 
 func readManyInputSchema() map[string]any {
 	request := objectSchema(map[string]any{
-		"path":      stringSchema("canonical vault-relative Markdown path returned by resolve, ls, or grep"),
-		"base":      stringSchema("optional vault-relative base used only to resolve path"),
+		"path":      stringSchema("Markdown path relative to the read_many top-level base, or to the vault root when base is omitted"),
 		"selector":  withDefault(selectorSchema(), map[string]any{"kind": SelectorContent, "start_line": 1}),
 		"max_bytes": integerSchema("selected source-byte work for this item", 1, MaxReadBytes, DefaultReadBytes),
 	}, "path")
 	return objectSchema(map[string]any{
+		"base": stringSchema("optional vault-relative working directory shared by every request and used to express returned item paths"),
 		"requests": map[string]any{
 			"type":        "array",
 			"description": "one to 20 first-call read request shapes processed strictly in order",
@@ -31,7 +31,7 @@ func readManyInputSchema() map[string]any {
 			"maxItems":    MaxReadManyRequests,
 		},
 		"max_bytes": integerSchema("aggregate selected source-byte work for this page", 1, MaxReadManyBytes, DefaultReadManyBytes),
-		"cursor":    stringSchema("coverage.next_cursor from the prior read_many page; repeat the identical ordered requests and max_bytes"),
+		"cursor":    stringSchema("coverage.next_cursor from the prior read_many page; repeat the identical base, ordered requests, and max_bytes"),
 	}, "requests")
 }
 
@@ -43,8 +43,8 @@ func grepInputSchema() map[string]any {
 			"minLength":   1,
 			"maxLength":   MaxGrepPatternBytes,
 		},
-		"path":           withDefault(stringSchema("vault-relative directory or Markdown file scope"), "."),
-		"base":           stringSchema("optional vault-relative base used only to resolve path"),
+		"path":           withDefault(stringSchema("directory or Markdown file scope relative to base, or to the vault root when base is omitted"), "."),
+		"base":           stringSchema("optional vault-relative working directory used to resolve path and express returned scope and match paths"),
 		"regex":          withDefault(map[string]any{"type": "boolean", "description": "true for Go RE2 syntax and false for a literal"}, true),
 		"case_sensitive": withDefault(map[string]any{"type": "boolean", "description": "case-sensitive matching when true"}, false),
 		"context_lines":  integerSchema("bounded source-line evidence before and after each match", 0, MaxGrepContextLines, DefaultGrepContextLines),

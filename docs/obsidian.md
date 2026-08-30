@@ -40,13 +40,13 @@ The mutation phase adds `stat`, `write`, `edit`, `move`, and `delete` together a
 
 Implemented and accepted core tools:
 
-- `resolve`: return canonical stored-spelling/NFC identity and metadata for explicit vault-relative `path` plus optional `base`, including successful `exists:false` results for missing paths.
+- `resolve`: return stored-spelling/NFC identity and metadata for explicit `path` relative to optional `base`, including successful `exists:false` results for missing paths; model-visible paths use the same base-relative coordinate.
 - `ls`: list one directory level in canonical order with hidden-entry filtering, symlink non-traversal, a maximum limit of 500 entries, stateless source/query-bound cursors, truthful coverage, and a 64 KiB SDK-result cap.
-- `read`: select bounded content, heading, block, frontmatter, or outline evidence from one canonical Markdown path with source-bound continuation.
-- `read_many`: preserve one to 20 ordered read requests under one aggregate byte budget, isolate item errors, and continue with a request-vector-bound cursor.
+- `read`: select bounded content, heading, block, frontmatter, or outline evidence from one Markdown path relative to optional `base`, with source-bound continuation.
+- `read_many`: preserve one to 20 ordered read requests relative to one optional top-level `base` under one aggregate byte budget, isolate item errors, and continue with a request-vector-bound cursor.
 - `grep`: search Markdown content in deterministic canonical-path order with bounded context, explicit work budgets, truthful coverage, and stateless continuation.
 - `read_document`: accepted PDF support that captures one confined, validated source up to 7,000,000 bytes and returns its original bytes as `application/pdf`. Unsupported document representations fail closed and remain absent from the support claim.
-- `stat`: return canonical safe metadata and an opaque mutation fingerprint for one allowed regular file or empty directory.
+- `stat`: return base-relative safe metadata and an opaque mutation fingerprint for one allowed regular file or empty directory.
 - `write`: create an absent file or atomically replace one complete file value under an exact precondition and the 512 KiB decoded-value cap.
 - `edit`: validate and atomically apply one 1-to-64-operation exact-context patch against a fingerprinted source.
 - `move`: exclusively rename one fingerprinted file or empty directory to an explicitly absent destination.
@@ -69,13 +69,15 @@ Tools should accept explicit path context:
 { "path": "home/projects", "base": "", "limit": 100 }
 ```
 
-`base` may give shell-like ergonomics, but it is an input, not server session state. A later model turn can reuse a returned base explicitly. Server-side `cd` state is not part of the first design.
+`base` gives ordinary working-directory ergonomics, but it is an input, not server session state. `path` is resolved relative to it, `.` and `..` behave normally, and the final normalized target must remain inside the vault. Model-visible path fields are expressed relative to that same base, including `../` when a result lies in another vault folder, so a returned path can be reused unchanged with the same base. With no base, paths are vault-relative. Server-side `cd` state is not part of the design.
 
-`resolve` owns path normalization and can return canonical vault-relative paths for follow-on calls.
+The MCP does not require a setup read, discover or auto-read `AGENTS.md`, or interpret project instructions. A ChatGPT project may tell the model which base to use and which instruction file to read; those directions remain ordinary model instructions composed from the existing tools.
+
+The filesystem core retains canonical stored-spelling/NFC vault identities for ordering, fingerprints, source validation, and cursor state. The Obsidian tool boundary converts only model-visible paths into the caller's coordinate system before response-size fitting.
 
 ## Vault Boundary
 
-All tool paths are vault-relative after normalization. The filesystem adapter must reject absolute tool inputs, path traversal, symlink escapes, hidden local databases, secret directories, and any file outside the configured vault root. Only process startup config may supply the absolute vault root. Content and reference tools operate on Markdown files; `ls` and `resolve` may still report safe attachment metadata. Native document reading is governed by `requirements/obsidian-document-reading.md`; write, edit, move, and permanent delete are governed by `requirements/obsidian-mutation-tools.md`.
+All tool targets are vault-relative after combining `base` and `path`. The filesystem adapter must reject absolute tool inputs, normalized traversal outside the vault, symlink escapes, hidden local databases, secret directories, and any file outside the configured vault root. Ordinary `..` segments that remain inside the vault are allowed. Only process startup config may supply the absolute vault root. Content and reference tools operate on Markdown files; `ls` and `resolve` may still report safe attachment metadata. Native document reading is governed by `requirements/obsidian-document-reading.md`; write, edit, move, and permanent delete are governed by `requirements/obsidian-mutation-tools.md`.
 
 ## Retrieval Strategy
 

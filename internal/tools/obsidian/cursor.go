@@ -77,14 +77,15 @@ type cursorSealer interface {
 // LSQueryHash hashes the canonical directory identity, effective limit, and
 // response contract version with length framing. Caller spelling must not be
 // passed here after canonical resolution is available.
-func LSQueryHash(canonicalDirectory string, effectiveLimit int) CursorQueryHash {
+func LSQueryHash(canonicalDirectory, outputBase string, effectiveLimit int) CursorQueryHash {
 	h := sha256.New()
 	writeHashField(h, []byte(ToolLS))
 	writeHashField(h, []byte(canonicalDirectory))
+	writeHashField(h, []byte(outputBase))
 	var number [8]byte
 	binary.BigEndian.PutUint64(number[:], uint64(effectiveLimit))
 	writeHashField(h, number[:])
-	binary.BigEndian.PutUint64(number[:], uint64(ResponseContractV1))
+	binary.BigEndian.PutUint64(number[:], uint64(ResponseContractV2))
 	writeHashField(h, number[:])
 
 	var out CursorQueryHash
@@ -105,7 +106,7 @@ func RetrievalQueryHash(tool string, normalized any) (CursorQueryHash, error) {
 	writeHashField(h, []byte(tool))
 	writeHashField(h, encoded)
 	var number [8]byte
-	binary.BigEndian.PutUint64(number[:], uint64(ResponseContractV1))
+	binary.BigEndian.PutUint64(number[:], uint64(ResponseContractV2))
 	writeHashField(h, number[:])
 	var out CursorQueryHash
 	copy(out[:], h.Sum(nil))

@@ -28,7 +28,7 @@ const (
 	DocumentMaxBytes        = 7_000_000
 	documentChunkSize       = 256 << 10
 	documentMIMEPDF         = "application/pdf"
-	ReadDocumentDescription = "Return one supported vault document as its original native bytes for model-native reading. The PDF activation supports one explicit vault-relative .pdf path up to 7,000,000 bytes; other document formats remain unsupported."
+	ReadDocumentDescription = "Return one supported vault document as its original native bytes for model-native reading. The PDF activation supports one explicit .pdf path relative to optional vault-relative base, up to 7,000,000 bytes; ordinary .. may move between vault folders but may not escape the vault. Other document formats remain unsupported."
 )
 
 // Set only on a locally proven activation candidate. Ordinary builds retain
@@ -159,8 +159,8 @@ func (s *documentSnapshot) Close() error {
 }
 
 type ReadDocumentInput struct {
-	Path string `json:"path" jsonschema:"vault-relative path to one supported document"`
-	Base string `json:"base,omitempty" jsonschema:"optional vault-relative base path"`
+	Path string `json:"path" jsonschema:"supported document path relative to base, or to the vault root when base is omitted"`
+	Base string `json:"base,omitempty" jsonschema:"optional vault-relative working directory used to resolve path"`
 }
 
 type ReadDocumentOutput struct {

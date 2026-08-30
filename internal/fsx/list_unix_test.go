@@ -277,6 +277,33 @@ func BenchmarkMembershipAccumulatorAdd(b *testing.B) {
 	}
 }
 
+func BenchmarkListPageLargeDirectory(b *testing.B) {
+	root := b.TempDir()
+	for i := 0; i < 1000; i++ {
+		name := filepath.Join(root, fmt.Sprintf("note-%04d.md", i))
+		if err := os.WriteFile(name, []byte("synthetic\n"), 0o600); err != nil {
+			b.Fatal(err)
+		}
+	}
+	vault, err := NewVault(root)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		directory, err := vault.OpenDir(context.Background(), "", ".")
+		if err != nil {
+			b.Fatal(err)
+		}
+		page, listErr := directory.ListPage(context.Background(), ListOptions{Limit: 10})
+		closeErr := directory.Close()
+		if listErr != nil || closeErr != nil || len(page.Entries) != 10 || !page.HasMore {
+			b.Fatalf("page entries=%d has_more=%t list_err=%v close_err=%v", len(page.Entries), page.HasMore, listErr, closeErr)
+		}
+	}
+}
+
 func framedMembershipReference(positions []Position) membershipAccumulator {
 	var accumulator membershipAccumulator
 	for _, position := range positions {
