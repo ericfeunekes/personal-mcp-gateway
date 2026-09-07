@@ -2,6 +2,7 @@ package ynab
 
 import (
 	"context"
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -61,7 +62,11 @@ func TestProductionTransportNegotiatesHTTP1Only(t *testing.T) {
 	server.StartTLS()
 	defer server.Close()
 	transport := newProviderTransport()
-	transport.TLSClientConfig = server.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	// Trust the fixture certificate without replacing production ALPN settings.
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	}
+	transport.TLSClientConfig.RootCAs = server.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
 	adapter := newTools(Options{Token: "synthetic"}, server.URL, &http.Client{Transport: transport, Timeout: time.Second})
 	defer adapter.Close()
 	_, out, err := adapter.execute(context.Background(), ToolList, Input{Items: []Item{{Type: "plan"}}})

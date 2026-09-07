@@ -2,6 +2,7 @@ package ynab
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -22,6 +23,12 @@ func newProviderTransport() *http.Transport {
 	transport.ForceAttemptHTTP2 = false
 	transport.Protocols = new(http.Protocols)
 	transport.Protocols.SetHTTP1(true)
+	// Clone retains the default transport's initialized ALPN list. Protocols
+	// alone does not remove h2 from that TLS advertisement.
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	}
+	transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
 	return transport
 }
 
