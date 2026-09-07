@@ -108,6 +108,32 @@ func TestNewServerRegistersTypedDescriptorsAndDerivesNames(t *testing.T) {
 	}
 }
 
+func TestNewNamedServerPreservesCallerIdentity(t *testing.T) {
+	identity := sdk.Implementation{Name: "ynab", Version: "0.1.0"}
+	server, _, err := NewNamedServer(identity, audit.Disabled(), "stdio", []ToolDescriptor{descriptorForServerTest(t, "probe", sdk.Tool{})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	serverTransport, clientTransport := sdk.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	client := sdk.NewClient(&sdk.Implementation{Name: "test-client", Version: "0.0.1"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+	got := clientSession.InitializeResult().ServerInfo
+	if got.Name != identity.Name || got.Version != identity.Version || len(got.Icons) != 0 {
+		t.Fatalf("server identity = %#v, want caller identity without Obsidian icon", got)
+	}
+}
+
 type descriptorServerInput struct {
 	Value string `json:"value"`
 }

@@ -1,0 +1,1799 @@
+{
+  "input": {
+    "SaveAccount": {
+      "required": [
+        "balance",
+        "name",
+        "type"
+      ],
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "checking",
+            "savings",
+            "cash",
+            "creditCard",
+            "otherAsset",
+            "otherLiability"
+          ]
+        },
+        "balance": {
+          "type": "integer",
+          "format": "int64"
+        }
+      }
+    },
+    "NewCategory": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "category_group_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "goal_target": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "goal_target_date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "goal_needs_whole_amount": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "goal_frequency": {
+          "type": "string",
+          "enum": [
+            "monthly",
+            "weekly",
+            "yearly"
+          ]
+        }
+      },
+      "required": [
+        "category_group_id",
+        "name"
+      ]
+    },
+    "SaveCategory": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "category_group_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "goal_target": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "goal_target_date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "goal_needs_whole_amount": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "goal_frequency": {
+          "type": "string",
+          "enum": [
+            "monthly",
+            "weekly",
+            "yearly"
+          ]
+        }
+      }
+    },
+    "SaveCategoryGroup": {
+      "required": [
+        "name"
+      ],
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 50
+        }
+      }
+    },
+    "PostPayee": {
+      "required": [
+        "name"
+      ],
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "nullable": false,
+          "maxLength": 500
+        }
+      }
+    },
+    "SavePayee": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "nullable": false,
+          "maxLength": 500
+        }
+      }
+    },
+    "NewTransaction": {
+      "type": "object",
+      "properties": {
+        "account_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "amount": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "payee_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "payee_name": {
+          "maxLength": 200,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "category_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "memo": {
+          "maxLength": 500,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cleared": {
+          "type": "string",
+          "enum": [
+            "cleared",
+            "uncleared",
+            "reconciled"
+          ]
+        },
+        "approved": {
+          "type": "boolean"
+        },
+        "flag_color": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "red",
+            "orange",
+            "yellow",
+            "green",
+            "blue",
+            "purple",
+            "",
+            null
+          ]
+        },
+        "subtransactions": {
+          "type": "array",
+          "items": {
+            "required": [
+              "amount"
+            ],
+            "type": "object",
+            "properties": {
+              "amount": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "payee_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "uuid"
+              },
+              "payee_name": {
+                "maxLength": 200,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "category_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "uuid"
+              },
+              "memo": {
+                "maxLength": 500,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "import_id": {
+          "maxLength": 36,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": []
+    },
+    "SaveTransactionWithIdOrImportId": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "import_id": {
+          "maxLength": 36,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "account_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "amount": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "payee_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "payee_name": {
+          "maxLength": 200,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "category_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "memo": {
+          "maxLength": 500,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cleared": {
+          "type": "string",
+          "enum": [
+            "cleared",
+            "uncleared",
+            "reconciled"
+          ]
+        },
+        "approved": {
+          "type": "boolean"
+        },
+        "flag_color": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "red",
+            "orange",
+            "yellow",
+            "green",
+            "blue",
+            "purple",
+            "",
+            null
+          ]
+        },
+        "subtransactions": {
+          "type": "array",
+          "items": {
+            "required": [
+              "amount"
+            ],
+            "type": "object",
+            "properties": {
+              "amount": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "payee_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "uuid"
+              },
+              "payee_name": {
+                "maxLength": 200,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "category_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "uuid"
+              },
+              "memo": {
+                "maxLength": 500,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "required": []
+    },
+    "SaveScheduledTransaction": {
+      "required": [
+        "account_id",
+        "date"
+      ],
+      "type": "object",
+      "properties": {
+        "account_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "amount": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "payee_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "payee_name": {
+          "maxLength": 200,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "category_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "memo": {
+          "maxLength": 500,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "flag_color": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "red",
+            "orange",
+            "yellow",
+            "green",
+            "blue",
+            "purple",
+            "",
+            null
+          ]
+        },
+        "frequency": {
+          "type": "string",
+          "enum": [
+            "never",
+            "daily",
+            "weekly",
+            "everyOtherWeek",
+            "twiceAMonth",
+            "every4Weeks",
+            "monthly",
+            "everyOtherMonth",
+            "every3Months",
+            "every4Months",
+            "twiceAYear",
+            "yearly",
+            "everyOtherYear"
+          ]
+        }
+      }
+    },
+    "SaveMonthCategory": {
+      "required": [
+        "budgeted"
+      ],
+      "type": "object",
+      "properties": {
+        "budgeted": {
+          "type": "integer",
+          "format": "int64"
+        }
+      }
+    }
+  },
+  "output": {
+    "plan": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "last_modified_on": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "first_month": {
+          "type": "string",
+          "format": "date"
+        },
+        "last_month": {
+          "type": "string",
+          "format": "date"
+        },
+        "date_format": {
+          "required": [
+            "format"
+          ],
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "format": {
+              "type": "string"
+            }
+          }
+        },
+        "currency_format": {
+          "required": [
+            "currency_symbol",
+            "decimal_digits",
+            "decimal_separator",
+            "display_symbol",
+            "example_format",
+            "group_separator",
+            "iso_code",
+            "symbol_first"
+          ],
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "iso_code": {
+              "type": "string"
+            },
+            "example_format": {
+              "type": "string"
+            },
+            "decimal_digits": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "decimal_separator": {
+              "type": "string"
+            },
+            "symbol_first": {
+              "type": "boolean"
+            },
+            "group_separator": {
+              "type": "string"
+            },
+            "currency_symbol": {
+              "type": "string"
+            },
+            "display_symbol": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ]
+    },
+    "user": {
+      "required": [
+        "id"
+      ],
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    },
+    "settings": {
+      "required": [
+        "currency_format",
+        "date_format"
+      ],
+      "type": "object",
+      "properties": {
+        "date_format": {
+          "required": [
+            "format"
+          ],
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "format": {
+              "type": "string"
+            }
+          }
+        },
+        "currency_format": {
+          "required": [
+            "currency_symbol",
+            "decimal_digits",
+            "decimal_separator",
+            "display_symbol",
+            "example_format",
+            "group_separator",
+            "iso_code",
+            "symbol_first"
+          ],
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "iso_code": {
+              "type": "string"
+            },
+            "example_format": {
+              "type": "string"
+            },
+            "decimal_digits": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "decimal_separator": {
+              "type": "string"
+            },
+            "symbol_first": {
+              "type": "boolean"
+            },
+            "group_separator": {
+              "type": "string"
+            },
+            "currency_symbol": {
+              "type": "string"
+            },
+            "display_symbol": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "account": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "checking",
+            "savings",
+            "cash",
+            "creditCard",
+            "lineOfCredit",
+            "otherAsset",
+            "otherLiability",
+            "mortgage",
+            "autoLoan",
+            "studentLoan",
+            "personalLoan",
+            "medicalDebt",
+            "otherDebt"
+          ]
+        },
+        "on_budget": {
+          "type": "boolean"
+        },
+        "closed": {
+          "type": "boolean"
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "balance": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "cleared_balance": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "uncleared_balance": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "transfer_payee_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "direct_import_linked": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "direct_import_in_error": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "last_reconciled_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "debt_original_balance": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "debt_interest_rates": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "debt_minimum_payments": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "debt_escrow_amounts": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "deleted": {
+          "type": "boolean"
+        },
+        "balance_formatted": {
+          "type": "string"
+        },
+        "balance_currency": {
+          "type": "number",
+          "format": "double"
+        },
+        "cleared_balance_formatted": {
+          "type": "string"
+        },
+        "cleared_balance_currency": {
+          "type": "number",
+          "format": "double"
+        },
+        "uncleared_balance_formatted": {
+          "type": "string"
+        },
+        "uncleared_balance_currency": {
+          "type": "number",
+          "format": "double"
+        },
+        "plan_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "balance",
+        "cleared_balance",
+        "closed",
+        "deleted",
+        "id",
+        "name",
+        "on_budget",
+        "transfer_payee_id",
+        "type",
+        "uncleared_balance"
+      ]
+    },
+    "category_group": {
+      "required": [
+        "deleted",
+        "hidden",
+        "internal",
+        "id",
+        "name"
+      ],
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "hidden": {
+          "type": "boolean"
+        },
+        "internal": {
+          "type": "boolean"
+        },
+        "deleted": {
+          "type": "boolean"
+        }
+      }
+    },
+    "category": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "category_group_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "category_group_name": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "hidden": {
+          "type": "boolean"
+        },
+        "internal": {
+          "type": "boolean"
+        },
+        "original_category_group_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "budgeted": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "activity": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "balance": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "goal_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "TB",
+            "TBD",
+            "MF",
+            "NEED",
+            "DEBT",
+            null
+          ]
+        },
+        "goal_needs_whole_amount": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "goal_day": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "goal_cadence": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "goal_cadence_frequency": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "goal_creation_month": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "goal_target": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "goal_target_month": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "goal_target_date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "goal_percentage_complete": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "goal_months_to_budget": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "goal_under_funded": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "goal_overall_funded": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "goal_overall_left": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "goal_snoozed_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "deleted": {
+          "type": "boolean"
+        },
+        "balance_formatted": {
+          "type": "string"
+        },
+        "balance_currency": {
+          "type": "number",
+          "format": "double"
+        },
+        "activity_formatted": {
+          "type": "string"
+        },
+        "activity_currency": {
+          "type": "number",
+          "format": "double"
+        },
+        "budgeted_formatted": {
+          "type": "string"
+        },
+        "budgeted_currency": {
+          "type": "number",
+          "format": "double"
+        },
+        "goal_target_formatted": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "goal_target_currency": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "goal_under_funded_formatted": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "goal_under_funded_currency": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "goal_overall_funded_formatted": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "goal_overall_funded_currency": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "goal_overall_left_formatted": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "goal_overall_left_currency": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "month": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "activity",
+        "balance",
+        "budgeted",
+        "category_group_id",
+        "deleted",
+        "hidden",
+        "id",
+        "internal",
+        "name"
+      ]
+    },
+    "payee": {
+      "required": [
+        "deleted",
+        "id",
+        "name"
+      ],
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "transfer_account_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "deleted": {
+          "type": "boolean"
+        }
+      }
+    },
+    "payee_location": {
+      "required": [
+        "deleted",
+        "id",
+        "latitude",
+        "longitude",
+        "payee_id"
+      ],
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "payee_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "latitude": {
+          "type": "string"
+        },
+        "longitude": {
+          "type": "string"
+        },
+        "deleted": {
+          "type": "boolean"
+        }
+      }
+    },
+    "month": {
+      "type": "object",
+      "properties": {
+        "month": {
+          "type": "string",
+          "format": "date"
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "income": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "budgeted": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "activity": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "to_be_budgeted": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "age_of_money": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        },
+        "deleted": {
+          "type": "boolean"
+        },
+        "income_formatted": {
+          "type": "string"
+        },
+        "income_currency": {
+          "type": "number",
+          "format": "double"
+        },
+        "budgeted_formatted": {
+          "type": "string"
+        },
+        "budgeted_currency": {
+          "type": "number",
+          "format": "double"
+        },
+        "activity_formatted": {
+          "type": "string"
+        },
+        "activity_currency": {
+          "type": "number",
+          "format": "double"
+        },
+        "to_be_budgeted_formatted": {
+          "type": "string"
+        },
+        "to_be_budgeted_currency": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "activity",
+        "budgeted",
+        "deleted",
+        "income",
+        "month",
+        "to_be_budgeted"
+      ]
+    },
+    "transaction": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "amount": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "memo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cleared": {
+          "type": "string",
+          "enum": [
+            "cleared",
+            "uncleared",
+            "reconciled"
+          ]
+        },
+        "approved": {
+          "type": "boolean"
+        },
+        "flag_color": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "red",
+            "orange",
+            "yellow",
+            "green",
+            "blue",
+            "purple",
+            "",
+            null
+          ]
+        },
+        "flag_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "account_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "payee_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "category_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "transfer_account_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "transfer_transaction_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "matched_transaction_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "import_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "import_payee_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "import_payee_name_original": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "debt_transaction_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "payment",
+            "refund",
+            "fee",
+            "interest",
+            "escrow",
+            "balanceAdjustment",
+            "credit",
+            "charge",
+            null
+          ]
+        },
+        "deleted": {
+          "type": "boolean"
+        },
+        "amount_formatted": {
+          "type": "string"
+        },
+        "amount_currency": {
+          "type": "number",
+          "format": "double"
+        },
+        "account_name": {
+          "type": "string"
+        },
+        "payee_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "category_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "transaction",
+            "subtransaction"
+          ]
+        },
+        "parent_transaction_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "subtransaction": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "transaction_id": {
+          "type": "string"
+        },
+        "amount": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "memo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "payee_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "payee_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "category_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "category_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "transfer_account_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "transfer_transaction_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "deleted": {
+          "type": "boolean"
+        },
+        "amount_formatted": {
+          "type": "string"
+        },
+        "amount_currency": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "amount",
+        "deleted",
+        "id",
+        "transaction_id"
+      ]
+    },
+    "scheduled_transaction": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "date_first": {
+          "type": "string",
+          "format": "date"
+        },
+        "date_next": {
+          "type": "string",
+          "format": "date"
+        },
+        "frequency": {
+          "type": "string",
+          "enum": [
+            "never",
+            "daily",
+            "weekly",
+            "everyOtherWeek",
+            "twiceAMonth",
+            "every4Weeks",
+            "monthly",
+            "everyOtherMonth",
+            "every3Months",
+            "every4Months",
+            "twiceAYear",
+            "yearly",
+            "everyOtherYear"
+          ]
+        },
+        "amount": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "memo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "flag_color": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "red",
+            "orange",
+            "yellow",
+            "green",
+            "blue",
+            "purple",
+            "",
+            null
+          ]
+        },
+        "flag_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "account_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "payee_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "category_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "transfer_account_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "deleted": {
+          "type": "boolean"
+        },
+        "amount_formatted": {
+          "type": "string"
+        },
+        "amount_currency": {
+          "type": "number",
+          "format": "double"
+        },
+        "account_name": {
+          "type": "string"
+        },
+        "payee_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "category_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "account_id",
+        "account_name",
+        "amount",
+        "date_first",
+        "date_next",
+        "deleted",
+        "frequency",
+        "id"
+      ]
+    },
+    "scheduled_subtransaction": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "scheduled_transaction_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "amount": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "memo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "payee_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "payee_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "category_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "category_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "transfer_account_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "deleted": {
+          "type": "boolean"
+        },
+        "amount_formatted": {
+          "type": "string"
+        },
+        "amount_currency": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "amount",
+        "deleted",
+        "id",
+        "scheduled_transaction_id"
+      ]
+    },
+    "money_movement": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "month": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "moved_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "money_movement_group_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "performed_by_user_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "from_category_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "to_category_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "amount": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "amount_formatted": {
+          "type": "string"
+        },
+        "amount_currency": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "amount",
+        "id"
+      ]
+    },
+    "money_movement_group": {
+      "required": [
+        "id",
+        "group_created_at",
+        "month"
+      ],
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "group_created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "month": {
+          "type": "string",
+          "format": "date"
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "performed_by_user_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        }
+      }
+    }
+  }
+}

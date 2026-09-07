@@ -289,6 +289,17 @@ func parsePrepare(args []string, deps dependencies) (releaseactivation.PrepareRe
 	request.MCPWrapperPath = filepath.Join(repoRoot, "scripts", "run-obsidian-mcp-stdio.sh")
 	request.StdoutPath = filepath.Join(deps.home, "Library", "Logs", "personal-mcp-gateway", "obsidian-tunnel.out.log")
 	request.StderrPath = filepath.Join(deps.home, "Library", "Logs", "personal-mcp-gateway", "obsidian-tunnel.err.log")
+	request.ServiceCandidates = []releaseactivation.ServiceCandidate{{
+		Server:           "ynab",
+		LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel",
+		PlistPath:        filepath.Join(deps.home, "Library", "LaunchAgents", "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel.plist"),
+		WrapperPath:      filepath.Join(repoRoot, "scripts", "run-ynab-tunnel.sh"),
+		MCPWrapperPath:   filepath.Join(repoRoot, "scripts", "run-ynab-mcp-stdio.sh"),
+		StdoutPath:       filepath.Join(deps.home, "Library", "Logs", "personal-mcp-gateway", "ynab-tunnel.out.log"),
+		StderrPath:       filepath.Join(deps.home, "Library", "Logs", "personal-mcp-gateway", "ynab-tunnel.err.log"),
+		EnvironmentPath:  filepath.Join(repoRoot, ".env.ynab.local"),
+		HealthURLFile:    "/tmp/personal-mcp-gateway/ynab-tunnel-health.url",
+	}}
 	return request, nil
 }
 
@@ -322,8 +333,8 @@ func parseUpdate(args []string) (updateRequest, error) {
 }
 
 type adminRequest struct {
-	command, repoRoot, label, home, healthURLFile string
-	uid                                           int
+	command, repoRoot, label, home, healthURLFile, server string
+	uid                                                   int
 }
 
 func parseAdmin(command string, args []string, deps dependencies) (adminRequest, error) {
@@ -333,32 +344,95 @@ func parseAdmin(command string, args []string, deps dependencies) (adminRequest,
 	set.StringVar(&request.repoRoot, "repo-root", "", "")
 	set.StringVar(&request.label, "label", "", "")
 	set.StringVar(&request.healthURLFile, "health-url-file", "", "")
+	set.StringVar(&request.server, "server", "obsidian", "")
 	if err := set.Parse(args); err != nil || set.NArg() != 0 || !filepath.IsAbs(request.repoRoot) || request.label == "" {
 		return request, &usageError{}
 	}
 	if !releaseactivation.ValidLaunchAgentLabel(request.label) {
 		return request, &usageError{}
 	}
+	if request.server != "obsidian" && request.server != "ynab" {
+		return request, &usageError{}
+	}
 	if command == "restart" && !filepath.IsAbs(request.healthURLFile) {
 		return request, &usageError{}
+	}
+	if command == "install-launchagent" && request.server == "ynab" {
+		request.healthURLFile = "/tmp/personal-mcp-gateway/ynab-tunnel-health.url"
 	}
 	return request, nil
 }
 
 func runAdmin(ctx context.Context, runtime releaseactivation.Runtime, request adminRequest) error {
 	manifest := releaseactivation.Manifest{EffectiveUID: request.uid, LaunchAgentLabel: request.label, HealthURLFile: request.healthURLFile}
+	if request.server == "ynab" {
+		manifest.WrapperPath = filepath.Join(request.repoRoot, "scripts", "run-ynab-tunnel.sh")
+		manifest.ReadyTimeoutSeconds = 45
+		manifest.ReadyPollMilliseconds = 1000
+	}
 	switch request.command {
 	case "restart":
 		return runtime.Restart(ctx, manifest)
 	case "install-launchagent":
+		if request.server == "ynab" {
+			loadedRuntime, ok := runtime.(interface {
+				ServiceLoaded(context.Context, releaseactivation.Manifest) (bool, error)
+			})
+			if !ok {
+				return releaseactivation.ErrStateConflict
+			}
+			loaded, err := loadedRuntime.ServiceLoaded(ctx, manifest)
+			if err != nil {
+				return err
+			}
+			if loaded {
+				return releaseactivation.ErrStateConflict
+			}
+		}
 		adapter := filepath.Join(request.repoRoot, "scripts", "internal", "install-obsidian-tunnel-launchagent.sh")
-		return runtime.InvokeInstallAdapter(ctx, adapter, request.repoRoot, request.home, strconv.Itoa(request.uid), request.label)
+		args := []string{request.repoRoot, request.home, strconv.Itoa(request.uid), request.label}
+		if request.server == "ynab" {
+			args = append(args, request.server)
+		}
+		if err := runtime.InvokeInstallAdapter(ctx, adapter, args...); err != nil {
+			if request.server == "ynab" {
+				if cleanupErr := cleanupNewYNAB(ctx, runtime, manifest); cleanupErr != nil {
+					return cleanupErr
+				}
+			}
+			return err
+		}
+		if request.server != "ynab" {
+			return nil
+		}
+		if err := runtime.WaitReady(ctx, manifest); err == nil {
+			return nil
+		} else if cleanupErr := cleanupNewYNAB(ctx, runtime, manifest); cleanupErr != nil {
+			return cleanupErr
+		} else {
+			return err
+		}
 	case "uninstall-launchagent":
 		adapter := filepath.Join(request.repoRoot, "scripts", "internal", "uninstall-obsidian-tunnel-launchagent.sh")
-		return runtime.InvokeUninstallAdapter(ctx, adapter, request.home, strconv.Itoa(request.uid), request.label)
+		args := []string{request.home, strconv.Itoa(request.uid), request.label}
+		if request.server == "ynab" {
+			args = append(args, request.server)
+		}
+		return runtime.InvokeUninstallAdapter(ctx, adapter, args...)
 	default:
 		return &usageError{}
 	}
+}
+
+func cleanupNewYNAB(ctx context.Context, runtime releaseactivation.Runtime, manifest releaseactivation.Manifest) error {
+	if err := runtime.Bootout(ctx, manifest); err != nil {
+		return releaseactivation.SanitizedError(errors.New("new YNAB cleanup failed"))
+	}
+	unloaded, err := runtime.ConfirmUnloaded(ctx, manifest)
+	if err != nil || !unloaded {
+		return releaseactivation.SanitizedError(errors.New("new YNAB cleanup unconfirmed"))
+	}
+	return nil
 }
 
 func updateAfterFetch(ctx context.Context, request updateRequest, timeout time.Duration) error {

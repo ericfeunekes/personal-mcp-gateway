@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	_ "embed"
 	"encoding/base64"
@@ -38,15 +39,22 @@ func serverIcons() []sdk.Icon {
 }
 
 func NewServer(log *audit.Logger, transport string, descriptors []ToolDescriptor) (*sdk.Server, []string, error) {
+	return NewNamedServer(sdk.Implementation{
+		Name:    ServerName,
+		Version: ServerVersion,
+		Icons:   serverIcons(),
+	}, log, transport, descriptors)
+}
+
+// NewNamedServer constructs a separately named MCP server using the shared
+// transport, registration, and telemetry behavior. Callers own the public
+// server identity, including whether an integration publishes an icon.
+func NewNamedServer(identity sdk.Implementation, log *audit.Logger, transport string, descriptors []ToolDescriptor) (*sdk.Server, []string, error) {
 	ordered, names, err := validateDescriptors(descriptors)
 	if err != nil {
 		return nil, nil, err
 	}
-	server := sdk.NewServer(&sdk.Implementation{
-		Name:    ServerName,
-		Version: ServerVersion,
-		Icons:   serverIcons(),
-	}, &sdk.ServerOptions{
+	server := sdk.NewServer(&identity, &sdk.ServerOptions{
 		Capabilities: &sdk.ServerCapabilities{},
 	})
 	if log != nil && log.Enabled() {
@@ -105,10 +113,43 @@ func StreamableHTTPHandlerWithNativeDocuments(server *sdk.Server, bridge *Native
 	handler := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server {
 		return server
 	}, &sdk.StreamableHTTPOptions{
-		JSONResponse: true,
-		Stateless:    true,
+		JSONResponse:                 true,
+		Stateless:                    true,
+		MaxRequestBodyBytes:          limits.HTTPRequestBodyBytes,
+		PropagateRequestCancellation: true,
 	})
-	return nativeDocumentHTTPHandler(handler, bridge)
+	return limitHTTPRequestBody(nativeDocumentHTTPHandler(handler, bridge))
+}
+
+// limitHTTPRequestBody preserves the gateway's body-limit precedence over
+// SDK media-type validation. Declared oversized bodies are rejected without a
+// read. Chunked bodies have no declared length, so determining that they
+// exceed the limit necessarily consumes at most limit+1 source bytes before
+// handing a bounded request on to the SDK.
+func limitHTTPRequestBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method == http.MethodPost && req.Body != nil {
+			if req.ContentLength > limits.HTTPRequestBodyBytes {
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			if req.ContentLength < 0 {
+				body, err := io.ReadAll(io.LimitReader(req.Body, limits.HTTPRequestBodyBytes+1))
+				_ = req.Body.Close()
+				if err != nil {
+					http.Error(w, "invalid request body", http.StatusBadRequest)
+					return
+				}
+				if int64(len(body)) > limits.HTTPRequestBodyBytes {
+					http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+					return
+				}
+				req.Body = io.NopCloser(bytes.NewReader(body))
+				req.ContentLength = int64(len(body))
+			}
+		}
+		next.ServeHTTP(w, req)
+	})
 }
 
 var errMessageTooLarge = errors.New("mcp message too large")

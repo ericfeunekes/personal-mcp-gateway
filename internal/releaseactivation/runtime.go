@@ -146,6 +146,12 @@ func (r *OSRuntime) Observe(ctx context.Context, m Manifest, controllerPath stri
 	return observed, nil
 }
 
+// ServiceLoaded observes launchd registration only. It intentionally does not
+// treat a crashed child as absent: launchctl still reports the loaded job.
+func (r *OSRuntime) ServiceLoaded(ctx context.Context, m Manifest) (bool, error) {
+	return r.launchAgentLoaded(ctx, m)
+}
+
 func (r *OSRuntime) InstallCandidate(ctx context.Context, m Manifest, artifacts RuntimeArtifacts) error {
 	if err := ctx.Err(); err != nil {
 		return runtimeFailure("candidate installation", err)

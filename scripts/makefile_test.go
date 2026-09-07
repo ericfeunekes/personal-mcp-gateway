@@ -39,6 +39,7 @@ if [[ "$*" == "list ./..." ]]; then
     example.test/gateway/cmd/gateway \
     example.test/gateway/cmd/gateway-smoke \
     example.test/gateway/internal/fsx \
+    example.test/gateway/internal/tools/ynab \
     example.test/gateway/scripts
   exit 0
 fi
@@ -46,6 +47,7 @@ fi
 case "$*" in
   "test -count=1 example.test/gateway/cmd/gateway example.test/gateway/internal/fsx") lane=ordinary ;;
   "test -count=1 ./cmd/gateway-smoke") lane=gateway-smoke ;;
+  "test -count=1 ./internal/tools/ynab") lane=ynab ;;
   "test -count=1 ./scripts") lane=scripts ;;
   *) printf 'unexpected fake go invocation: %s\n' "$*" >&2; exit 9 ;;
 esac
@@ -79,6 +81,8 @@ printf 'end:%s:%s\n' "$lane" "$*" >>"$TEST_CALL_LOG"
 	want := "" +
 		"start:ordinary:test -count=1 example.test/gateway/cmd/gateway example.test/gateway/internal/fsx\n" +
 		"end:ordinary:test -count=1 example.test/gateway/cmd/gateway example.test/gateway/internal/fsx\n" +
+		"start:ynab:test -count=1 ./internal/tools/ynab\n" +
+		"end:ynab:test -count=1 ./internal/tools/ynab\n" +
 		"start:gateway-smoke:test -count=1 ./cmd/gateway-smoke\n" +
 		"end:gateway-smoke:test -count=1 ./cmd/gateway-smoke\n" +
 		"start:scripts:test -count=1 ./scripts\n" +

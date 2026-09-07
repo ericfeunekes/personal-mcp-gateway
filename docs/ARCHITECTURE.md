@@ -19,7 +19,7 @@ The chosen public namespace shape is the MCP server name, not dotted tool names.
 
 ## System Shape
 
-- `cmd/gateway/` — process entrypoint that selects stdio or HTTP mode.
+- `cmd/gateway/` — process entrypoint that selects stdio or HTTP mode and `--server obsidian|ynab`.
 - `cmd/release-activation/` — private command adapter for the local release
   lifecycle; it maps arguments and bounded records but does not decide or
   persist transitions.
@@ -29,16 +29,23 @@ The chosen public namespace shape is the MCP server name, not dotted tool names.
   target replacement/recovery, and lock-held supervisor/source-update effects.
 - `internal/mcp/` — thin adapters around the official Go MCP SDK for server construction, transport selection, tool registration, and protocol response handling.
 - `internal/tools/obsidian/` — Obsidian tool handlers, schemas, public fingerprint/precondition/patch semantics, annotations, and ownership of Obsidian-specific note/reference semantics; implementation planning may split internal child packages without moving those semantics into `fsx`.
+- `internal/tools/ynab/` — provider-owned schemas, bounded HTTP requests, batch handling, exact monetary JSON, private host exports, and counters-only summaries.
 - `internal/fsx/` — root-confined filesystem adapter for vault traversal, path normalization, bounded reads, search helpers, raw file/directory identity, and narrowly typed vault mutation effects with last-available context revalidation and atomic namespace primitives where the platform supports them.
 - `internal/limits/` — shared resource budgets for protocol payloads, telemetry summaries, path inputs, and tool operation timeouts.
 - `internal/config/` — local config loading without secrets in repo.
 - `internal/audit/` — metadata-only SQLite/JSONL access logs and operational events.
 
-The initial deployable unit is the Obsidian MCP server process. The same backend module is started in either stdio mode for local smoke tests or HTTP mode for OpenAI tunnel integration. Do not build separate stdio and HTTP server implementations. Future integrations may share internal gateway code, but they should become separately named MCP server entries before they become model-visible.
+Obsidian and YNAB use one executable in separate processes with independent
+configuration, readiness, telemetry, and private tunnel identities. Each domain
+uses the same backend for stdio and HTTP; do not build separate transport-specific
+server implementations. The release controller owns one shared binary transaction
+and captures the loaded service set for both forward activation and rollback.
 
 Use `github.com/modelcontextprotocol/go-sdk` as the MCP implementation layer. The backend constructs one MCP server shape and exposes it through stdio or Streamable HTTP. One narrowly scoped exception replaces only marked `read_document` tool-result frames after the SDK has performed dispatch and typed output construction: it incrementally emits the SDK-compatible embedded-resource JSON shape from an immutable one-shot payload. Ordinary frames remain byte-for-byte on the SDK path, native batches are rejected before dispatch, and this exception must not become a general JSON-RPC implementation.
 
 ## Domains
+
+- [ynab.md](ynab.md) owns the implemented YNAB server boundary, provider/export adapter, and [tool requirements](requirements/ynab-tools.md).
 
 - `gateway.md` owns process lifecycle, OpenAI tunnel assumptions, config, health, audit, and cross-server tool registration.
 - `obsidian.md` owns vault-specific read/reference behavior and the `obsidian` server's tool vocabulary.

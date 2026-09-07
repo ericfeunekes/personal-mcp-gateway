@@ -19,7 +19,7 @@ func TestManagerPrepareResumeAccept(t *testing.T) {
 		t.Fatal(err)
 	}
 	if prepared.State != StatePrepared || !prepared.PreviousPresent || prepared.ID == "" ||
-		prepared.Version != 2 || prepared.Commit != request.Commit || prepared.CandidateSHA256 != request.CandidateSHA256 ||
+		prepared.Version != ManifestVersion || len(prepared.Services) != 1 || prepared.Services[0].Server != "obsidian" || prepared.Commit != request.Commit || prepared.CandidateSHA256 != request.CandidateSHA256 ||
 		prepared.DependencySHA256 != request.DependencySHA256 {
 		t.Fatalf("prepared manifest = %#v", prepared)
 	}
@@ -680,8 +680,11 @@ type fakeManagerRuntime struct {
 	waitFailures     int
 	confirmOverride  func() (bool, error)
 	calls            []string
+	serviceRestarts  []string
+	serviceBootouts  []string
 	observeCalls     int
 	afterObserve     func()
+	ynabLoaded       bool
 }
 
 func (f *fakeManagerRuntime) Observe(_ context.Context, m Manifest, controller string, artifacts RuntimeArtifacts) (Observed, error) {
@@ -723,13 +726,21 @@ func (f *fakeManagerRuntime) Observe(_ context.Context, m Manifest, controller s
 	return observed, nil
 }
 
+func (f *fakeManagerRuntime) ServiceLoaded(_ context.Context, m Manifest) (bool, error) {
+	if m.LaunchAgentLabel == "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel" {
+		return f.ynabLoaded, nil
+	}
+	return false, nil
+}
+
 func (f *fakeManagerRuntime) InstallCandidate(_ context.Context, m Manifest, _ RuntimeArtifacts) error {
 	f.calls = append(f.calls, "install")
 	f.installedPresent, f.installedHash, f.ready, f.unloaded = true, m.CandidateSHA256, false, false
 	return nil
 }
-func (f *fakeManagerRuntime) Restart(context.Context, Manifest) error {
+func (f *fakeManagerRuntime) Restart(_ context.Context, manifest Manifest) error {
 	f.calls = append(f.calls, "restart")
+	f.serviceRestarts = append(f.serviceRestarts, manifest.LaunchAgentLabel)
 	f.unloaded = false
 	return nil
 }
@@ -748,8 +759,9 @@ func (f *fakeManagerRuntime) RestorePrevious(_ context.Context, m Manifest, _ Ru
 	f.installedPresent, f.installedHash, f.ready, f.unloaded = true, m.PreviousSHA256, false, false
 	return nil
 }
-func (f *fakeManagerRuntime) Bootout(context.Context, Manifest) error {
+func (f *fakeManagerRuntime) Bootout(_ context.Context, manifest Manifest) error {
 	f.calls = append(f.calls, "bootout")
+	f.serviceBootouts = append(f.serviceBootouts, manifest.LaunchAgentLabel)
 	f.unloaded, f.ready = true, false
 	return nil
 }
@@ -823,6 +835,104 @@ func newManagerFixture(t *testing.T, previous bool) (*Manager, *fakeManagerRunti
 		ReadyTimeoutSeconds: 10, ReadyPollMilliseconds: 100,
 	}
 	return manager, runtime, request
+}
+
+func TestPrepareCapturesOnlyLoadedYNABServiceAndRestartsCapturedOrder(t *testing.T) {
+	manager, runtime, request := newManagerFixture(t, true)
+	root := filepath.Dir(request.TargetPath)
+	write := func(name string) string {
+		path := filepath.Join(root, name)
+		if err := os.WriteFile(path, []byte(name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	candidate := ServiceCandidate{Server: "ynab", LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel",
+		PlistPath: write("ynab.plist"), WrapperPath: write("run-ynab.sh"), MCPWrapperPath: write("run-ynab-mcp.sh"),
+		StdoutPath: filepath.Join(root, "ynab.out"), StderrPath: filepath.Join(root, "ynab.err"),
+		EnvironmentPath: write("ynab.env"), HealthURLFile: filepath.Join(root, "ynab.health")}
+	request.ServiceCandidates = []ServiceCandidate{candidate}
+	prepared, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prepared.Services) != 1 || prepared.Services[0].Server != "obsidian" {
+		t.Fatalf("absent YNAB captured: %#v", prepared.Services)
+	}
+
+	manager, runtime, request = newManagerFixture(t, true)
+	root = filepath.Dir(request.TargetPath)
+	write = func(name string) string {
+		path := filepath.Join(root, name)
+		if err := os.WriteFile(path, []byte(name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	environment := write("ynab.env")
+	if err := os.WriteFile(environment, []byte("GATEWAY_BIN="+request.TargetPath+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request.ServiceCandidates = []ServiceCandidate{{Server: "ynab", LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel",
+		PlistPath: write("ynab.plist"), WrapperPath: write("run-ynab.sh"), MCPWrapperPath: write("run-ynab-mcp.sh"),
+		StdoutPath: filepath.Join(root, "ynab.out"), StderrPath: filepath.Join(root, "ynab.err"), EnvironmentPath: environment, HealthURLFile: filepath.Join(root, "ynab.health")}}
+	runtime.ynabLoaded = true // loaded but not ready models a crashed child.
+	prepared, err = manager.Prepare(context.Background(), request)
+	if err != nil || len(prepared.Services) != 2 || prepared.Services[1].Server != "ynab" {
+		t.Fatalf("loaded YNAB not captured: %#v err=%v", prepared, err)
+	}
+	if _, err := manager.Resume(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"local.test.gateway", "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel"}; !reflect.DeepEqual(runtime.serviceRestarts, want) {
+		t.Fatalf("restart order = %v, want %v", runtime.serviceRestarts, want)
+	}
+}
+
+func TestServiceGatewayBindingRejectsDifferentBinary(t *testing.T) {
+	root := t.TempDir()
+	environment := filepath.Join(root, ".env.ynab.local")
+	if err := os.WriteFile(environment, []byte("GATEWAY_BIN=/private/other-gateway\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateServiceGatewayBinding(environment, filepath.Join(root, "Library", "LaunchAgents", "ynab.plist"), "/private/gateway"); err == nil {
+		t.Fatal("different gateway binary was accepted")
+	}
+}
+
+func TestFirstInstallRollbackBootsOutCapturedServicesInOrder(t *testing.T) {
+	manager, runtime, request := newManagerFixture(t, false)
+	root := filepath.Dir(request.TargetPath)
+	write := func(name, contents string) string {
+		path := filepath.Join(root, name)
+		if err := os.WriteFile(path, []byte(contents), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	runtime.ynabLoaded = true
+	request.ServiceCandidates = []ServiceCandidate{{Server: "ynab", LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel",
+		PlistPath: write("ynab.plist", "plist"), WrapperPath: write("run-ynab.sh", "wrapper"), MCPWrapperPath: write("run-ynab-mcp.sh", "mcp"),
+		StdoutPath: filepath.Join(root, "ynab.out"), StderrPath: filepath.Join(root, "ynab.err"),
+		EnvironmentPath: write("ynab.env", "GATEWAY_BIN="+request.TargetPath+"\n"), HealthURLFile: filepath.Join(root, "ynab.health")}}
+	prepared, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := manager.Resume(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Rollback(context.Background(), pending.ID); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"local.test.gateway", "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel"}
+	if !reflect.DeepEqual(runtime.serviceBootouts, want) {
+		t.Fatalf("bootout order = %v, want %v", runtime.serviceBootouts, want)
+	}
+	if prepared == nil {
+		t.Fatal("prepared release disappeared")
+	}
 }
 
 func contains(values []string, want string) bool {

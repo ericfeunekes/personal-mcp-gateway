@@ -12,6 +12,7 @@ covers:
 
 | Gap ID | Kind | Owning doc | Gap |
 | --- | --- | --- | --- |
+| GAP-YNAB-001 | live proof | [YNAB requirements](requirements/ynab-tools.md) / [implementation plan](ynab-implementation-plan.md) | Six-tool provider surface, private JSON/CSV exports, date bounds, SDK upgrade, and two-service release wiring are implemented. Local HTTP/MCP/filesystem/release fixtures cover their contracts. Live activation and authenticated YNAB reads remain; live writes require authorized disposable targets. Native ChatGPT file delivery and model testing are deferred, not claimed complete. |
 | GAP-GW-003 | proof | `docs/gateway.md` | Current `launchd` readiness, bounded idle impact, and automatic crash recovery are proven; a multi-day soak and sleep/wake recovery cycle are not measured. |
 | GAP-OBS-002 | proof | `docs/obsidian.md` / `docs/requirements/obsidian-filesystem-tools.md` | The five-tool core-retrieval workflow is proven live through ChatGPT; outbound and inbound graph workflows are not yet proven. |
 | GAP-OBS-003 | proof | `docs/obsidian.md` / `docs/requirements/obsidian-filesystem-tools.md` | Root confinement, denial, read-only, cursor, and sanitized-error proof is complete for the accepted five-tool core surface; equivalent proof is not yet extended to reference and graph operations. |

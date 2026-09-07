@@ -1,9 +1,7 @@
 package app
 
 import (
-	"bytes"
 	"encoding/json"
-	"io"
 	"net/http"
 	"os"
 	"time"
@@ -13,9 +11,9 @@ import (
 	"personal-mcp-gateway/internal/audit"
 	"personal-mcp-gateway/internal/config"
 	"personal-mcp-gateway/internal/fsx"
-	"personal-mcp-gateway/internal/limits"
 	localmcp "personal-mcp-gateway/internal/mcp"
 	"personal-mcp-gateway/internal/tools/obsidian"
+	"personal-mcp-gateway/internal/tools/ynab"
 )
 
 type App struct {
@@ -23,6 +21,7 @@ type App struct {
 	vault     *fsx.Vault
 	server    *sdk.Server
 	documents *localmcp.NativeDocumentBridge
+	ynab      *ynab.Tools
 	log       *audit.Logger
 }
 
@@ -50,6 +49,26 @@ func NewWithGrepTestHooks(cfg config.Config, log *audit.Logger, hooks *obsidian.
 }
 
 func newWithGrepTestHooks(cfg config.Config, log *audit.Logger, activity *fsx.ActivityCounter, grepActivity *fsx.SchedulerActivity, hooks *obsidian.GrepTestHooks) (*App, error) {
+	if cfg.Server == config.ServerYNAB {
+		tools, err := ynab.New(ynab.Options{Token: cfg.YNABToken, ExportRoot: cfg.YNABExportRoot})
+		if err != nil {
+			return nil, err
+		}
+		descriptors, err := tools.Descriptors()
+		if err != nil {
+			_ = tools.Close()
+			return nil, err
+		}
+		server, names, err := localmcp.NewNamedServer(sdk.Implementation{Name: config.ServerYNAB, Version: localmcp.ServerVersion}, log, string(cfg.Mode), descriptors)
+		if err != nil {
+			_ = tools.Close()
+			return nil, err
+		}
+		if log != nil && log.Enabled() {
+			log.Event("gateway.backend_ready", map[string]any{"transport": string(cfg.Mode), "server": config.ServerYNAB, "tools": names})
+		}
+		return &App{cfg: cfg, server: server, ynab: tools, log: log}, nil
+	}
 	vault, err := fsx.NewVaultWithActivity(cfg.ObsidianRoot, activity)
 	if err != nil {
 		return nil, err
@@ -102,6 +121,9 @@ func (a *App) Server() *sdk.Server {
 func (a *App) NativeDocuments() *localmcp.NativeDocumentBridge { return a.documents }
 
 func (a *App) Close() error {
+	if a.ynab != nil {
+		return a.ynab.Close()
+	}
 	if a.documents == nil {
 		return nil
 	}
@@ -118,7 +140,7 @@ func (a *App) HTTPHandler() http.Handler {
 	} else {
 		handler = localmcp.StreamableHTTPHandler(a.server)
 	}
-	mux.Handle("/mcp", a.auditHTTP("mcp", limitRequestBody(limits.HTTPRequestBodyBytes, handler)))
+	mux.Handle("/mcp", a.auditHTTP("mcp", handler))
 	return mux
 }
 
@@ -141,7 +163,13 @@ func (a *App) ready(w http.ResponseWriter, _ *http.Request) {
 		})
 		return
 	}
-	if !config.RootAccessible(a.cfg.ObsidianRoot) || a.server == nil || a.vault == nil {
+	ready := a.server != nil
+	if a.cfg.Server == config.ServerYNAB {
+		ready = ready && a.ynab != nil
+	} else {
+		ready = ready && a.vault != nil && config.RootAccessible(a.cfg.ObsidianRoot)
+	}
+	if !ready {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_ = json.NewEncoder(w).Encode(readyResponse{
 			OK: false,
@@ -194,29 +222,6 @@ func (a *App) auditHTTP(route string, next http.Handler) http.Handler {
 			"status":      recorder.status,
 			"duration_ms": time.Since(start).Milliseconds(),
 		})
-	})
-}
-
-func limitRequestBody(maxBytes int64, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Body == nil {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		body, err := io.ReadAll(io.LimitReader(r.Body, maxBytes+1))
-		_ = r.Body.Close()
-		if err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
-			return
-		}
-		if int64(len(body)) > maxBytes {
-			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-			return
-		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		r.ContentLength = int64(len(body))
-		next.ServeHTTP(w, r)
 	})
 }
 

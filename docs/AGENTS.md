@@ -12,7 +12,7 @@ Read this file first when navigating `docs/`.
 
 ## Standard Surfaces
 
-- `ARCHITECTURE.md` — gateway topology, module boundaries, MCP server naming strategy, and implementation language.
+- [ARCHITECTURE.md](ARCHITECTURE.md) — gateway topology, module boundaries, MCP server naming strategy, and implementation language.
 - `WORKFLOW.md` — how planning, implementation, proof, and closeout move through this repo.
 - `TESTING.md` — proof contract for MCP behavior, vault safety, reliability, and machine impact.
 - `RUNBOOKS.md` — index of operational procedures.
@@ -23,7 +23,9 @@ Read this file first when navigating `docs/`.
 
 ## Domain Docs
 
-- `gateway.md` — local gateway process, OpenAI tunnel boundary, lifecycle, config, and observability.
+- [ynab.md](ynab.md) — YNAB endpoint ownership, transports, and [accepted tool requirements](requirements/ynab-tools.md).
+
+- [gateway.md](gateway.md) — local gateway process, OpenAI tunnel boundary, lifecycle, config, observability, and [model-visible schema constraints](gateway.md#model-visible-tool-schemas) for every MCP integration.
 - `obsidian.md` — Obsidian MCP server contract for discovery, bounded reads, and authored-reference traversal.
 
 ## Requirements
@@ -31,7 +33,7 @@ Read this file first when navigating `docs/`.
 - `requirements/obsidian-filesystem-tools.md` — target model-facing vocabulary, schemas, limits, graph semantics, and performance gates for `obsidian` read-only tools.
 - `requirements/obsidian-mutation-tools.md` — trusted personal-vault `stat`, structured patch, write, move, and permanent-delete contract.
 - `requirements/obsidian-document-reading.md` — native ChatGPT delivery contract for supported vault documents.
-- `feature-gap-map.md` — open implementation, proof, decision, and spike gaps.
+- [feature-gap-map.md](feature-gap-map.md) — open implementation, proof, decision, and spike gaps.
 
 ## Decisions
 

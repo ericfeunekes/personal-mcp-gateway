@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -388,7 +389,7 @@ func (l *LockedStore) Rewrite(manifest Manifest) error {
 	// are recovery authority just as much as the copied artifact hashes are.
 	withCurrentState := manifest
 	withCurrentState.State = current.State
-	if withCurrentState != *current {
+	if !reflect.DeepEqual(withCurrentState, *current) {
 		return fmt.Errorf("%w: immutable transaction identity changed", ErrStateConflict)
 	}
 	if err := validateManifest(&manifest, l.store.effectiveUID); err != nil {

@@ -30,6 +30,92 @@ Proof must match the claim. This repo handles personal data, so green unit tests
 
 ## Expected Commands
 
+### YNAB endpoint
+
+Run `make test-ynab` for the quota-free change-validation profile. It strips
+provider/tunnel/model credentials and runs the YNAB, MCP, app, config, gateway
+entrypoint, and schema-generator suites. It is a subset of `make test`, not a
+replacement for the full repository gate. Tests use synthetic tokens and
+temporary state; no 1Password lookup or live YNAB call is needed. Go may need
+its normal dependency download on an uncached machine; that is not provider QA.
+
+`recovery_boundary_test.go` owns the model-visible recovery journey through SDK
+dispatch and a scripted local HTTP server. The simulator's transport rejects
+non-loopback addresses, redirects, and environment proxies. Controlled failures
+cover 429, credentials, transient read retry, uncertain writes, malformed output,
+quota consumed by retries, partial results, and a single real HTTP recovery probe.
+`recovery_process_test.go` runs separate MCP stdio processes against real local
+SQLite and HTTP: clients compete for the last quota slots, restart through a
+cooldown, isolate different tokens, and retain an in-flight reservation after a
+process is killed. A test clock advances the rolling window without waiting an
+hour. `quota_test.go` owns the pure circuit transition table and store boundaries,
+including stale completions, lease expiry, shared cooldowns, private files, and
+unavailable state. Production API URLs and recovery timing remain non-configurable;
+the injected endpoint and clock exist only in package-private test construction.
+
+The local simulator proves the adapter's HTTP and recovery semantics, not YNAB's
+availability or undocumented headers. The frozen public OpenAPI fixture anchors
+resource shapes; the official rate contract is 200 requests per rolling hour.
+Live revalidation, when separately requested, remains distinct from these tests.
+
+Recovery follow-up proof, 2026-09-07: `make test-ynab`, the full YNAB race suite,
+and the final frozen-tree `make test` all passed. Negative mutations caught an
+incorrect 201-request allowance, per-process rather than shared databases, and
+Go transport reuse that sent three HTTP requests for two reservations. The
+normal transport matched actual HTTP requests to reservations. Canceled probes
+and stale completions are covered at model/store and real HTTP boundaries.
+The final production schema render retained all twelve declarations without
+`unknown` (largest input 5,309 bytes; largest output 7,451 bytes). Only `create`
+advertises export artifacts; a regression test protects this truthful restriction.
+No live YNAB quota was consumed, and no runtime service was activated by this proof.
+
+Local implementation proof on 2026-09-07: `make test` passed, including the
+sequential gateway-smoke and release-script stages. Race checks passed for
+YNAB, MCP, app, config, release activation, and both gateway/release entrypoints.
+The candidate build, affected documentation graph, and `git diff --check` passed.
+These results cover the working-tree implementation, not an installed release.
+
+The canonical suite includes the frozen OpenAPI v1.86.0 operation inventory
+(all 44 method/path operations), generated-schema comparison, real local HTTP
+provider fixtures, SDK stdio/HTTP dispatch, and gateway subprocess selection.
+Run the focused boundary suite with `go test ./internal/tools/ynab ./internal/mcp
+./internal/app ./internal/config ./cmd/gateway ./cmd/ynab-schema-gen`.
+`go run ./cmd/ynab-schema-gen` checks the published provider schema;
+`go run ./cmd/ynab-schema-gen -write` explicitly regenerates it from the checked-in
+public specification. No network or provider credentials are needed for generation.
+
+Fixtures prove ordered batching, stable ID correlation, read-error continuation,
+429 stop/Retry-After, uncertain writes after dispatch, cancellation, and two-call
+provider concurrency. Filesystem tests prove private exports, complete JSON,
+CSV units/escaping/splits, exclusive publication, ancestor symlink rejection,
+serialized exports, canceled-write cleanup, and the actual 32 MiB provider and
+64 MiB rendered-export ceilings. Raw HTTP calls preserve integer milliunits above
+2^53 in both directions. Actual MCP calls through JSONL and SQLite retain counters
+but no financial data, token, or export path. Release tests cover both captured
+services, crashed loaded jobs, configuration drift, first-install cleanup,
+forward activation, and rollback through the shared authority.
+Mixed-batch MCP calls also prove malformed targets, dates, and splits are rejected
+before any provider request. Adjacent near-limit fixtures cross actual HTTP and
+stdio framing: complete success frames measured 188,554/188,555 bytes; the next
+larger fixture returned compact errors without records or change tokens. This
+guards the public 192 KiB ceiling independently of the internal size estimator.
+
+On 2026-09-07 the built production YNAB server's twelve input/output declarations
+rendered without `unknown` using the inspected Codex renderer. The largest input
+was 5,309 bytes and largest output 7,769 bytes. A fresh metadata-only Codex run
+recognized all six tools, required transaction dates, scope alternatives, nullable
+updates, host-export fields, and typed output collections; it constructed list and
+export examples without invoking them. This is model-visible schema evidence,
+not authenticated YNAB execution or ChatGPT compatibility.
+
+The SDK 1.7.0 production-candidate native PDF capacity gates passed over stdio
+and HTTP, preserving the separate Obsidian boundary. Authenticated YNAB reads,
+disposable live write targets, installed YNAB idle-impact checks, and actual
+two-service tunnel activation remain release proof. ChatGPT model invocation and
+native JSON/CSV downloads are explicitly deferred.
+
+### Full repository
+
 Canonical test command:
 
 ```bash
@@ -37,12 +123,15 @@ make test
 ```
 
 The target discovers every Go package, runs ordinary packages together so Go
-can retain package-level concurrency, and then runs `./cmd/gateway-smoke` and
-`./scripts` as separate sequential stages. Every stage uses `go test -count=1`,
+can retain package-level concurrency, and then runs `./internal/tools/ynab`,
+`./cmd/gateway-smoke`, and `./scripts` as separate sequential stages. Every stage uses `go test -count=1`,
 so the release gate executes the process and boundary tests rather than reusing
 prior successful results. The isolated stages prevent the performance/resource
 smoke and release watchdog suites from competing with heavyweight packages or
 with each other while their production thresholds remain unchanged.
+The YNAB stage also isolates its multi-process SQLite quota/crash tests from the
+filesystem deadline tests. Both run unchanged; isolation prevents their real
+disk and process workloads from distorting each other's timing.
 
 When running inside a restricted agent sandbox that cannot write the default Go
 build cache, keep the build cache repo-local:

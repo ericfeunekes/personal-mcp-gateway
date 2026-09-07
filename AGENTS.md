@@ -6,13 +6,16 @@ This project exposes personal data surfaces. Treat security boundaries as produc
 
 - Go gateway source belongs under `cmd/gateway/` and `internal/`.
 - Gateway architecture and boundaries live in `docs/ARCHITECTURE.md`.
+- Documentation routes are listed in [docs/AGENTS.md](docs/AGENTS.md).
 - Obsidian server behavior lives in `docs/obsidian.md`.
+- Before implementing YNAB tools, read [the YNAB domain](docs/ynab.md) and its linked requirements.
 - Obsidian tool-surface requirements live in `docs/requirements/obsidian-filesystem-tools.md`.
 - Open gaps are tracked in `docs/feature-gap-map.md`.
 
 ## Workflow
 
 - Before changing architecture, tool exposure, or MCP server boundaries, read `docs/ARCHITECTURE.md` and the affected domain doc.
+- Before adding or expanding MCP schemas, read [model-visible tool schema constraints](docs/gateway.md#model-visible-tool-schemas).
 - Before implementing the Obsidian server, read `docs/obsidian.md` and `docs/requirements/obsidian-filesystem-tools.md`.
 - Before using or updating OpenAI product assumptions, use the repo-local `openaiDeveloperDocs` MCP server from `.codex/config.toml`; if the tools are not exposed in the running session, restart Codex or use official OpenAI docs as a bounded fallback.
 - Before declaring work done, follow `docs/runbooks/closeout.md`.

@@ -197,17 +197,34 @@ type fakeRuntime struct {
 	installPath string
 	installArgs []string
 	restart     releaseactivation.Manifest
+	bootout     releaseactivation.Manifest
+	readyErr    error
+	adapterErr  error
+	bootoutErr  error
+	confirmed   bool
+	loaded      bool
 }
 
 func (f *fakeRuntime) InvokeInstallAdapter(_ context.Context, path string, args ...string) error {
 	f.installPath = path
 	f.installArgs = append([]string(nil), args...)
-	return nil
+	return f.adapterErr
 }
 
 func (f *fakeRuntime) Restart(_ context.Context, manifest releaseactivation.Manifest) error {
 	f.restart = manifest
+	return f.bootoutErr
+}
+func (f *fakeRuntime) ServiceLoaded(context.Context, releaseactivation.Manifest) (bool, error) {
+	return f.loaded, nil
+}
+func (f *fakeRuntime) WaitReady(context.Context, releaseactivation.Manifest) error { return f.readyErr }
+func (f *fakeRuntime) Bootout(_ context.Context, manifest releaseactivation.Manifest) error {
+	f.bootout = manifest
 	return nil
+}
+func (f *fakeRuntime) ConfirmUnloaded(context.Context, releaseactivation.Manifest) (bool, error) {
+	return f.confirmed, nil
 }
 
 func TestRunFormatsPendingRecords(t *testing.T) {
@@ -434,6 +451,30 @@ func TestPrepareAndAdminRejectUnsafeLaunchAgentLabels(t *testing.T) {
 	}
 }
 
+func TestParsePrepareDerivesFixedYNABServiceCandidate(t *testing.T) {
+	home := t.TempDir()
+	repo := t.TempDir()
+	request, err := parsePrepare([]string{
+		"--commit", strings.Repeat("a", 40), "--candidate-sha256", strings.Repeat("b", 64),
+		"--authority-sha256", strings.Repeat("c", 64), "--dependency-sha256", strings.Repeat("d", 64),
+		"--candidate", filepath.Join(repo, "candidate"), "--authority", filepath.Join(repo, "authority"),
+		"--target", filepath.Join(home, "bin", "gateway"), "--label", "com.example.obsidian",
+		"--repo-root", repo, "--environment", filepath.Join(repo, ".env.local"), "--health-url-file", "/tmp/obsidian-health.url",
+	}, dependencies{uid: 501, home: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(request.ServiceCandidates) != 1 {
+		t.Fatalf("service candidates = %#v", request.ServiceCandidates)
+	}
+	got := request.ServiceCandidates[0]
+	if got.Server != "ynab" || got.LaunchAgentLabel != "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel" ||
+		got.WrapperPath != filepath.Join(repo, "scripts", "run-ynab-tunnel.sh") || got.EnvironmentPath != filepath.Join(repo, ".env.ynab.local") ||
+		got.HealthURLFile != "/tmp/personal-mcp-gateway/ynab-tunnel-health.url" {
+		t.Fatalf("YNAB candidate = %#v", got)
+	}
+}
+
 func TestPrepareDerivesPrivateBinding(t *testing.T) {
 	manager := &fakeManager{manifest: &releaseactivation.Manifest{State: releaseactivation.StatePrepared, ID: testID, Commit: strings.Repeat("a", 40), CandidateSHA256: testHash, DependencySHA256: testDependency}}
 	home := t.TempDir()
@@ -559,6 +600,43 @@ func TestInstallLaunchAgentUsesPrivateAdapter(t *testing.T) {
 	wantArgs := []string{repo, home, "501", "test.label"}
 	if runtime.installPath != wantPath || !reflect.DeepEqual(runtime.installArgs, wantArgs) {
 		t.Fatalf("path=%q args=%q", runtime.installPath, runtime.installArgs)
+	}
+}
+
+func TestYNABFirstInstallUnloadsUnreadyService(t *testing.T) {
+	runtime := &fakeRuntime{readyErr: errors.New("not ready"), confirmed: true}
+	manager := &fakeManager{runtime: runtime}
+	home := t.TempDir()
+	repo := filepath.Join(home, "repo")
+	_, err := execute(context.Background(), []string{"install-launchagent", "--server", "ynab", "--repo-root", repo, "--label", "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel"}, dependencies{manager: manager, uid: 501, home: home})
+	if err == nil {
+		t.Fatal("unready YNAB install succeeded")
+	}
+	if runtime.bootout.LaunchAgentLabel != "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel" || runtime.bootout.HealthURLFile != "/tmp/personal-mcp-gateway/ynab-tunnel-health.url" {
+		t.Fatalf("cleanup manifest = %+v", runtime.bootout)
+	}
+	if runtime.bootout.WrapperPath != filepath.Join(repo, "scripts", "run-ynab-tunnel.sh") || runtime.bootout.ReadyTimeoutSeconds != 45 || runtime.bootout.ReadyPollMilliseconds != 1000 {
+		t.Fatalf("YNAB readiness manifest = %+v", runtime.bootout)
+	}
+}
+
+func TestYNABInstallAdapterFailureStillConfirmsCleanup(t *testing.T) {
+	runtime := &fakeRuntime{adapterErr: errors.New("post-bootstrap failure"), confirmed: true}
+	request := adminRequest{command: "install-launchagent", server: "ynab", repoRoot: t.TempDir(), home: t.TempDir(), uid: 501, label: "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel", healthURLFile: "/tmp/personal-mcp-gateway/ynab-tunnel-health.url"}
+	if err := runAdmin(context.Background(), runtime, request); err == nil {
+		t.Fatal("adapter failure succeeded")
+	}
+	if runtime.bootout.LaunchAgentLabel == "" {
+		t.Fatal("post-bootstrap adapter failure did not cleanup")
+	}
+}
+
+func TestYNABCleanupFailureIsRecoveryUnconfirmed(t *testing.T) {
+	runtime := &fakeRuntime{readyErr: errors.New("not ready"), bootoutErr: errors.New("bootout failed"), confirmed: true}
+	request := adminRequest{command: "install-launchagent", server: "ynab", repoRoot: t.TempDir(), home: t.TempDir(), uid: 501, label: "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel", healthURLFile: "/tmp/personal-mcp-gateway/ynab-tunnel-health.url"}
+	err := runAdmin(context.Background(), runtime, request)
+	if got := releaseactivation.SanitizedError(err); got.Code != releaseactivation.ErrorRecoveryUnconfirmed {
+		t.Fatalf("cleanup error = %#v", got)
 	}
 }
 

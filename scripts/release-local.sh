@@ -44,7 +44,7 @@ if ! source "$script_dir/internal/release-config.sh" >/dev/null 2>&1; then
 fi
 
 # Release control and host verification never need model or tunnel credentials.
-unset CONTROL_PLANE_API_KEY OPENAI_API_KEY
+unset CONTROL_PLANE_API_KEY OPENAI_API_KEY YNAB_TOKEN
 
 if "$script_dir/release-activation.sh" resume-if-active; then
   exit 0
@@ -68,7 +68,7 @@ commit="$(git -C "$repo_root" rev-parse --verify HEAD 2>/dev/null)" || fail rele
 if [[ -f "$env_file" ]]; then
   load_release_config "$env_file" || fail release_config 'release configuration is invalid'
 fi
-unset CONTROL_PLANE_API_KEY OPENAI_API_KEY
+unset CONTROL_PLANE_API_KEY OPENAI_API_KEY YNAB_TOKEN
 
 candidate="${GATEWAY_CANDIDATE:-$repo_root/.build/personal-mcp-gateway}"
 controller="${RELEASE_ACTIVATION_CANDIDATE:-$repo_root/.build/release-activation}"

@@ -85,8 +85,10 @@ then performs these gates in order:
    previous installed executable when present into the fixed per-user transaction
    slot, and durably publish `prepared` before changing `GATEWAY_BIN`.
 8. Through that pinned controller, stage the candidate beside `GATEWAY_BIN`,
-   atomically replace it, restart the LaunchAgent, and require the installed
-   SHA-256, tunnel `/healthz`, and tunnel `/readyz` checks to pass.
+   atomically replace it, restart the captured services in Obsidian-then-YNAB
+   order, and require the installed SHA-256 and each service's tunnel `/healthz`
+   and `/readyz` checks to pass. YNAB participates only when loaded, including a
+   loaded job whose process has exited; release never installs an absent service.
 9. Record `pending` and print the full release ID plus exact accept and rollback
    commands. Retain the immutable candidate, pinned controller, and previous
    runtime until one exact terminal command proves its outcome.
@@ -98,6 +100,7 @@ same exact-ID terminal command. A second fresh release is blocked until the slot
 is clear.
 
 Rollback restores and verifies the exact previous executable when one existed.
+It restarts the same captured service set, not a newly discovered set.
 For a failed first installation, it first unloads and confirms absence of the
 LaunchAgent, then removes and confirms absence of the candidate target. It
 preserves the plist/configuration; run `make install-launchagent` before a later
@@ -175,6 +178,14 @@ make install-launchagent
 The LaunchAgent may initially retry while `GATEWAY_BIN` is absent. The first
 successful `make release` installs it and restarts the same job.
 
+For YNAB, configure private `.env.ynab.local` from `.env.ynab.example`, using
+separate tunnel credentials and the same absolute `GATEWAY_BIN`. Release the
+YNAB-capable binary before `make install-launchagent SERVER=ynab`. This selected
+installation is a clear-state operation; it waits for YNAB readiness and unloads
+the newly added job if installation fails, retaining its configuration. YNAB
+restart, verification, and uninstall likewise use `SERVER=ynab`. Ordinary
+administrative targets continue to select Obsidian by default.
+
 ## Supporting Targets
 
 ```bash
@@ -209,6 +220,10 @@ terminal commands select the pinned controller and revalidate its hash under the
 lock, so mutable checkout, `.build`, or environment drift cannot silently replace
 the authority that created the transaction. Wrapper/config fingerprint drift
 fails closed because the supervised runtime can no longer be proven.
+New transactions use manifest version 3 with per-service descriptors under the
+same single slot. Existing pending transactions finish with their pinned
+controller. Both services' configuration and wrapper fingerprints are checked
+before terminal operations; do not edit either during an active release.
 
 ## Proof Boundary
 

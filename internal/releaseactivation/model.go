@@ -12,7 +12,7 @@ func ValidateSnapshot(snapshot Snapshot) *Error {
 		return nil
 	}
 	m := snapshot.Manifest
-	if m.Version != ManifestVersion || !isActiveState(m.State) ||
+	if (m.Version != 2 && m.Version != ManifestVersion) || !isActiveState(m.State) ||
 		!validReleaseID(m.ID) || !validCommit(m.Commit) || !validSHA256(m.DependencySHA256) ||
 		m.CandidateFile == "" || !validSHA256(m.CandidateSHA256) ||
 		m.AuthorityFile == "" || !validSHA256(m.AuthoritySHA256) ||
@@ -24,6 +24,16 @@ func ValidateSnapshot(snapshot Snapshot) *Error {
 		m.ReadyTimeoutSeconds <= 0 || m.ReadyTimeoutSeconds > int(maxReadyTimeout/time.Second) ||
 		m.ReadyPollMilliseconds <= 0 || m.ReadyPollMilliseconds > int(maxReadyPoll/time.Millisecond) {
 		return lifecycleError(ErrorStateMalformed)
+	}
+	if m.Version == ManifestVersion && len(m.Services) != 0 {
+		if len(m.Services) > 2 || m.Services[0].Server != "obsidian" {
+			return lifecycleError(ErrorStateMalformed)
+		}
+		for index, service := range m.Services {
+			if (index == 1 && service.Server != "ynab") || !validServiceDescriptor(service) {
+				return lifecycleError(ErrorStateMalformed)
+			}
+		}
 	}
 	if m.PreviousPresent {
 		if m.PreviousFile == "" || !validSHA256(m.PreviousSHA256) {
@@ -306,7 +316,17 @@ func cloneSnapshot(snapshot Snapshot) Snapshot {
 	return Snapshot{Manifest: &m}
 }
 
-func cloneManifest(manifest Manifest) Manifest { return manifest }
+func cloneManifest(manifest Manifest) Manifest {
+	manifest.Services = append([]ServiceDescriptor(nil), manifest.Services...)
+	return manifest
+}
+
+func validServiceDescriptor(service ServiceDescriptor) bool {
+	return (service.Server == "obsidian" || service.Server == "ynab") &&
+		ValidLaunchAgentLabel(service.LaunchAgentLabel) &&
+		absolutePaths(service.PlistPath, service.WrapperPath, service.MCPWrapperPath, service.StdoutPath, service.StderrPath, service.EnvironmentPath, service.HealthURLFile) &&
+		validSHA256(service.PlistSHA256) && validSHA256(service.WrapperSHA256) && validSHA256(service.MCPWrapperSHA256) && validSHA256(service.EnvironmentSHA256)
+}
 
 func isActiveState(state State) bool {
 	switch state {

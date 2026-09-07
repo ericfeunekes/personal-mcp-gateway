@@ -5,6 +5,7 @@ repo_root="${1:?}"
 home="${2:?}"
 uid="${3:?}"
 label="${4:?}"
+server="${5:-obsidian}"
 
 valid_label() {
   local candidate="$1"
@@ -28,6 +29,7 @@ reject_xml_controls() {
 
 [[ "$repo_root" = /* && "$home" = /* && "$uid" =~ ^[0-9]+$ ]] || exit 2
 valid_label "$label" || exit 2
+[[ "$server" == "obsidian" || "$server" == "ynab" ]] || exit 2
 reject_xml_controls "$repo_root" && reject_xml_controls "$home" && reject_xml_controls "$label" || exit 2
 [[ -d "$repo_root" && -d "$home" && ! -L "$repo_root" && ! -L "$home" ]] || exit 2
 
@@ -38,7 +40,7 @@ launch_agents_dir="$library_dir/LaunchAgents"
 logs_dir="$library_dir/Logs"
 log_dir="$logs_dir/personal-mcp-gateway"
 plist_path="$launch_agents_dir/$label.plist"
-runner_path="$repo_root/scripts/run-obsidian-tunnel.sh"
+runner_path="$repo_root/scripts/run-${server}-tunnel.sh"
 
 [[ ! -L "$library_dir" && ! -L "$launch_agents_dir" && ! -L "$logs_dir" && ! -L "$log_dir" && ! -L "$plist_path" ]] || exit 2
 [[ "$(dirname -- "$plist_path")" == "$launch_agents_dir" && "$(basename -- "$plist_path")" == "$label.plist" ]] || exit 2
@@ -52,8 +54,8 @@ mkdir -p -- "$launch_agents_dir" "$log_dir"
 label_xml="$(xml_escape "$label")"
 runner_xml="$(xml_escape "$runner_path")"
 repo_xml="$(xml_escape "$repo_root")"
-stdout_path="$log_dir/obsidian-tunnel.out.log"
-stderr_path="$log_dir/obsidian-tunnel.err.log"
+stdout_path="$log_dir/${server}-tunnel.out.log"
+stderr_path="$log_dir/${server}-tunnel.err.log"
 stdout_xml="$(xml_escape "$stdout_path")"
 stderr_xml="$(xml_escape "$stderr_path")"
 
@@ -115,6 +117,15 @@ if launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
   launchctl bootout "gui/$uid" "$plist_path" >/dev/null 2>&1 || true
 fi
 
+bootstrapped=0
+cleanup_failed_install() {
+  if (( bootstrapped )); then
+    launchctl bootout "gui/$uid" "$plist_path" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_failed_install ERR
 launchctl bootstrap "gui/$uid" "$plist_path"
+bootstrapped=1
 launchctl kickstart -k "gui/$uid/$label"
 launchctl print "gui/$uid/$label"
+trap - ERR

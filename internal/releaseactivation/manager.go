@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
+	"strings"
 )
 
 // Manager is the sole persistence-facing lifecycle interpreter. ControllerPath
@@ -40,6 +42,7 @@ type PrepareRequest struct {
 	HealthURLFile         string
 	ReadyTimeoutSeconds   int
 	ReadyPollMilliseconds int
+	ServiceCandidates     []ServiceCandidate
 }
 
 // Status returns the active identity after validating the durable store and
@@ -157,6 +160,27 @@ func (m *Manager) Prepare(ctx context.Context, request PrepareRequest) (*Manifes
 		HealthURLFile:         request.HealthURLFile,
 		ReadyTimeoutSeconds:   request.ReadyTimeoutSeconds,
 		ReadyPollMilliseconds: request.ReadyPollMilliseconds,
+	}
+	// New clear-state transactions always record the exact supervised set. The
+	// legacy request fields remain the Obsidian descriptor so pinned v2
+	// controllers and their manifests can finish unchanged.
+	manifest.Services = []ServiceDescriptor{{
+		Server: "obsidian", LaunchAgentLabel: manifest.LaunchAgentLabel,
+		PlistPath: manifest.PlistPath, PlistSHA256: manifest.PlistSHA256,
+		WrapperPath: manifest.WrapperPath, WrapperSHA256: manifest.WrapperSHA256,
+		MCPWrapperPath: manifest.MCPWrapperPath, MCPWrapperSHA256: manifest.MCPWrapperSHA256,
+		StdoutPath: manifest.StdoutPath, StderrPath: manifest.StderrPath,
+		EnvironmentPath: manifest.EnvironmentPath, EnvironmentSHA256: manifest.EnvironmentSHA256,
+		HealthURLFile: manifest.HealthURLFile,
+	}}
+	for _, candidate := range request.ServiceCandidates {
+		descriptor, include, serviceErr := m.captureService(ctx, manifest, candidate)
+		if serviceErr != nil {
+			return nil, serviceErr
+		}
+		if include {
+			manifest.Services = append(manifest.Services, descriptor)
+		}
 	}
 	if previousPresent {
 		manifest.PreviousFile = previousFileName
@@ -348,11 +372,13 @@ func (m *Manager) resumeDeployment(ctx context.Context, locked *LockedStore, man
 			return m.rollbackDeploymentFailure(ctx, locked, manifest, err)
 		}
 	}
-	if err := m.Runtime.Restart(ctx, *manifest); err != nil {
-		return m.rollbackDeploymentFailure(ctx, locked, manifest, err)
-	}
-	if err := m.Runtime.WaitReady(ctx, *manifest); err != nil {
-		return m.rollbackDeploymentFailure(ctx, locked, manifest, err)
+	for _, service := range serviceManifests(*manifest) {
+		if err := m.Runtime.Restart(ctx, service); err != nil {
+			return m.rollbackDeploymentFailure(ctx, locked, manifest, err)
+		}
+		if err := m.Runtime.WaitReady(ctx, service); err != nil {
+			return m.rollbackDeploymentFailure(ctx, locked, manifest, err)
+		}
 	}
 	return nil
 }
@@ -435,23 +461,25 @@ func (m *Manager) resumeRollback(ctx context.Context, manifest Manifest, observe
 				return false, err
 			}
 		}
-		if err := m.Runtime.Restart(ctx, manifest); err != nil {
-			return false, err
-		}
-		if err := m.Runtime.WaitReady(ctx, manifest); err != nil {
-			return false, err
+		for _, service := range serviceManifests(manifest) {
+			if err := m.Runtime.Restart(ctx, service); err != nil {
+				return false, err
+			}
+			if err := m.Runtime.WaitReady(ctx, service); err != nil {
+				return false, err
+			}
 		}
 		return true, nil
 	}
 
-	if !observed.SupervisorUnloaded {
-		if err := m.Runtime.Bootout(ctx, manifest); err != nil {
+	for _, service := range serviceManifests(manifest) {
+		if err := m.Runtime.Bootout(ctx, service); err != nil {
 			return false, err
 		}
-	}
-	unloaded, err := m.Runtime.ConfirmUnloaded(ctx, manifest)
-	if err != nil || !unloaded {
-		return false, lifecycleError(ErrorRecoveryUnconfirmed)
+		unloaded, err := m.Runtime.ConfirmUnloaded(ctx, service)
+		if err != nil || !unloaded {
+			return false, lifecycleError(ErrorRecoveryUnconfirmed)
+		}
 	}
 	if observed.InstalledPresent {
 		if err := m.Runtime.RemoveTarget(ctx, manifest); err != nil {
@@ -483,7 +511,40 @@ func validateRequestedEvent(manifest Manifest, event Event, id ReleaseID) error 
 }
 
 func (m *Manager) observe(ctx context.Context, manifest Manifest) (Observed, error) {
-	return m.Runtime.Observe(ctx, manifest, m.ControllerPath, m.artifacts())
+	observed, err := m.Runtime.Observe(ctx, manifest, m.ControllerPath, m.artifacts())
+	if err != nil || len(manifest.Services) < 2 {
+		return observed, err
+	}
+	for _, service := range serviceManifests(manifest)[1:] {
+		serviceObserved, serviceErr := m.Runtime.Observe(ctx, service, m.ControllerPath, m.artifacts())
+		if serviceErr != nil {
+			return Observed{}, serviceErr
+		}
+		if serviceObserved.PlistSHA256 != service.PlistSHA256 || serviceObserved.WrapperSHA256 != service.WrapperSHA256 ||
+			serviceObserved.MCPWrapperSHA256 != service.MCPWrapperSHA256 || serviceObserved.EnvironmentSHA256 != service.EnvironmentSHA256 {
+			return Observed{}, lifecycleError(ErrorRuntimeDrift)
+		}
+		observed.RuntimeReady = observed.RuntimeReady && serviceObserved.RuntimeReady
+		observed.SupervisorUnloaded = observed.SupervisorUnloaded && serviceObserved.SupervisorUnloaded
+	}
+	return observed, nil
+}
+
+func serviceManifests(manifest Manifest) []Manifest {
+	if len(manifest.Services) == 0 {
+		return []Manifest{manifest}
+	}
+	services := make([]Manifest, 0, len(manifest.Services))
+	for _, descriptor := range manifest.Services {
+		service := manifest
+		service.LaunchAgentLabel, service.PlistPath, service.PlistSHA256 = descriptor.LaunchAgentLabel, descriptor.PlistPath, descriptor.PlistSHA256
+		service.WrapperPath, service.WrapperSHA256 = descriptor.WrapperPath, descriptor.WrapperSHA256
+		service.MCPWrapperPath, service.MCPWrapperSHA256 = descriptor.MCPWrapperPath, descriptor.MCPWrapperSHA256
+		service.StdoutPath, service.StderrPath = descriptor.StdoutPath, descriptor.StderrPath
+		service.EnvironmentPath, service.EnvironmentSHA256, service.HealthURLFile = descriptor.EnvironmentPath, descriptor.EnvironmentSHA256, descriptor.HealthURLFile
+		services = append(services, service)
+	}
+	return services
 }
 
 func (m *Manager) artifacts() RuntimeArtifacts {
@@ -492,6 +553,98 @@ func (m *Manager) artifacts() RuntimeArtifacts {
 		Authority: m.Store.ActiveAuthorityPath(),
 		Previous:  m.Store.ActivePreviousPath(),
 	}
+}
+
+type serviceLoadedRuntime interface {
+	ServiceLoaded(context.Context, Manifest) (bool, error)
+}
+
+// captureService keeps service discovery inside Prepare's lifecycle lock. A
+// loaded LaunchAgent is included even if its child has crashed; a missing job
+// is deliberately not installed as a side effect of release.
+func (m *Manager) captureService(ctx context.Context, base Manifest, candidate ServiceCandidate) (ServiceDescriptor, bool, error) {
+	if candidate.Server != "ynab" || !ValidLaunchAgentLabel(candidate.LaunchAgentLabel) ||
+		!absolutePaths(candidate.PlistPath, candidate.WrapperPath, candidate.MCPWrapperPath, candidate.StdoutPath, candidate.StderrPath, candidate.EnvironmentPath, candidate.HealthURLFile) {
+		return ServiceDescriptor{}, false, lifecycleError(ErrorStateMalformed)
+	}
+	probe := base
+	probe.LaunchAgentLabel, probe.PlistPath, probe.WrapperPath, probe.MCPWrapperPath = candidate.LaunchAgentLabel, candidate.PlistPath, candidate.WrapperPath, candidate.MCPWrapperPath
+	loadedRuntime, ok := m.Runtime.(serviceLoadedRuntime)
+	if !ok {
+		// Isolated lifecycle fakes that predate the optional second service have
+		// no launchd surface; they model the service as absent.
+		return ServiceDescriptor{}, false, nil
+	}
+	loaded, err := loadedRuntime.ServiceLoaded(ctx, probe)
+	if err != nil {
+		return ServiceDescriptor{}, false, err
+	}
+	if !loaded {
+		return ServiceDescriptor{}, false, nil
+	}
+	if err := validateServiceGatewayBinding(candidate.EnvironmentPath, candidate.PlistPath, base.TargetPath); err != nil {
+		return ServiceDescriptor{}, false, err
+	}
+	descriptor := ServiceDescriptor{Server: candidate.Server, LaunchAgentLabel: candidate.LaunchAgentLabel,
+		PlistPath: candidate.PlistPath, WrapperPath: candidate.WrapperPath, MCPWrapperPath: candidate.MCPWrapperPath,
+		StdoutPath: candidate.StdoutPath, StderrPath: candidate.StderrPath, EnvironmentPath: candidate.EnvironmentPath, HealthURLFile: candidate.HealthURLFile}
+	var hashErr error
+	if descriptor.PlistSHA256, hashErr = HashRegular(descriptor.PlistPath); hashErr != nil {
+		return ServiceDescriptor{}, false, hashErr
+	}
+	if descriptor.WrapperSHA256, hashErr = HashRegular(descriptor.WrapperPath); hashErr != nil {
+		return ServiceDescriptor{}, false, hashErr
+	}
+	if descriptor.MCPWrapperSHA256, hashErr = HashRegular(descriptor.MCPWrapperPath); hashErr != nil {
+		return ServiceDescriptor{}, false, hashErr
+	}
+	if descriptor.EnvironmentSHA256, hashErr = HashRegular(descriptor.EnvironmentPath); hashErr != nil {
+		return ServiceDescriptor{}, false, hashErr
+	}
+	return descriptor, true, nil
+}
+
+func validateServiceGatewayBinding(environmentPath, plistPath, targetPath string) error {
+	data, err := os.ReadFile(environmentPath)
+	if err != nil || len(data) > 65536 {
+		return lifecycleError(ErrorStateMalformed)
+	}
+	home := strings.TrimSuffix(filepath.Dir(filepath.Dir(plistPath)), "/Library")
+	if home == "" || !filepath.IsAbs(home) {
+		return lifecycleError(ErrorStateMalformed)
+	}
+	value := ""
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSuffix(raw, "\r")
+		if len(line) > 4096 || line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, rawValue, ok := strings.Cut(line, "=")
+		if !ok || key == "" {
+			return lifecycleError(ErrorStateMalformed)
+		}
+		if key != "GATEWAY_BIN" {
+			continue
+		}
+		if value != "" {
+			return lifecycleError(ErrorStateMalformed)
+		}
+		if len(rawValue) >= 2 && ((rawValue[0] == '"' && rawValue[len(rawValue)-1] == '"') || (rawValue[0] == '\'' && rawValue[len(rawValue)-1] == '\'')) {
+			rawValue = rawValue[1 : len(rawValue)-1]
+		}
+		if strings.ContainsAny(rawValue, "`\\\"'") {
+			return lifecycleError(ErrorStateMalformed)
+		}
+		rawValue = strings.Replace(rawValue, "$HOME", home, 1)
+		if strings.Contains(rawValue, "$") || !filepath.IsAbs(rawValue) {
+			return lifecycleError(ErrorStateMalformed)
+		}
+		value = filepath.Clean(rawValue)
+	}
+	if value == "" || value != filepath.Clean(targetPath) {
+		return lifecycleError(ErrorStateMalformed)
+	}
+	return nil
 }
 
 func (m *Manager) acquire() (*LockedStore, error) {

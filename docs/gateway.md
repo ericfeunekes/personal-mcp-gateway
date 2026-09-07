@@ -15,7 +15,12 @@ covers:
 
 The gateway is a local Go backend that exposes selected personal-system tools through MCP. The same backend module should be started in stdio mode for local smoke tests or HTTP mode for OpenAI Secure MCP Tunnel integration. In HTTP mode it should listen only on a local interface and should not require inbound network access.
 
-The gateway should use the official Go MCP SDK, `github.com/modelcontextprotocol/go-sdk`, rather than directly implementing MCP JSON-RPC. As of the 2026-06-30 spike, `v1.6.1` is the latest released module, declares Go 1.25, provides `mcp.StdioTransport`, and provides `mcp.NewStreamableHTTPHandler` with stateless Streamable HTTP support. Direct protocol implementation is a contingency only if a future OpenAI tunnel or ChatGPT connector requirement cannot be met through the SDK.
+The gateway uses the official Go MCP SDK, `github.com/modelcontextprotocol/go-sdk`
+v1.7.0, including `mcp.StdioTransport` and stateless Streamable HTTP. HTTP uses
+the SDK's 1 MiB request-body limit and request-cancellation propagation, with
+bounded native-document batch rejection before dispatch. Native document output
+preserves SDK `resultType` and result metadata; output budgets reserve 8 KiB for
+the SDK envelope. Do not implement a separate MCP JSON-RPC stack.
 
 ## Responsibilities
 
@@ -48,6 +53,70 @@ resource limits, and audit plumbing. Do not mix unrelated integration tools into
 the `obsidian` server to simulate namespacing.
 
 Generic MCP middleware receives domain-owned tool descriptors through app composition. Each descriptor is the single source for tool name, registration/schema/handler, annotations, and safe summaries; the app derives its registered and known-tool sets from the activated descriptors rather than parallel lists or maps. Middleware may record bounded safe counters, but it must not import an integration package, inspect integration-specific content, or grow a central switch for every future tool field. Domain summaries never include raw paths, patterns, selectors, cursors, link text, snippets, note content, or candidate names.
+
+## Model-Visible Tool Schemas
+
+Apply these constraints when adding or changing any integration's MCP tools.
+Publish complete input schemas: internal Go types alone are not visible to the
+model. Use explicit resource discriminators and resource-specific object
+alternatives for polymorphic inputs. An array of those alternatives can represent
+both single-item and mixed-resource batches without separate single/batch tools.
+Batch execution and partial-failure semantics still belong to the domain contract.
+
+Codex Code Mode renders tool JSON Schema into TypeScript declarations. The
+inspected renderer preserves `const` literals, enums, `anyOf`/`oneOf` unions,
+arrays, required versus optional properties, nullable types, and property
+descriptions as comments. This is a presentation of the schema, not its complete
+validation semantics: `integer` becomes `number`, and constraints such as
+`minItems` are not expressed in that TypeScript type. Explain consequential
+constraints in field descriptions and enforce them in server validation. Supply
+an output schema when callers need structured result types; the echo probe below
+supplied none and consequently exposed only `CallToolResult`.
+
+The inspected Codex renderer has these implementation limits:
+
+- An individual rendered schema exceeding 16,000 bytes becomes `unknown`.
+  This is a rendered-schema limit, not an MCP payload limit or a tool-count limit.
+- Local reference expansion is bounded to two expansions per path and 32 total
+  expansions. Exhausted or unsupported reference expansion can produce `unknown`.
+- Intermediate rendering work has a separate 64,000-byte budget; exhausting it
+  can also lose type detail before the final size check.
+
+Inspect the complete model-visible declarations for new or materially expanded
+schemas, including output types. Keep descriptions concise and check expanded
+unions/references against the renderer limits. Verify that the model can see all
+alternatives and construct representative calls; server `tools/list` success
+alone does not prove that client rendering retained the schema. For batch tools,
+exercise one-item and multi-item calls, mixed types where supported, enum values,
+and omission versus explicit null. Verify server rejection of invalid inputs
+separately from model-visible type presentation.
+
+Evidence boundary, 2026-09-06: a harmless stdio echo tool was exercised with
+Codex CLI 0.147.0 and gpt-5.6-sol. With file/shell inspection prohibited, the model
+reported both transaction/category alternatives, required fields, enums,
+optional fields, and null-description comments; one-item and mixed-item calls
+succeeded. The fixture had truthful read-only annotations. This proves the small
+input union in that client, not the full YNAB schema, output-schema behavior, or
+ChatGPT compatibility. Test each target client independently.
+
+The subsequent [full YNAB schema experiment](spikes/ynab-design-validation.md)
+demonstrates why rendered-size checks matter: nested provider response unions
+collapsed to `unknown`, while typed resource collections retained every exposed
+alternative. Treat final production projection and result validation separately
+from the fixture's model-visible type proof.
+
+YNAB uses `NewExactJSONToolDescriptor` at the SDK registration seam. SDK typed
+argument validation passes through floating-point decoding, which rounds integer
+milliunits above 2^53. The adapter validates a number-preserving view, dispatches
+the original JSON bytes, and validates/emits exact JSON output through official
+SDK `AddTool`. It does not apply schema defaults. Use this descriptor when exact
+JSON numbers are part of a tool contract; ordinary typed descriptors remain
+appropriate for other tools. Raw HTTP ingress and egress tests cover this boundary.
+
+Source limits were inspected at Codex commit `52e12e0cb`, separately from the
+installed CLI version. Treat them as version-specific and recheck when upgrading:
+[schema renderer](https://github.com/openai/codex/blob/52e12e0cb/codex-rs/code-mode-protocol/src/json_schema_types.rs)
+and [tool declaration assembly](https://github.com/openai/codex/blob/52e12e0cb/codex-rs/code-mode-protocol/src/description.rs).
 
 ## OpenAI Docs
 

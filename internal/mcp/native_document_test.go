@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type testNativePayload struct {
@@ -83,6 +85,36 @@ func TestNativeDocumentWireReplacementDoesNotLeakMarker(t *testing.T) {
 	}
 }
 
+func TestNativeDocumentWireReplacementPreservesSDKEnvelope(t *testing.T) {
+	bridge := NewNativeDocumentBridge()
+	payload := &testNativePayload{uri: "obsidian://read-document/envelope.pdf", mime: "application/pdf", data: []byte("pdf")}
+	meta, err := bridge.Register(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := meta[nativeDocumentMarkerKey]
+	frame := []byte(`{"jsonrpc":"2.0","id":7,"result":{"resultType":"complete","_meta":{"io.modelcontextprotocol/serverInfo":{"name":"obsidian","version":"0.1.0"},"` + nativeDocumentMarkerKey + `":"` + marker.(string) + `"},"content":[]}}`)
+	var out bytes.Buffer
+	if err := writeNativeDocumentPayload(context.Background(), &out, frame, payload); err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Result struct {
+			ResultType string         `json:"resultType"`
+			Meta       map[string]any `json:"_meta"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Result.ResultType != "complete" || got.Result.Meta["io.modelcontextprotocol/serverInfo"] == nil {
+		t.Fatalf("SDK envelope was not preserved: %s", out.Bytes())
+	}
+	if _, found := got.Result.Meta[nativeDocumentMarkerKey]; found {
+		t.Fatalf("private marker leaked: %s", out.Bytes())
+	}
+}
+
 func TestNativeDocumentExpiryAndShutdownCloseUntakenPayloads(t *testing.T) {
 	bridge := NewNativeDocumentBridge()
 	bridge.ttl = time.Millisecond
@@ -114,6 +146,7 @@ func TestNativeDocumentExpiryAndShutdownCloseUntakenPayloads(t *testing.T) {
 func TestNativeDocumentHTTPPreservesOrdinaryResponseAndRejectsNativeBatch(t *testing.T) {
 	bridge := NewNativeDocumentBridge()
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
 		w.Header().Set("X-Original", "yes")
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`))
@@ -126,7 +159,13 @@ func TestNativeDocumentHTTPPreservesOrdinaryResponseAndRejectsNativeBatch(t *tes
 		t.Fatalf("ordinary response changed: code=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
 	}
 	called := false
-	reject := nativeDocumentHTTPHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), bridge)
+	reject := nativeDocumentHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		called = true
+	}), bridge)
 	batch := `[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_document"}}]`
 	response = httptest.NewRecorder()
 	reject.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(batch)))
@@ -151,13 +190,15 @@ func TestNativeDocumentHTTPPreservesLargeOrdinaryResponse(t *testing.T) {
 }
 
 func TestNativeDocumentHTTPBoundsRequestBeforeDispatch(t *testing.T) {
-	called := false
-	handler := nativeDocumentHTTPHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }), NewNativeDocumentBridge())
+	server := sdk.NewServer(&sdk.Implementation{Name: "test", Version: "1"}, &sdk.ServerOptions{})
+	handler := StreamableHTTPHandlerWithNativeDocuments(server, NewNativeDocumentBridge())
 	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(strings.Repeat("x", int(nativeDocumentMarkerBytes)+1)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json, text/event-stream")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusRequestEntityTooLarge || called {
-		t.Fatalf("oversized request status=%d called=%v", response.Code, called)
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized request status=%d", response.Code)
 	}
 }
 

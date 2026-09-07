@@ -3,7 +3,40 @@ package releaseactivation
 
 import "fmt"
 
-const ManifestVersion = 2
+const ManifestVersion = 3
+
+// ServiceDescriptor is one already-installed local tunnel service captured at
+// prepare time. It deliberately contains no credentials.
+type ServiceDescriptor struct {
+	Server            string `json:"server"`
+	LaunchAgentLabel  string `json:"launch_agent_label"`
+	PlistPath         string `json:"plist_path"`
+	PlistSHA256       string `json:"plist_sha256"`
+	WrapperPath       string `json:"wrapper_path"`
+	WrapperSHA256     string `json:"wrapper_sha256"`
+	MCPWrapperPath    string `json:"mcp_wrapper_path"`
+	MCPWrapperSHA256  string `json:"mcp_wrapper_sha256"`
+	StdoutPath        string `json:"stdout_path"`
+	StderrPath        string `json:"stderr_path"`
+	EnvironmentPath   string `json:"environment_path"`
+	EnvironmentSHA256 string `json:"environment_sha256"`
+	HealthURLFile     string `json:"health_url_file"`
+}
+
+// ServiceCandidate is a fixed local service shape derived by the private
+// controller adapter. Hashes are deliberately not caller input: Manager
+// observes them under the lifecycle lock before it creates a descriptor.
+type ServiceCandidate struct {
+	Server           string
+	LaunchAgentLabel string
+	PlistPath        string
+	WrapperPath      string
+	MCPWrapperPath   string
+	StdoutPath       string
+	StderrPath       string
+	EnvironmentPath  string
+	HealthURLFile    string
+}
 
 // State is the durable state of the single release slot. Clear is represented
 // on disk by the absence of an active manifest.
@@ -52,22 +85,23 @@ type Manifest struct {
 	PreviousFile    string `json:"previous_file,omitempty"`
 	PreviousSHA256  string `json:"previous_sha256,omitempty"`
 
-	TargetPath            string `json:"target_path"`
-	EffectiveUID          int    `json:"effective_uid"`
-	LaunchAgentLabel      string `json:"launch_agent_label"`
-	PlistPath             string `json:"plist_path"`
-	PlistSHA256           string `json:"plist_sha256"`
-	WrapperPath           string `json:"wrapper_path"`
-	WrapperSHA256         string `json:"wrapper_sha256"`
-	MCPWrapperPath        string `json:"mcp_wrapper_path"`
-	MCPWrapperSHA256      string `json:"mcp_wrapper_sha256"`
-	StdoutPath            string `json:"stdout_path"`
-	StderrPath            string `json:"stderr_path"`
-	EnvironmentPath       string `json:"environment_path"`
-	EnvironmentSHA256     string `json:"environment_sha256"`
-	HealthURLFile         string `json:"health_url_file"`
-	ReadyTimeoutSeconds   int    `json:"ready_timeout_seconds"`
-	ReadyPollMilliseconds int    `json:"ready_poll_milliseconds"`
+	TargetPath            string              `json:"target_path"`
+	EffectiveUID          int                 `json:"effective_uid"`
+	LaunchAgentLabel      string              `json:"launch_agent_label"`
+	PlistPath             string              `json:"plist_path"`
+	PlistSHA256           string              `json:"plist_sha256"`
+	WrapperPath           string              `json:"wrapper_path"`
+	WrapperSHA256         string              `json:"wrapper_sha256"`
+	MCPWrapperPath        string              `json:"mcp_wrapper_path"`
+	MCPWrapperSHA256      string              `json:"mcp_wrapper_sha256"`
+	StdoutPath            string              `json:"stdout_path"`
+	StderrPath            string              `json:"stderr_path"`
+	EnvironmentPath       string              `json:"environment_path"`
+	EnvironmentSHA256     string              `json:"environment_sha256"`
+	HealthURLFile         string              `json:"health_url_file"`
+	ReadyTimeoutSeconds   int                 `json:"ready_timeout_seconds"`
+	ReadyPollMilliseconds int                 `json:"ready_poll_milliseconds"`
+	Services              []ServiceDescriptor `json:"services,omitempty"`
 }
 
 // Snapshot is the complete input state for a decision. Manifest is nil exactly

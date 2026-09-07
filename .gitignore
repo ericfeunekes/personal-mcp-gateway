@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+!.env.ynab.example
 
 node_modules/
 .venv/

@@ -171,6 +171,19 @@ func ValidatePrepareTopology(store *Store, sources ArtifactSources, manifest *Ma
 		{"stdout", manifest.StdoutPath},
 		{"stderr", manifest.StderrPath},
 	}
+	for _, service := range manifest.Services {
+		if service.Server == "obsidian" {
+			continue
+		}
+		operational = append(operational,
+			struct{ role, path string }{"service_" + service.Server + "_plist", service.PlistPath},
+			struct{ role, path string }{"service_" + service.Server + "_wrapper", service.WrapperPath},
+			struct{ role, path string }{"service_" + service.Server + "_mcp_wrapper", service.MCPWrapperPath},
+			struct{ role, path string }{"service_" + service.Server + "_environment", service.EnvironmentPath},
+			struct{ role, path string }{"service_" + service.Server + "_health", service.HealthURLFile},
+			struct{ role, path string }{"service_" + service.Server + "_stdout", service.StdoutPath},
+			struct{ role, path string }{"service_" + service.Server + "_stderr", service.StderrPath})
+	}
 	for _, operation := range operational {
 		resolved, err := resolve(operation.role, operation.path)
 		if err != nil {
@@ -246,6 +259,19 @@ func validateRuntimeTopology(store *Store, manifest *Manifest) error {
 		{role: "health_url", path: manifest.HealthURLFile},
 		{role: "stdout", path: manifest.StdoutPath},
 		{role: "stderr", path: manifest.StderrPath},
+	}
+	for _, service := range manifest.Services {
+		if service.Server == "obsidian" {
+			continue
+		}
+		paths = append(paths,
+			runtimePath{role: "service_" + service.Server + "_plist", path: service.PlistPath},
+			runtimePath{role: "service_" + service.Server + "_wrapper", path: service.WrapperPath},
+			runtimePath{role: "service_" + service.Server + "_mcp_wrapper", path: service.MCPWrapperPath},
+			runtimePath{role: "service_" + service.Server + "_environment", path: service.EnvironmentPath},
+			runtimePath{role: "service_" + service.Server + "_health", path: service.HealthURLFile},
+			runtimePath{role: "service_" + service.Server + "_stdout", path: service.StdoutPath},
+			runtimePath{role: "service_" + service.Server + "_stderr", path: service.StderrPath})
 	}
 	canonicalRoot, err := canonicalizeAllowMissing(store.root)
 	if err != nil {
