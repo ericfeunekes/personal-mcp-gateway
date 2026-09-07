@@ -56,6 +56,36 @@ type nativeDocumentHTTPRecorder struct {
 	err    error
 }
 
+// nativeDocumentRequestBody observes the SDK's sole request-body read so the
+// native-document batch restriction remains pre-dispatch without replacing the
+// request body after a second full read in this wrapper.
+type nativeDocumentRequestBody struct {
+	io.ReadCloser
+	body    bytes.Buffer
+	pending error
+}
+
+func (r *nativeDocumentRequestBody) Read(p []byte) (int, error) {
+	if r.pending != nil {
+		return 0, r.pending
+	}
+	n, err := r.ReadCloser.Read(p)
+	if n > 0 {
+		_, _ = r.body.Write(p[:n])
+	}
+	if err != io.EOF {
+		return n, err
+	}
+	if rejectNativeDocumentBatch(r.body.Bytes()) == nil {
+		return n, err
+	}
+	r.pending = errNativeDocumentBatch
+	if n == 0 {
+		return 0, r.pending
+	}
+	return n, nil
+}
+
 func newNativeDocumentHTTPRecorder() *nativeDocumentHTTPRecorder {
 	return &nativeDocumentHTTPRecorder{header: make(http.Header)}
 }
@@ -92,22 +122,7 @@ func nativeDocumentHTTPHandler(next http.Handler, bridge *NativeDocumentBridge) 
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.Method == http.MethodPost && req.Body != nil {
-			body, err := io.ReadAll(io.LimitReader(req.Body, limits.HTTPRequestBodyBytes+1))
-			_ = req.Body.Close()
-			if err != nil {
-				http.Error(w, "invalid request body", http.StatusBadRequest)
-				return
-			}
-			if int64(len(body)) > limits.HTTPRequestBodyBytes {
-				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-				return
-			}
-			req.Body = io.NopCloser(bytes.NewReader(body))
-			req.ContentLength = int64(len(body))
-			if rejectNativeDocumentBatch(body) != nil {
-				http.Error(w, "read_document is not supported in JSON-RPC batches", http.StatusBadRequest)
-				return
-			}
+			req.Body = &nativeDocumentRequestBody{ReadCloser: req.Body}
 		}
 		recorder := newNativeDocumentHTTPRecorder()
 		next.ServeHTTP(recorder, req)

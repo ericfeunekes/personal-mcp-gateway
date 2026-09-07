@@ -48,6 +48,21 @@ func TestOSRuntimeObserveCollectsBoundFactsAndReadiness(t *testing.T) {
 	}
 }
 
+func TestOSRuntimeServiceLoadedIncludesCrashedChild(t *testing.T) {
+	dir := t.TempDir()
+	m, _, _ := runtimeFixture(t, dir, false)
+	// launchctl keeps a loaded job after its child exits; no PID or readiness
+	// field is required for release capture.
+	runner := &recordingRunner{results: []CommandResult{{Stdout: []byte("program = " + m.WrapperPath + "\nstate = exited\n")}}}
+	loaded, err := (&OSRuntime{Runner: runner}).ServiceLoaded(context.Background(), m)
+	if err != nil || !loaded {
+		t.Fatalf("loaded=%v err=%v", loaded, err)
+	}
+	if got := runner.calls(); len(got) != 1 || !strings.Contains(got[0], "launchctl print") {
+		t.Fatalf("launchctl calls = %v", got)
+	}
+}
+
 func TestOSRuntimeObserveRejectsNonExecutableOrSymlinkTarget(t *testing.T) {
 	for _, tt := range []struct {
 		name  string

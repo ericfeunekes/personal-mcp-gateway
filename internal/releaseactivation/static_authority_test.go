@@ -55,7 +55,7 @@ func findLifecycleArtifactWriters(repoRoot, packageDir string) ([]string, error)
 		}
 		if entry.IsDir() {
 			switch entry.Name() {
-			case ".git", ".build", ".gocache", "scratch":
+			case ".git", ".build", ".gocache", ".scratch", "scratch":
 				return filepath.SkipDir
 			}
 			return nil

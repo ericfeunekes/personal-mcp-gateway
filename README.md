@@ -8,6 +8,11 @@ Initial target integrations:
 - Obsidian
 - Voicenotes
 
+The [YNAB endpoint](docs/ynab.md) has [accepted requirements](docs/requirements/ynab-tools.md)
+for typed retrieval, management, bank import, and private JSON/CSV exports.
+It is implemented with separate stdio/HTTP server selection and tunnel wiring;
+live YNAB activation is not part of the local implementation proof.
+
 ## Intent
 
 Run personal MCP tools locally, keep the origin private, and publish access to ChatGPT only through OpenAI's outbound Secure MCP Tunnel. The gateway should make personal data useful to external AI tools without creating a broad public API or a generic filesystem proxy.

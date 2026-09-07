@@ -3,7 +3,12 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
-env_file="${MCP_GATEWAY_ENV_FILE:-$repo_root/.env.local}"
+server="${SERVER:-obsidian}"
+case "$server" in
+  obsidian) env_file="${MCP_GATEWAY_ENV_FILE:-$repo_root/.env.local}"; default_label="com.ericfeunekes.personal-mcp-gateway.obsidian-tunnel"; default_health="/tmp/personal-mcp-gateway/tunnel-health.url" ;;
+  ynab) env_file="${MCP_GATEWAY_YNAB_ENV_FILE:-$repo_root/.env.ynab.local}"; default_label="com.ericfeunekes.personal-mcp-gateway.ynab-tunnel"; default_health="/tmp/personal-mcp-gateway/ynab-tunnel-health.url" ;;
+  *) fail "SERVER must be obsidian or ynab." ;;
+esac
 
 fail() {
   printf 'personal-mcp-gateway verification: %s\n' "$1" >&2
@@ -20,10 +25,14 @@ fi
 
 # Health verification never needs runtime credentials. Keep them out of curl,
 # launchctl, and any diagnostics those commands may emit.
-unset CONTROL_PLANE_API_KEY OPENAI_API_KEY
+unset CONTROL_PLANE_API_KEY OPENAI_API_KEY YNAB_TOKEN
 
-label="${LAUNCHD_LABEL:-com.ericfeunekes.personal-mcp-gateway.obsidian-tunnel}"
-health_url_file="${TUNNEL_HEALTH_URL_FILE:-/tmp/personal-mcp-gateway/tunnel-health.url}"
+if [[ "$server" == "ynab" ]]; then
+  label="$default_label"
+else
+  label="${LAUNCHD_LABEL:-$default_label}"
+fi
+health_url_file="${TUNNEL_HEALTH_URL_FILE:-$default_health}"
 timeout_seconds="${RELEASE_READY_TIMEOUT_SECONDS:-45}"
 poll_seconds="${RELEASE_READY_POLL_SECONDS:-1}"
 uid="$(id -u)"
@@ -40,7 +49,7 @@ launch_state="$(launchctl print "gui/$uid/$label" 2>/dev/null)" ||
 if [[ -z "$launch_state" ]]; then
   fail "the tunnel LaunchAgent returned no state."
 fi
-expected_program="$repo_root/scripts/run-obsidian-tunnel.sh"
+expected_program="$repo_root/scripts/run-${server}-tunnel.sh"
 if ! printf '%s\n' "$launch_state" | grep -Fq -- "program = $expected_program"; then
   fail "the loaded LaunchAgent does not use this repo's tunnel wrapper."
 fi

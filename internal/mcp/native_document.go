@@ -126,7 +126,8 @@ type markerResponse struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id"`
 	Result  struct {
-		Meta map[string]any `json:"_meta"`
+		ResultType json.RawMessage `json:"resultType"`
+		Meta       map[string]any  `json:"_meta"`
 	} `json:"result"`
 }
 
@@ -156,11 +157,11 @@ func writeNativeDocument(ctx context.Context, w io.Writer, frame []byte, bridge 
 
 func writeNativeDocumentPayload(ctx context.Context, w io.Writer, frame []byte, payload NativeDocumentPayload) error {
 	defer payload.Close()
-	meta := payload.Metadata()
-	if meta == nil {
-		meta = map[string]any{}
+	payloadMeta := payload.Metadata()
+	if payloadMeta == nil {
+		payloadMeta = map[string]any{}
 	}
-	metaBytes, err := json.Marshal(meta)
+	payloadMetaBytes, err := json.Marshal(payloadMeta)
 	if err != nil {
 		return fmt.Errorf("marshal native document metadata: %w", err)
 	}
@@ -168,10 +169,40 @@ func writeNativeDocumentPayload(ctx context.Context, w io.Writer, frame []byte, 
 	if err := json.Unmarshal(frame, &response); err != nil {
 		return err
 	}
-	prefix := []byte(`{"jsonrpc":"2.0","id":` + string(response.ID) + `,"result":{"content":[{"type":"resource","resource":{"uri":`)
+	resultMeta := make(map[string]any, len(response.Result.Meta))
+	for key, value := range response.Result.Meta {
+		if key != nativeDocumentMarkerKey {
+			resultMeta[key] = value
+		}
+	}
+	resultMetaBytes, err := json.Marshal(resultMeta)
+	if err != nil {
+		return fmt.Errorf("marshal SDK result metadata: %w", err)
+	}
+	prefix := []byte(`{"jsonrpc":"2.0","id":` + string(response.ID) + `,"result":{`)
 	uri, _ := json.Marshal(payload.URI())
 	mime, _ := json.Marshal(payload.MIMEType())
 	if _, err := w.Write(prefix); err != nil {
+		return err
+	}
+	if len(response.Result.ResultType) != 0 {
+		if _, err := w.Write([]byte(`"resultType":`)); err != nil {
+			return err
+		}
+		if _, err := w.Write(response.Result.ResultType); err != nil {
+			return err
+		}
+		if _, err := w.Write([]byte(`,`)); err != nil {
+			return err
+		}
+	}
+	if _, err := w.Write([]byte(`"_meta":`)); err != nil {
+		return err
+	}
+	if _, err := w.Write(resultMetaBytes); err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte(`,"content":[{"type":"resource","resource":{"uri":`)); err != nil {
 		return err
 	}
 	if _, err := w.Write(uri); err != nil {
@@ -186,7 +217,7 @@ func writeNativeDocumentPayload(ctx context.Context, w io.Writer, frame []byte, 
 	if _, err := w.Write([]byte(`,"_meta":`)); err != nil {
 		return err
 	}
-	if _, err := w.Write(metaBytes); err != nil {
+	if _, err := w.Write(payloadMetaBytes); err != nil {
 		return err
 	}
 	if _, err := w.Write([]byte(`,"blob":"`)); err != nil {
@@ -203,7 +234,7 @@ func writeNativeDocumentPayload(ctx context.Context, w io.Writer, frame []byte, 
 	if _, err := w.Write([]byte(`"}}],"structuredContent":`)); err != nil {
 		return err
 	}
-	if _, err := w.Write(metaBytes); err != nil {
+	if _, err := w.Write(payloadMetaBytes); err != nil {
 		return err
 	}
 	_, err = w.Write([]byte(`}}`))

@@ -1282,7 +1282,7 @@ esac
 `)
 	writeExecutable(t, filepath.Join(binDir, "go"), `#!/bin/bash
 set -euo pipefail
-if [ -n "${CONTROL_PLANE_API_KEY:-}" ]; then printf '%s\n' "$CONTROL_PLANE_API_KEY"; exit 9; fi
+if [ -n "${CONTROL_PLANE_API_KEY:-}" ] || [ -n "${YNAB_TOKEN:-}" ]; then printf '%s\n' "${CONTROL_PLANE_API_KEY:-}${YNAB_TOKEN:-}"; exit 9; fi
 printf 'go:%s\n' "$*" >>"$CALL_LOG"
 argument() {
   local wanted="$1"
@@ -1444,7 +1444,7 @@ if [[ "$kind" == resource && "${MUTATE_DEPENDENCY:-0}" = 1 ]]; then printf 'chan
 exit 0
 `)
 	makeScript := fmt.Sprintf(`#!/bin/sh
-if [ -n "${CONTROL_PLANE_API_KEY:-}" ]; then printf '%%s\n' "$CONTROL_PLANE_API_KEY"; exit 9; fi
+if [ -n "${CONTROL_PLANE_API_KEY:-}" ] || [ -n "${YNAB_TOKEN:-}" ]; then printf '%%s\n' "${CONTROL_PLANE_API_KEY:-}${YNAB_TOKEN:-}"; exit 9; fi
 target=""
 for arg in "$@"; do target="$arg"; done
 printf 'make:%%s\n' "$target" >>"$CALL_LOG"
@@ -1528,6 +1528,7 @@ exec "$REAL_INSTALL" "$@"
 		"STATUS_COUNT="+filepath.Join(repo, "status-count"),
 		"REAL_INSTALL=/usr/bin/install",
 		"CONTROL_PLANE_API_KEY=parent-runtime-secret",
+		"YNAB_TOKEN=parent-ynab-secret",
 		"MCP_GATEWAY_ENV_FILE="+alternateEnv,
 		"GATEWAY_CANDIDATE="+candidate,
 		"RELEASE_ACTIVATION_CANDIDATE="+controller,
