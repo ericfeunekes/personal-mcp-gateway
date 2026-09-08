@@ -274,6 +274,9 @@ func TestQuotaStoreRejectsUnsafeFileAndFailsClosed(t *testing.T) {
 	for _, kind := range []string{"symlink", "public"} {
 		t.Run(kind, func(t *testing.T) {
 			dir := t.TempDir()
+			if err := os.Chmod(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
 			path := filepath.Join(dir, "state.sqlite")
 			if kind == "symlink" {
 				target := filepath.Join(dir, "target")
@@ -285,6 +288,13 @@ func TestQuotaStoreRejectsUnsafeFileAndFailsClosed(t *testing.T) {
 				}
 			} else if err := os.WriteFile(path, nil, 0644); err != nil {
 				t.Fatal(err)
+			}
+			if kind == "public" {
+				// Creation permissions are filtered by the caller's umask. The
+				// release runs under 077; explicitly construct the unsafe file.
+				if err := os.Chmod(path, 0644); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if q, err := openQuotaStore(path); err == nil {
 				q.Close()
@@ -305,6 +315,9 @@ func TestQuotaStoreRejectsUnsafeFileAndFailsClosed(t *testing.T) {
 func TestQuotaStorePrivateChildOfTelemetryDirectory(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "ynab")
 	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0755); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "provider-state", "state.sqlite")
