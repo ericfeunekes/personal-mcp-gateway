@@ -371,7 +371,7 @@ func phase1App(t *testing.T, root string) *App {
 	if err != nil {
 		t.Fatal(err)
 	}
-	application, err := New(cfg, audit.Disabled())
+	application, err := New(cfg, audit.Disabled(), Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

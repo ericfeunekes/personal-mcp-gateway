@@ -184,7 +184,7 @@ func TestGitChildHonorsEarlierContextDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
 	defer cancel()
 	started := time.Now()
-	if _, err := gitOutput(ctx, t.TempDir(), "status"); err == nil {
+	if _, err := gitOutputWithTimeout(ctx, gitChildTimeout, t.TempDir(), "status"); err == nil {
 		t.Fatal("blocking git unexpectedly succeeded")
 	}
 	if elapsed := time.Since(started); elapsed > time.Second {
@@ -405,24 +405,6 @@ func TestRunRejectsMissingReleaseIDAsUsage(t *testing.T) {
 	exit := runWithDependencies(context.Background(), []string{"accept"}, &stdout, &stderr, dependencies{manager: &fakeManager{}})
 	if exit != 2 || stdout.Len() != 0 || stderr.String() != "error=usage message=invalid release command\n" {
 		t.Fatalf("exit=%d stdout=%q stderr=%q", exit, stdout.String(), stderr.String())
-	}
-}
-
-func TestRollbackOnlyBuildRefusesAcceptAndPrintsOnlyRollbackGuidance(t *testing.T) {
-	original := rollbackOnlyBuild
-	rollbackOnlyBuild = "enabled"
-	t.Cleanup(func() { rollbackOnlyBuild = original })
-
-	manager := &fakeManager{manifest: &releaseactivation.Manifest{State: releaseactivation.StatePending, ID: testID}}
-	var stdout, stderr bytes.Buffer
-	exit := runWithDependencies(context.Background(), []string{"accept", "--release-id", testID}, &stdout, &stderr, dependencies{manager: manager})
-	if exit != 1 || stdout.Len() != 0 || stderr.String() != "error=rollback_only message=candidate must be rolled back\n" {
-		t.Fatalf("exit=%d stdout=%q stderr=%q", exit, stdout.String(), stderr.String())
-	}
-	records := manifestRecords(manager.manifest)
-	if len(records) != 2 || strings.Contains(strings.Join(records, "\n"), "accept=") ||
-		records[1] != "rollback=make release-rollback RELEASE_ID="+testID {
-		t.Fatalf("rollback-only guidance = %#v", records)
 	}
 }
 

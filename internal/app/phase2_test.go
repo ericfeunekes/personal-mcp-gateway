@@ -156,7 +156,7 @@ func TestPhase2TelemetryKeepsRetrievalEvidencePrivate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	application, err := New(cfg, log)
+	application, err := New(cfg, log, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

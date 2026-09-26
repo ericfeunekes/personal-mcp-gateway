@@ -139,7 +139,7 @@ func decidePrepared(decision Decision, event Event, m Manifest, observed Observe
 		if err := validateRuntime(m, observed); err != nil {
 			return rejected(decision, err)
 		}
-		if !targetAllowedForPrepared(m, observed) {
+		if !targetAllowed(m, observed) {
 			return rejected(decision, lifecycleError(ErrorInstalledMismatch))
 		}
 		decision.Commands = []Command{{Kind: CommandResumeDeployment}}
@@ -160,12 +160,10 @@ func decidePrepared(decision Decision, event Event, m Manifest, observed Observe
 		if err := validateRuntime(m, observed); err != nil {
 			return rejected(decision, err)
 		}
-		if !targetAllowedForPrepared(m, observed) {
+		if !targetAllowed(m, observed) {
 			return rejected(decision, lifecycleError(ErrorInstalledMismatch))
 		}
 		return transition(decision, m, StateRollingBack, CommandPersistState)
-	case EventAccept:
-		return rejected(decision, lifecycleError(ErrorStateConflict))
 	default:
 		return rejected(decision, lifecycleError(ErrorStateConflict))
 	}
@@ -186,8 +184,6 @@ func decidePending(decision Decision, event Event, m Manifest, observed Observed
 			return rejected(decision, err)
 		}
 		return transition(decision, m, StateRollingBack, CommandPersistState)
-	case EventResume:
-		return rejected(decision, lifecycleError(ErrorStateConflict))
 	default:
 		return rejected(decision, lifecycleError(ErrorStateConflict))
 	}
@@ -207,7 +203,7 @@ func decideRollingBack(decision Decision, event Event, m Manifest, observed Obse
 	if err := validateRuntime(m, observed); err != nil {
 		return rejected(decision, err)
 	}
-	if !targetAllowedForRollback(m, observed) {
+	if !targetAllowed(m, observed) {
 		return rejected(decision, lifecycleError(ErrorInstalledMismatch))
 	}
 	if recoveryConfirmed(m, observed, rollbackReady) {
@@ -291,17 +287,11 @@ func validateAcceptanceReadiness(m Manifest, observed Observed) *Error {
 	return nil
 }
 
-func targetAllowedForPrepared(m Manifest, observed Observed) bool {
-	if !observed.InstalledPresent {
-		return !m.PreviousPresent
-	}
-	if observed.InstalledSHA256 == m.CandidateSHA256 {
-		return true
-	}
-	return m.PreviousPresent && observed.InstalledSHA256 == m.PreviousSHA256
-}
-
-func targetAllowedForRollback(m Manifest, observed Observed) bool {
+// targetAllowed reports whether the installed target still matches either the
+// candidate or (when one exists) the previous release. Prepared and
+// rolling-back decisions share this check: both must refuse to act once the
+// installed target has drifted to something neither release recognizes.
+func targetAllowed(m Manifest, observed Observed) bool {
 	if !observed.InstalledPresent {
 		return !m.PreviousPresent
 	}

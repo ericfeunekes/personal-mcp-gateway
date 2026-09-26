@@ -25,30 +25,14 @@ type App struct {
 	log       *audit.Logger
 }
 
-func New(cfg config.Config, log *audit.Logger) (*App, error) {
-	return NewWithActivities(cfg, log, nil, nil)
+// Options carries the exact-candidate resource-probe observers. The zero
+// value is the normal production path with no observers wired.
+type Options struct {
+	Activity     *fsx.ActivityCounter
+	GrepActivity *fsx.SchedulerActivity
 }
 
-// NewWithVaultActivity is the private construction seam used by exact-candidate
-// resource proof. Public tool behavior is identical to New.
-func NewWithVaultActivity(cfg config.Config, log *audit.Logger, activity *fsx.ActivityCounter) (*App, error) {
-	return NewWithActivities(cfg, log, activity, nil)
-}
-
-// NewWithActivities is the private exact-candidate construction seam. The
-// second observer records aggregate concurrent grep scans only when the
-// inherited resource probe is enabled.
-func NewWithActivities(cfg config.Config, log *audit.Logger, activity *fsx.ActivityCounter, grepActivity *fsx.SchedulerActivity) (*App, error) {
-	return newWithGrepTestHooks(cfg, log, activity, grepActivity, nil)
-}
-
-// NewWithGrepTestHooks is internal-package test plumbing for deterministic
-// scheduler boundary tests; normal construction always supplies nil hooks.
-func NewWithGrepTestHooks(cfg config.Config, log *audit.Logger, hooks *obsidian.GrepTestHooks) (*App, error) {
-	return newWithGrepTestHooks(cfg, log, nil, nil, hooks)
-}
-
-func newWithGrepTestHooks(cfg config.Config, log *audit.Logger, activity *fsx.ActivityCounter, grepActivity *fsx.SchedulerActivity, hooks *obsidian.GrepTestHooks) (*App, error) {
+func New(cfg config.Config, log *audit.Logger, opts Options) (*App, error) {
 	if cfg.Server == config.ServerYNAB {
 		tools, err := ynab.New(ynab.Options{Token: cfg.YNABToken, ExportRoot: cfg.YNABExportRoot})
 		if err != nil {
@@ -69,7 +53,7 @@ func newWithGrepTestHooks(cfg config.Config, log *audit.Logger, activity *fsx.Ac
 		}
 		return &App{cfg: cfg, server: server, ynab: tools, log: log}, nil
 	}
-	vault, err := fsx.NewVaultWithActivity(cfg.ObsidianRoot, activity)
+	vault, err := fsx.NewVaultWithActivity(cfg.ObsidianRoot, opts.Activity)
 	if err != nil {
 		return nil, err
 	}
@@ -82,9 +66,9 @@ func newWithGrepTestHooks(cfg config.Config, log *audit.Logger, activity *fsx.Ac
 			_ = documents.Close()
 			return nil, executableErr
 		}
-		descriptors, err = obsidian.DescriptorsWithNativeDocuments(vault, documents, grepActivity, hooks, obsidian.NewPDFValidatorProcess(executable))
+		descriptors, err = obsidian.DescriptorsWithNativeDocuments(vault, documents, opts.GrepActivity, obsidian.NewPDFValidatorProcess(executable))
 	} else {
-		descriptors, err = obsidian.DescriptorsWithGrepTestHooks(vault, grepActivity, hooks)
+		descriptors, err = obsidian.DescriptorsWithGrepActivity(vault, opts.GrepActivity)
 	}
 	if err != nil {
 		if documents != nil {
@@ -94,6 +78,9 @@ func newWithGrepTestHooks(cfg config.Config, log *audit.Logger, activity *fsx.Ac
 	}
 	server, toolNames, err := localmcp.NewServer(log, string(cfg.Mode), descriptors)
 	if err != nil {
+		if documents != nil {
+			_ = documents.Close()
+		}
 		return nil, err
 	}
 

@@ -15,6 +15,7 @@ Read this file first when navigating `docs/`.
 - [ARCHITECTURE.md](ARCHITECTURE.md) — gateway topology, module boundaries, MCP server naming strategy, and implementation language.
 - `WORKFLOW.md` — how planning, implementation, proof, and closeout move through this repo.
 - `TESTING.md` — proof contract for MCP behavior, vault safety, reliability, and machine impact.
+- `testing-history.md` — dated historical proof records superseded by later candidates.
 - `RUNBOOKS.md` — index of operational procedures.
 - `runbooks/closeout.md` — checks before declaring work complete.
 - `runbooks/openai-tunnel.md` — foreground tunnel setup and local secret placement.

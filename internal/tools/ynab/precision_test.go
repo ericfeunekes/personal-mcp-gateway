@@ -35,7 +35,7 @@ func TestMCPWirePreservesIntegerMilliunits(t *testing.T) {
 	req.Header.Set("Mcp-Method", "tools/call")
 	req.Header.Set("Mcp-Name", "create")
 	response := httptest.NewRecorder()
-	localmcp.StreamableHTTPHandler(server).ServeHTTP(response, req)
+	localmcp.StreamableHTTPHandlerWithNativeDocuments(server, nil, "").ServeHTTP(response, req)
 	if response.Code != 200 {
 		t.Fatalf("response %d %s", response.Code, response.Body.String())
 	}
@@ -64,7 +64,7 @@ func TestMCPWirePreservesReturnedIntegerMilliunits(t *testing.T) {
 	req.Header.Set("Mcp-Method", "tools/call")
 	req.Header.Set("Mcp-Name", "list")
 	response := httptest.NewRecorder()
-	localmcp.StreamableHTTPHandler(server).ServeHTTP(response, req)
+	localmcp.StreamableHTTPHandlerWithNativeDocuments(server, nil, "").ServeHTTP(response, req)
 	if response.Code != 200 || !strings.Contains(response.Body.String(), `"amount":9007199254740993`) {
 		t.Fatalf("returned milliunits changed crossing MCP: %d %s", response.Code, response.Body.String())
 	}

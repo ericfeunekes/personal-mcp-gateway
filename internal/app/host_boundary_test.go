@@ -48,7 +48,7 @@ func TestHTTPHostBoundaryOnLoopbackListener(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			application, err := New(cfg, audit.Disabled())
+			application, err := New(cfg, audit.Disabled(), Options{})
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -108,10 +108,6 @@ func runStdio(ctx context.Context, server *sdk.Server, bridge *NativeDocumentBri
 	})
 }
 
-func StreamableHTTPHandler(server *sdk.Server) http.Handler {
-	return StreamableHTTPHandlerWithNativeDocuments(server, nil, "")
-}
-
 // StreamableHTTPHandlerWithNativeDocuments serves MCP over Streamable HTTP.
 // allowedHost is the one exact non-loopback Host name accepted on the
 // loopback listener, such as the tailnet name `tailscale serve` forwards; an

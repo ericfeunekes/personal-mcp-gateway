@@ -102,7 +102,7 @@ func TestSDK170HTTPProtocolsAndBodyLimit(t *testing.T) {
 	server := sdk170Server(t, func(context.Context, *sdk.CallToolRequest, struct{}) (*sdk.CallToolResult, sdk170Output, error) {
 		return nil, sdk170Output{Body: "ready"}, nil
 	})
-	handler := StreamableHTTPHandler(server)
+	handler := StreamableHTTPHandlerWithNativeDocuments(server, nil, "")
 
 	legacy := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(sdk170Request("initialize", `{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}`)))
 	legacy.Header.Set("Content-Type", "application/json")
@@ -200,7 +200,7 @@ func TestSDK170NewProtocolCancellationReachesTool(t *testing.T) {
 	request.Header.Set("MCP-Protocol-Version", sdk170Protocol)
 	request.Header.Set("Mcp-Method", "tools/call")
 	request.Header.Set("Mcp-Name", "probe")
-	go StreamableHTTPHandler(server).ServeHTTP(httptest.NewRecorder(), request)
+	go StreamableHTTPHandlerWithNativeDocuments(server, nil, "").ServeHTTP(httptest.NewRecorder(), request)
 	select {
 	case <-started:
 	case <-time.After(2 * time.Second):

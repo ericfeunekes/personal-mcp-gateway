@@ -35,14 +35,6 @@ type dependencies struct {
 
 type usageError struct{ message string }
 
-type rollbackOnlyError struct{}
-
-func (*rollbackOnlyError) Error() string { return "candidate must be rolled back" }
-
-// Set only in the pinned controller built by this disposable spike branch.
-// Normal controller builds retain the accepted release lifecycle.
-var rollbackOnlyBuild = "disabled"
-
 const (
 	updateOverallTimeout = 30 * time.Second
 	gitChildTimeout      = 5 * time.Second
@@ -88,11 +80,6 @@ func runWithDependencies(ctx context.Context, args []string, stdout, stderr io.W
 	if errors.As(err, &usage) {
 		_, _ = fmt.Fprintln(stderr, "error=usage message=invalid release command")
 		return 2
-	}
-	var rollbackOnly *rollbackOnlyError
-	if errors.As(err, &rollbackOnly) {
-		_, _ = fmt.Fprintln(stderr, "error=rollback_only message=candidate must be rolled back")
-		return 1
 	}
 	writeFailure(stderr, releaseactivation.SanitizedError(err))
 	var guidance *guidanceError
@@ -159,9 +146,6 @@ func execute(ctx context.Context, args []string, deps dependencies) ([]string, e
 		id, err := parseReleaseID(args[1:])
 		if err != nil {
 			return nil, err
-		}
-		if rollbackOnlyBuild == "enabled" {
-			return nil, &rollbackOnlyError{}
 		}
 		manifest, err := deps.manager.Accept(ctx, id)
 		return manifestRecords(manifest), err
@@ -511,10 +495,6 @@ func updateAfterFetch(ctx context.Context, request updateRequest, timeout time.D
 	return nil
 }
 
-func gitOutput(ctx context.Context, repo string, args ...string) (string, error) {
-	return gitOutputWithTimeout(ctx, gitChildTimeout, repo, args...)
-}
-
 func gitOutputWithTimeout(ctx context.Context, timeout time.Duration, repo string, args ...string) (string, error) {
 	childCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -577,9 +557,6 @@ func manifestRecords(manifest *releaseactivation.Manifest) []string {
 	case releaseactivation.StatePrepared:
 		return []string{identity, "resume=make release", "rollback=make release-rollback RELEASE_ID=" + string(manifest.ID)}
 	case releaseactivation.StatePending:
-		if rollbackOnlyBuild == "enabled" {
-			return []string{identity, "rollback=make release-rollback RELEASE_ID=" + string(manifest.ID)}
-		}
 		return []string{identity, "accept=make release-accept RELEASE_ID=" + string(manifest.ID), "rollback=make release-rollback RELEASE_ID=" + string(manifest.ID)}
 	case releaseactivation.StateAccepting:
 		return []string{identity, "resume=make release-accept RELEASE_ID=" + string(manifest.ID)}

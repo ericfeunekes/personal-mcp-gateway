@@ -169,16 +169,6 @@ func (v *Vault) prepareMutationTargetFromRoot(ctx context.Context, root *Directo
 	return &preparedMutationTarget{parent: parent, leaf: stored, rel: rel, source: source, identity: identity, resolved: resolved, fingerprint: fingerprint}, nil
 }
 
-// prepareMutationParent returns an opened confined parent, the caller's final
-// leaf, and the canonical stored-spelling parent relative path.
-func (v *Vault) prepareMutationParent(ctx context.Context, base, input string) (*Directory, string, string, error) {
-	root, err := v.openRoot(ctx)
-	if err != nil {
-		return nil, "", "", err
-	}
-	return v.prepareMutationParentFromRoot(ctx, root, base, input)
-}
-
 // prepareMutationParentFromRoot consumes root and returns either the prepared
 // parent descriptor or a closed root on failure.
 func (v *Vault) prepareMutationParentFromRoot(ctx context.Context, root *Directory, base, input string) (*Directory, string, string, error) {

@@ -3,6 +3,12 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/.." && pwd)"
+
+fail() {
+  printf 'personal-mcp-gateway verification: %s\n' "$1" >&2
+  exit 1
+}
+
 server="${SERVER:-obsidian}"
 case "$server" in
   obsidian) env_file="${MCP_GATEWAY_ENV_FILE:-$repo_root/.env.local}"; default_label="com.ericfeunekes.personal-mcp-gateway.obsidian-tunnel"; default_health="/tmp/personal-mcp-gateway/tunnel-health.url" ;;
@@ -11,11 +17,6 @@ case "$server" in
   ynab-http) env_file="${MCP_GATEWAY_YNAB_ENV_FILE:-$repo_root/.env.ynab.local}"; default_label="com.ericfeunekes.personal-mcp-gateway.ynab-http"; default_health="/tmp/personal-mcp-gateway/ynab-http-health.url" ;;
   *) fail "SERVER must be obsidian, ynab, obsidian-http, or ynab-http." ;;
 esac
-
-fail() {
-  printf 'personal-mcp-gateway verification: %s\n' "$1" >&2
-  exit 1
-}
 
 # shellcheck source=internal/release-config.sh
 if ! source "$script_dir/internal/release-config.sh" >/dev/null 2>&1; then

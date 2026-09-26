@@ -103,7 +103,7 @@ func listedTools(t *testing.T, includeProbe bool) []*sdk.Tool {
 	}
 	descriptors, err := obsidian.Descriptors(vault)
 	if includeProbe {
-		descriptors, err = obsidian.DescriptorsWithNativeDocuments(vault, localmcp.NewNativeDocumentBridge(), nil, nil)
+		descriptors, err = obsidian.DescriptorsWithNativeDocuments(vault, localmcp.NewNativeDocumentBridge(), nil)
 	}
 	if err != nil {
 		t.Fatal(err)

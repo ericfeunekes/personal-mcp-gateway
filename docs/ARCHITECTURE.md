@@ -143,6 +143,19 @@ clear-only, lock-held administrative effects. The adapters that invoke
 - No custom MCP protocol implementation unless the official SDK blocks a proven tunnel or ChatGPT compatibility requirement.
 - The native-document serializer is the only current protocol contingency. It accepts only process-private one-shot payload markers and cannot dereference paths, URLs, or generic resources.
 
+## Accepted Exceptions
+
+`internal/resourceprobe` is a private controller with no MCP, CLI, or network
+surface. `FromEnvironment` activates it only when `PERSONAL_MCP_GATEWAY_RESOURCE_PROBE_FDS`
+names two inherited pipe file descriptors that pass strict access-mode and
+pipe-type checks; without that environment variable, `cmd/gateway`'s startup
+gets a nil controller back and runs with no probe at all. When active, it
+serves exactly two commands, `gc` and `snapshot`, over those private pipes and
+replies with aggregate counters only — heap stats and activity totals — never
+vault paths, tool arguments, or content. This is the one runtime contingency
+outside ordinary MCP request handling, and it stays fenced to a test harness's
+inherited descriptors rather than becoming a general control channel.
+
 ## Current Gaps
 
 See `feature-gap-map.md`.

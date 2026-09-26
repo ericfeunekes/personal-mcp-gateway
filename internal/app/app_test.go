@@ -141,7 +141,7 @@ func TestTelemetryRecordsToolUsageAndFailures(t *testing.T) {
 
 	var events bytes.Buffer
 	log := audit.NewJSONL(&events, runID)
-	application, err := New(cfg, log)
+	application, err := New(cfg, log, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +262,7 @@ func TestSQLiteTelemetryFromRealToolCallsIsSanitized(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	application, err := New(cfg, log)
+	application, err := New(cfg, log, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,7 +413,7 @@ func TestSQLiteMutationTelemetryDoesNotPersistVaultData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	application, err := New(cfg, log)
+	application, err := New(cfg, log, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,101 +575,10 @@ func TestJSONLAndSQLiteSafeSummariesMatchForRealCursorCalls(t *testing.T) {
 	}
 }
 
-func TestGrepSpeculativeSuffixTelemetryUsesReducerCoverage(t *testing.T) {
-	var jsonRecord map[string]any
-	t.Run("jsonl", func(t *testing.T) {
-		var buffer bytes.Buffer
-		jsonRecord = driveSpeculativeGrepTelemetry(t, audit.NewJSONL(&buffer, "speculative-grep-jsonl"), func() []map[string]any { return toolCallRecords(auditRecords(t, buffer.String())) })
-		assertSpeculativeGrepTelemetry(t, jsonRecord)
-	})
-	t.Run("sqlite", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "speculative-grep.sqlite")
-		log, err := audit.NewSQLite(path, "speculative-grep-sqlite")
-		if err != nil {
-			t.Fatal(err)
-		}
-		record := driveSpeculativeGrepTelemetry(t, log, func() []map[string]any { return toolCallRecords(sqliteAuditRows(t, path)) })
-		if err := log.Close(); err != nil {
-			t.Fatal(err)
-		}
-		assertSpeculativeGrepTelemetry(t, record)
-		if !reflect.DeepEqual(jsonRecord["summary"], record["summary"]) {
-			t.Fatalf("sink summaries differ: json=%#v sqlite=%#v", jsonRecord["summary"], record["summary"])
-		}
-	})
-}
-
-func driveSpeculativeGrepTelemetry(t *testing.T, log *audit.Logger, records func() []map[string]any) map[string]any {
-	t.Helper()
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "a.md"), []byte("hit\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "b.md"), append([]byte("broken "), 0xff), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	release, completedSuffix := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	cfg, err := config.Validate(config.Config{Mode: config.ModeStdio, ObsidianRoot: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	application, err := NewWithGrepTestHooks(cfg, log, &obsidian.GrepTestHooks{Gate: func(ctx context.Context, sequence int) error {
-		if sequence > 0 {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-release:
-			return nil
-		}
-	}, TerminalEvent: func(sequence int) {
-		if sequence > 0 {
-			once.Do(func() { close(completedSuffix) })
-		}
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	session, stop := connectPipeTransport(t, ctx, application)
-	defer stop()
-	done := make(chan *sdk.CallToolResult, 1)
-	go func() {
-		result, callErr := session.CallTool(ctx, &sdk.CallToolParams{Name: obsidian.ToolGrep, Arguments: map[string]any{"pattern": "hit", "regex": false, "case_sensitive": true, "limit": 1}})
-		if callErr != nil {
-			t.Errorf("grep call: %v", callErr)
-			return
-		}
-		done <- result
-	}()
-	select {
-	case <-completedSuffix:
-	case <-ctx.Done():
-		t.Fatal("suffix scan did not complete before the canonical boundary")
-	}
-	close(release)
-	result := <-done
-	var out obsidian.GrepOutput
-	unmarshalStructured(t, result, &out)
-	if result.IsError || !out.OK || out.Coverage.FilesScanned != 1 || out.Coverage.BytesScanned != 4 {
-		t.Fatalf("grep=%#v", out)
-	}
-	return findRow(records(), "tool.call", obsidian.ToolGrep, "ok", "")
-}
-
-func assertSpeculativeGrepTelemetry(t *testing.T, record map[string]any) {
-	t.Helper()
-	if record == nil {
-		t.Fatal("missing grep telemetry")
-	}
-	result := summarySection(t, record, "result")
-	if intFromRecord(result, "files_scanned") != 1 || intFromRecord(result, "bytes_scanned") != 4 || result["stopped_by"] != "result_limit" {
-		t.Fatalf("summary=%#v", result)
-	}
-}
+// TestGrepSpeculativeSuffixTelemetryUsesReducerCoverage moved to
+// internal/tools/obsidian (grep_telemetry_test.go): it needs the grep
+// concurrency test hooks, which stay unexported to keep them unreachable
+// from production code.
 
 func TestPhase2JSONLAndSQLiteSafeSummariesMatchAcrossOutcomeClasses(t *testing.T) {
 	const runID = "phase2-summary-parity-run"
@@ -801,7 +710,7 @@ func TestSQLiteHTTPTelemetryRecordsRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	application, err := New(cfg, log)
+	application, err := New(cfg, log, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -878,7 +787,7 @@ func TestStreamableHTTPTransportAndHealthReadiness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	application, err := New(cfg, audit.Disabled())
+	application, err := New(cfg, audit.Disabled(), Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -957,7 +866,7 @@ func TestHTTPTelemetryRecordsRoutesAndBodyLimit(t *testing.T) {
 	}
 	var events bytes.Buffer
 	log := audit.NewJSONL(&events, "test-run")
-	application, err := New(cfg, log)
+	application, err := New(cfg, log, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1117,7 +1026,7 @@ func TestReadyzFailsClosedWhenRootDisappears(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	application, err := New(cfg, audit.Disabled())
+	application, err := New(cfg, audit.Disabled(), Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1154,7 +1063,7 @@ func TestReadyzFailsWhenTelemetryDegraded(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := audit.New("test-run", &appFailingSink{})
-	application, err := New(cfg, log)
+	application, err := New(cfg, log, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1200,7 +1109,7 @@ func TestToolCallsDoNotMutateVault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	application, err := New(cfg, audit.Disabled())
+	application, err := New(cfg, audit.Disabled(), Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1399,7 +1308,7 @@ func TestStartupValidationDoesNotScanNestedDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Validate() descended into unreadable nested dir: %v", err)
 	}
-	if _, err := New(cfg, audit.Disabled()); err != nil {
+	if _, err := New(cfg, audit.Disabled(), Options{}); err != nil {
 		t.Fatalf("New() descended into unreadable nested dir: %v", err)
 	}
 }
@@ -1413,7 +1322,7 @@ func newTestApp(t *testing.T) *App {
 	if err != nil {
 		t.Fatal(err)
 	}
-	application, err := New(cfg, audit.Disabled())
+	application, err := New(cfg, audit.Disabled(), Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1618,7 +1527,7 @@ func driveSafeSummaryScenario(t *testing.T, root string, log *audit.Logger) []st
 	if err != nil {
 		t.Fatal(err)
 	}
-	application, err := New(cfg, log)
+	application, err := New(cfg, log, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1674,7 +1583,7 @@ func drivePhase2SafeSummaryScenario(t *testing.T, root string, log *audit.Logger
 	if err != nil {
 		t.Fatal(err)
 	}
-	application, err := New(cfg, log)
+	application, err := New(cfg, log, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1806,7 +1715,7 @@ func drivePhase2SDKCancellationScenarios(
 		t.Fatal(err)
 	}
 	activity := &fsx.ActivityCounter{}
-	application, err := NewWithVaultActivity(cfg, log, activity)
+	application, err := New(cfg, log, Options{Activity: activity})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2036,7 +1945,7 @@ func connectPhase2TestSession(t *testing.T, root string, log *audit.Logger) (con
 	if err != nil {
 		t.Fatal(err)
 	}
-	application, err := New(cfg, log)
+	application, err := New(cfg, log, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

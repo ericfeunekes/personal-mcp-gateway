@@ -5,8 +5,10 @@ import "fmt"
 
 const ManifestVersion = 4
 
-// ServiceDescriptor is one already-installed local tunnel service captured at
-// prepare time. It deliberately contains no credentials.
+// ServiceDescriptor is one already-installed local launchd-supervised service
+// captured at prepare time, whether it fronts the OpenAI tunnel (`obsidian`,
+// `ynab`) or serves loopback HTTP directly (`obsidian-http`, `ynab-http`). It
+// deliberately contains no credentials.
 type ServiceDescriptor struct {
 	Server            string `json:"server"`
 	LaunchAgentLabel  string `json:"launch_agent_label"`
@@ -108,14 +110,6 @@ type Manifest struct {
 // when the slot is clear.
 type Snapshot struct {
 	Manifest *Manifest
-}
-
-// State returns the snapshot's effective durable state.
-func (s Snapshot) State() State {
-	if s.Manifest == nil {
-		return StateClear
-	}
-	return s.Manifest.State
 }
 
 // Observed contains facts gathered by the Manager before calling Decide. The

@@ -55,8 +55,8 @@ func Descriptors(vault *fsx.Vault) ([]localmcp.ToolDescriptor, error) {
 
 // DescriptorsWithNativeDocuments adds the activation-gated native document
 // tool using the process-owned one-shot transport bridge.
-func DescriptorsWithNativeDocuments(vault *fsx.Vault, bridge *localmcp.NativeDocumentBridge, grepActivity *fsx.SchedulerActivity, hooks *GrepTestHooks, validators ...DocumentValidator) ([]localmcp.ToolDescriptor, error) {
-	descriptors, err := descriptorsWithGrepTestHooks(vault, grepActivity, hooks)
+func DescriptorsWithNativeDocuments(vault *fsx.Vault, bridge *localmcp.NativeDocumentBridge, grepActivity *fsx.SchedulerActivity, validators ...DocumentValidator) ([]localmcp.ToolDescriptor, error) {
+	descriptors, err := descriptorsWithGrepHooks(vault, grepActivity, nil)
 	if err != nil {
 		return descriptors, err
 	}
@@ -77,16 +77,14 @@ func DescriptorsWithNativeDocuments(vault *fsx.Vault, bridge *localmcp.NativeDoc
 // DescriptorsWithGrepActivity is private wiring for the inherited exact
 // resource probe; normal callers use Descriptors and pay no observer cost.
 func DescriptorsWithGrepActivity(vault *fsx.Vault, grepActivity *fsx.SchedulerActivity) ([]localmcp.ToolDescriptor, error) {
-	return descriptorsWithGrepTestHooks(vault, grepActivity, nil)
+	return descriptorsWithGrepHooks(vault, grepActivity, nil)
 }
 
-// DescriptorsWithGrepTestHooks is internal Go test plumbing; it does not alter
-// the exposed MCP descriptor set or add a runtime capability.
-func DescriptorsWithGrepTestHooks(vault *fsx.Vault, grepActivity *fsx.SchedulerActivity, hooks *GrepTestHooks) ([]localmcp.ToolDescriptor, error) {
-	return descriptorsWithGrepTestHooks(vault, grepActivity, hooks)
-}
-
-func descriptorsWithGrepTestHooks(vault *fsx.Vault, grepActivity *fsx.SchedulerActivity, hooks *GrepTestHooks) ([]localmcp.ToolDescriptor, error) {
+// descriptorsWithGrepHooks is internal-package test plumbing for
+// deterministic grep concurrency scheduling; production callers above always
+// pass nil hooks, and the only test that needs non-nil hooks lives in this
+// package so the hooks stay unreachable from production code.
+func descriptorsWithGrepHooks(vault *fsx.Vault, grepActivity *fsx.SchedulerActivity, hooks *grepConcurrentHooks) ([]localmcp.ToolDescriptor, error) {
 	tools := newTools(vault, grepActivity)
 	resolve, err := localmcp.NewToolDescriptor(sdk.Tool{
 		Name:        ToolResolve,
@@ -140,7 +138,7 @@ func descriptorsWithGrepTestHooks(vault *fsx.Vault, grepActivity *fsx.SchedulerA
 		Annotations: readOnlyToolAnnotations(),
 		InputSchema: grepInputSchema(),
 	}, func(ctx context.Context, request *sdk.CallToolRequest, input GrepInput) (*sdk.CallToolResult, GrepOutput, error) {
-		return tools.grep(ctx, input, hooks.concurrentHooks())
+		return tools.grep(ctx, input, hooks)
 	}, summarizeGrepArgs, summarizeGrepResult)
 	if err != nil {
 		return nil, err

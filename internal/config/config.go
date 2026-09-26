@@ -17,7 +17,7 @@ const (
 	ModeHTTP  Mode = "http"
 
 	DefaultHTTPAddr     = "127.0.0.1:8765"
-	DefaultYNABHTTPAddr = "127.0.0.1:8766"
+	DefaultYNABHTTPAddr = "127.0.0.1:8768"
 	ServerObsidian      = "obsidian"
 	ServerYNAB          = "ynab"
 

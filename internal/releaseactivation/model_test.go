@@ -77,7 +77,7 @@ func TestDecideExhaustiveStateEventMatrix(t *testing.T) {
 				}
 				decision := Decide(snapshot, event, context)
 				expect := want[state][event]
-				if got := decision.Next.State(); got != expect.state {
+				if got := snapshotState(decision.Next); got != expect.state {
 					t.Fatalf("next state = %q, want %q", got, expect.state)
 				}
 				if expect.code != "" {
@@ -130,7 +130,7 @@ func TestDecidePreparedResumeReconcilesWithoutSecondDeploymentEvent(t *testing.T
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			decision := Decide(Snapshot{Manifest: &m}, EventResume, Context{ReleaseID: m.ID, Observed: tt.observed})
-			if decision.Err != nil || decision.Next.State() != tt.wantState {
+			if decision.Err != nil || snapshotState(decision.Next) != tt.wantState {
 				t.Fatalf("decision = %#v, want state %q", decision, tt.wantState)
 			}
 			assertCommands(t, decision, tt.want)
@@ -139,7 +139,7 @@ func TestDecidePreparedResumeReconcilesWithoutSecondDeploymentEvent(t *testing.T
 
 	ready := validObserved(m, testCandidate, true)
 	decision := Decide(Snapshot{Manifest: &m}, EventDeploymentReady, Context{ReleaseID: m.ID, Observed: ready})
-	if decision.Err != nil || decision.Next.State() != StatePending {
+	if decision.Err != nil || snapshotState(decision.Next) != StatePending {
 		t.Fatalf("deployment-ready decision = %#v", decision)
 	}
 	assertCommands(t, decision, CommandPersistState)
@@ -198,7 +198,7 @@ func TestDecideFirstInstallRollbackRequiresAbsentTargetAndUnloadedSupervisor(t *
 			observed.InstalledPresent = tt.present
 			observed.SupervisorUnloaded = tt.unloaded
 			decision := Decide(Snapshot{Manifest: &m}, EventRollback, Context{ReleaseID: m.ID, Observed: observed})
-			if decision.Err != nil || decision.Next.State() != tt.wantState {
+			if decision.Err != nil || snapshotState(decision.Next) != tt.wantState {
 				t.Fatalf("decision = %#v, want state %q", decision, tt.wantState)
 			}
 			assertCommands(t, decision, tt.wantCommand)
@@ -212,20 +212,20 @@ func TestDecidePreviousRollbackRequiresExactRuntimeProof(t *testing.T) {
 	observed := validObserved(m, testPrevious, false)
 
 	decision := Decide(Snapshot{Manifest: &m}, EventRollback, Context{ReleaseID: m.ID, Observed: observed})
-	if decision.Err != nil || decision.Next.State() != StateRollingBack {
+	if decision.Err != nil || snapshotState(decision.Next) != StateRollingBack {
 		t.Fatalf("receipt-absent recovery decision = %#v", decision)
 	}
 	assertCommands(t, decision, CommandResumeRollback)
 
 	observed.RuntimeReady = true
 	decision = Decide(Snapshot{Manifest: &m}, EventRollback, Context{ReleaseID: m.ID, Observed: observed})
-	if decision.Err != nil || decision.Next.State() != StateRollingBack {
+	if decision.Err != nil || snapshotState(decision.Next) != StateRollingBack {
 		t.Fatalf("passive-ready recovery decision = %#v", decision)
 	}
 	assertCommands(t, decision, CommandResumeRollback)
 
 	decision = Decide(Snapshot{Manifest: &m}, EventRollback, Context{ReleaseID: m.ID, Observed: observed, rollbackReady: true})
-	if decision.Err != nil || decision.Next.State() != StateClear {
+	if decision.Err != nil || snapshotState(decision.Next) != StateClear {
 		t.Fatalf("proven recovery decision = %#v", decision)
 	}
 	assertCommands(t, decision, CommandClearTransaction)
@@ -497,7 +497,7 @@ func TestPrepareValidatesCandidateAndCurrentTargetBeforePublication(t *testing.T
 	observed := validObserved(m, testPrevious, false)
 
 	decision := Decide(Snapshot{}, EventPrepare, Context{Prepared: &m, Observed: observed})
-	if decision.Err != nil || decision.Next.State() != StatePrepared {
+	if decision.Err != nil || snapshotState(decision.Next) != StatePrepared {
 		t.Fatalf("valid prepare = %#v", decision)
 	}
 	assertCommands(t, decision, CommandPublishPrepared)
@@ -626,6 +626,16 @@ func validObserved(m Manifest, installed string, ready bool) Observed {
 		EnvironmentSHA256:       m.EnvironmentSHA256,
 		RuntimeReady:            ready,
 	}
+}
+
+// snapshotState reports the effective durable state of a Snapshot: only
+// tests need this convenience, since production code decides directly on
+// Manifest's presence.
+func snapshotState(s Snapshot) State {
+	if s.Manifest == nil {
+		return StateClear
+	}
+	return s.Manifest.State
 }
 
 func assertRejected(t *testing.T, decision Decision, code ErrorCode) {
