@@ -563,8 +563,15 @@ type serviceLoadedRuntime interface {
 // loaded LaunchAgent is included even if its child has crashed; a missing job
 // is deliberately not installed as a side effect of release.
 func (m *Manager) captureService(ctx context.Context, base Manifest, candidate ServiceCandidate) (ServiceDescriptor, bool, error) {
-	if candidate.Server != "ynab" || !ValidLaunchAgentLabel(candidate.LaunchAgentLabel) ||
-		!absolutePaths(candidate.PlistPath, candidate.WrapperPath, candidate.MCPWrapperPath, candidate.StdoutPath, candidate.StderrPath, candidate.EnvironmentPath, candidate.HealthURLFile) {
+	// ynab is a tunnel service: it runs behind a second-level MCP stdio wrapper
+	// and must record it. obsidian-http/ynab-http exec the gateway binary
+	// directly over loopback HTTP with no such wrapper, so their candidate must
+	// leave MCPWrapperPath empty rather than alias the process wrapper.
+	tunnel := candidate.Server == "ynab"
+	http := candidate.Server == "obsidian-http" || candidate.Server == "ynab-http"
+	if (!tunnel && !http) || !ValidLaunchAgentLabel(candidate.LaunchAgentLabel) ||
+		!absolutePaths(candidate.PlistPath, candidate.WrapperPath, candidate.StdoutPath, candidate.StderrPath, candidate.EnvironmentPath, candidate.HealthURLFile) ||
+		(tunnel && !filepath.IsAbs(candidate.MCPWrapperPath)) || (http && candidate.MCPWrapperPath != "") {
 		return ServiceDescriptor{}, false, lifecycleError(ErrorStateMalformed)
 	}
 	probe := base
@@ -595,8 +602,10 @@ func (m *Manager) captureService(ctx context.Context, base Manifest, candidate S
 	if descriptor.WrapperSHA256, hashErr = HashRegular(descriptor.WrapperPath); hashErr != nil {
 		return ServiceDescriptor{}, false, hashErr
 	}
-	if descriptor.MCPWrapperSHA256, hashErr = HashRegular(descriptor.MCPWrapperPath); hashErr != nil {
-		return ServiceDescriptor{}, false, hashErr
+	if tunnel {
+		if descriptor.MCPWrapperSHA256, hashErr = HashRegular(descriptor.MCPWrapperPath); hashErr != nil {
+			return ServiceDescriptor{}, false, hashErr
+		}
 	}
 	if descriptor.EnvironmentSHA256, hashErr = HashRegular(descriptor.EnvironmentPath); hashErr != nil {
 		return ServiceDescriptor{}, false, hashErr

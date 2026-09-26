@@ -18,6 +18,7 @@ Read this file first when navigating `docs/`.
 - `RUNBOOKS.md` — index of operational procedures.
 - `runbooks/closeout.md` — checks before declaring work complete.
 - `runbooks/openai-tunnel.md` — foreground tunnel setup and local secret placement.
+- `runbooks/tailnet-http.md` — tailnet HTTP services for Muse: install, `tailscale serve`, policy, verification.
 - `runbooks/local-release.md` — local build, pending activation, exact
   accept/rollback, supervised-runtime administration, and main update procedure.
 

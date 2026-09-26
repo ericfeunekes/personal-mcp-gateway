@@ -451,27 +451,49 @@ func TestPrepareAndAdminRejectUnsafeLaunchAgentLabels(t *testing.T) {
 	}
 }
 
-func TestParsePrepareDerivesFixedYNABServiceCandidate(t *testing.T) {
+func TestParsePrepareDerivesFixedAdditionalServiceCandidatesInCanonicalOrder(t *testing.T) {
 	home := t.TempDir()
 	repo := t.TempDir()
+	envPath := filepath.Join(repo, ".env.local")
 	request, err := parsePrepare([]string{
 		"--commit", strings.Repeat("a", 40), "--candidate-sha256", strings.Repeat("b", 64),
 		"--authority-sha256", strings.Repeat("c", 64), "--dependency-sha256", strings.Repeat("d", 64),
 		"--candidate", filepath.Join(repo, "candidate"), "--authority", filepath.Join(repo, "authority"),
 		"--target", filepath.Join(home, "bin", "gateway"), "--label", "com.example.obsidian",
-		"--repo-root", repo, "--environment", filepath.Join(repo, ".env.local"), "--health-url-file", "/tmp/obsidian-health.url",
+		"--repo-root", repo, "--environment", envPath, "--health-url-file", "/tmp/obsidian-health.url",
 	}, dependencies{uid: 501, home: home})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(request.ServiceCandidates) != 1 {
+	if len(request.ServiceCandidates) != 3 {
 		t.Fatalf("service candidates = %#v", request.ServiceCandidates)
 	}
-	got := request.ServiceCandidates[0]
-	if got.Server != "ynab" || got.LaunchAgentLabel != "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel" ||
-		got.WrapperPath != filepath.Join(repo, "scripts", "run-ynab-tunnel.sh") || got.EnvironmentPath != filepath.Join(repo, ".env.ynab.local") ||
-		got.HealthURLFile != "/tmp/personal-mcp-gateway/ynab-tunnel-health.url" {
-		t.Fatalf("YNAB candidate = %#v", got)
+	ynab := request.ServiceCandidates[0]
+	if ynab.Server != "ynab" || ynab.LaunchAgentLabel != "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel" ||
+		ynab.WrapperPath != filepath.Join(repo, "scripts", "run-ynab-tunnel.sh") ||
+		ynab.MCPWrapperPath != filepath.Join(repo, "scripts", "run-ynab-mcp-stdio.sh") ||
+		ynab.EnvironmentPath != filepath.Join(repo, ".env.ynab.local") ||
+		ynab.HealthURLFile != "/tmp/personal-mcp-gateway/ynab-tunnel-health.url" {
+		t.Fatalf("ynab candidate = %#v", ynab)
+	}
+	// obsidian-http execs the gateway binary directly: no MCP wrapper, and it
+	// shares the obsidian tunnel's own environment file rather than a copy.
+	obsidianHTTP := request.ServiceCandidates[1]
+	if obsidianHTTP.Server != "obsidian-http" || obsidianHTTP.LaunchAgentLabel != "com.ericfeunekes.personal-mcp-gateway.obsidian-http" ||
+		obsidianHTTP.WrapperPath != filepath.Join(repo, "scripts", "run-obsidian-http.sh") ||
+		obsidianHTTP.MCPWrapperPath != "" ||
+		obsidianHTTP.EnvironmentPath != envPath ||
+		obsidianHTTP.HealthURLFile != "/tmp/personal-mcp-gateway/obsidian-http-health.url" {
+		t.Fatalf("obsidian-http candidate = %#v", obsidianHTTP)
+	}
+	// ynab-http shares the ynab tunnel's own environment file for the same reason.
+	ynabHTTP := request.ServiceCandidates[2]
+	if ynabHTTP.Server != "ynab-http" || ynabHTTP.LaunchAgentLabel != "com.ericfeunekes.personal-mcp-gateway.ynab-http" ||
+		ynabHTTP.WrapperPath != filepath.Join(repo, "scripts", "run-ynab-http.sh") ||
+		ynabHTTP.MCPWrapperPath != "" ||
+		ynabHTTP.EnvironmentPath != filepath.Join(repo, ".env.ynab.local") ||
+		ynabHTTP.HealthURLFile != "/tmp/personal-mcp-gateway/ynab-http-health.url" {
+		t.Fatalf("ynab-http candidate = %#v", ynabHTTP)
 	}
 }
 
@@ -634,6 +656,80 @@ func TestYNABInstallAdapterFailureStillConfirmsCleanup(t *testing.T) {
 func TestYNABCleanupFailureIsRecoveryUnconfirmed(t *testing.T) {
 	runtime := &fakeRuntime{readyErr: errors.New("not ready"), bootoutErr: errors.New("bootout failed"), confirmed: true}
 	request := adminRequest{command: "install-launchagent", server: "ynab", repoRoot: t.TempDir(), home: t.TempDir(), uid: 501, label: "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel", healthURLFile: "/tmp/personal-mcp-gateway/ynab-tunnel-health.url"}
+	err := runAdmin(context.Background(), runtime, request)
+	if got := releaseactivation.SanitizedError(err); got.Code != releaseactivation.ErrorRecoveryUnconfirmed {
+		t.Fatalf("cleanup error = %#v", got)
+	}
+}
+
+func TestObsidianHTTPFirstInstallUnloadsUnreadyService(t *testing.T) {
+	runtime := &fakeRuntime{readyErr: errors.New("not ready"), confirmed: true}
+	manager := &fakeManager{runtime: runtime}
+	home := t.TempDir()
+	repo := filepath.Join(home, "repo")
+	_, err := execute(context.Background(), []string{"install-launchagent", "--server", "obsidian-http", "--repo-root", repo, "--label", "com.ericfeunekes.personal-mcp-gateway.obsidian-http"}, dependencies{manager: manager, uid: 501, home: home})
+	if err == nil {
+		t.Fatal("unready obsidian-http install succeeded")
+	}
+	if runtime.bootout.LaunchAgentLabel != "com.ericfeunekes.personal-mcp-gateway.obsidian-http" || runtime.bootout.HealthURLFile != "/tmp/personal-mcp-gateway/obsidian-http-health.url" {
+		t.Fatalf("cleanup manifest = %+v", runtime.bootout)
+	}
+	if runtime.bootout.WrapperPath != filepath.Join(repo, "scripts", "run-obsidian-http.sh") || runtime.bootout.ReadyTimeoutSeconds != 45 || runtime.bootout.ReadyPollMilliseconds != 1000 {
+		t.Fatalf("obsidian-http readiness manifest = %+v", runtime.bootout)
+	}
+}
+
+func TestObsidianHTTPInstallAdapterFailureStillConfirmsCleanup(t *testing.T) {
+	runtime := &fakeRuntime{adapterErr: errors.New("post-bootstrap failure"), confirmed: true}
+	request := adminRequest{command: "install-launchagent", server: "obsidian-http", repoRoot: t.TempDir(), home: t.TempDir(), uid: 501, label: "com.ericfeunekes.personal-mcp-gateway.obsidian-http", healthURLFile: "/tmp/personal-mcp-gateway/obsidian-http-health.url"}
+	if err := runAdmin(context.Background(), runtime, request); err == nil {
+		t.Fatal("adapter failure succeeded")
+	}
+	if runtime.bootout.LaunchAgentLabel == "" {
+		t.Fatal("post-bootstrap adapter failure did not cleanup")
+	}
+}
+
+func TestObsidianHTTPCleanupFailureIsRecoveryUnconfirmed(t *testing.T) {
+	runtime := &fakeRuntime{readyErr: errors.New("not ready"), bootoutErr: errors.New("bootout failed"), confirmed: true}
+	request := adminRequest{command: "install-launchagent", server: "obsidian-http", repoRoot: t.TempDir(), home: t.TempDir(), uid: 501, label: "com.ericfeunekes.personal-mcp-gateway.obsidian-http", healthURLFile: "/tmp/personal-mcp-gateway/obsidian-http-health.url"}
+	err := runAdmin(context.Background(), runtime, request)
+	if got := releaseactivation.SanitizedError(err); got.Code != releaseactivation.ErrorRecoveryUnconfirmed {
+		t.Fatalf("cleanup error = %#v", got)
+	}
+}
+
+func TestYNABHTTPFirstInstallUnloadsUnreadyService(t *testing.T) {
+	runtime := &fakeRuntime{readyErr: errors.New("not ready"), confirmed: true}
+	manager := &fakeManager{runtime: runtime}
+	home := t.TempDir()
+	repo := filepath.Join(home, "repo")
+	_, err := execute(context.Background(), []string{"install-launchagent", "--server", "ynab-http", "--repo-root", repo, "--label", "com.ericfeunekes.personal-mcp-gateway.ynab-http"}, dependencies{manager: manager, uid: 501, home: home})
+	if err == nil {
+		t.Fatal("unready ynab-http install succeeded")
+	}
+	if runtime.bootout.LaunchAgentLabel != "com.ericfeunekes.personal-mcp-gateway.ynab-http" || runtime.bootout.HealthURLFile != "/tmp/personal-mcp-gateway/ynab-http-health.url" {
+		t.Fatalf("cleanup manifest = %+v", runtime.bootout)
+	}
+	if runtime.bootout.WrapperPath != filepath.Join(repo, "scripts", "run-ynab-http.sh") || runtime.bootout.ReadyTimeoutSeconds != 45 || runtime.bootout.ReadyPollMilliseconds != 1000 {
+		t.Fatalf("ynab-http readiness manifest = %+v", runtime.bootout)
+	}
+}
+
+func TestYNABHTTPInstallAdapterFailureStillConfirmsCleanup(t *testing.T) {
+	runtime := &fakeRuntime{adapterErr: errors.New("post-bootstrap failure"), confirmed: true}
+	request := adminRequest{command: "install-launchagent", server: "ynab-http", repoRoot: t.TempDir(), home: t.TempDir(), uid: 501, label: "com.ericfeunekes.personal-mcp-gateway.ynab-http", healthURLFile: "/tmp/personal-mcp-gateway/ynab-http-health.url"}
+	if err := runAdmin(context.Background(), runtime, request); err == nil {
+		t.Fatal("adapter failure succeeded")
+	}
+	if runtime.bootout.LaunchAgentLabel == "" {
+		t.Fatal("post-bootstrap adapter failure did not cleanup")
+	}
+}
+
+func TestYNABHTTPCleanupFailureIsRecoveryUnconfirmed(t *testing.T) {
+	runtime := &fakeRuntime{readyErr: errors.New("not ready"), bootoutErr: errors.New("bootout failed"), confirmed: true}
+	request := adminRequest{command: "install-launchagent", server: "ynab-http", repoRoot: t.TempDir(), home: t.TempDir(), uid: 501, label: "com.ericfeunekes.personal-mcp-gateway.ynab-http", healthURLFile: "/tmp/personal-mcp-gateway/ynab-http-health.url"}
 	err := runAdmin(context.Background(), runtime, request)
 	if got := releaseactivation.SanitizedError(err); got.Code != releaseactivation.ErrorRecoveryUnconfirmed {
 		t.Fatalf("cleanup error = %#v", got)

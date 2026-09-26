@@ -672,19 +672,21 @@ func TestSanitizedErrorNeverCarriesInternalCause(t *testing.T) {
 }
 
 type fakeManagerRuntime struct {
-	installedPresent bool
-	installedHash    string
-	ready            bool
-	unloaded         bool
-	runtimeDrift     bool
-	waitFailures     int
-	confirmOverride  func() (bool, error)
-	calls            []string
-	serviceRestarts  []string
-	serviceBootouts  []string
-	observeCalls     int
-	afterObserve     func()
-	ynabLoaded       bool
+	installedPresent   bool
+	installedHash      string
+	ready              bool
+	unloaded           bool
+	runtimeDrift       bool
+	waitFailures       int
+	confirmOverride    func() (bool, error)
+	calls              []string
+	serviceRestarts    []string
+	serviceBootouts    []string
+	observeCalls       int
+	afterObserve       func()
+	ynabLoaded         bool
+	obsidianHTTPLoaded bool
+	ynabHTTPLoaded     bool
 }
 
 func (f *fakeManagerRuntime) Observe(_ context.Context, m Manifest, controller string, artifacts RuntimeArtifacts) (Observed, error) {
@@ -727,10 +729,16 @@ func (f *fakeManagerRuntime) Observe(_ context.Context, m Manifest, controller s
 }
 
 func (f *fakeManagerRuntime) ServiceLoaded(_ context.Context, m Manifest) (bool, error) {
-	if m.LaunchAgentLabel == "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel" {
+	switch m.LaunchAgentLabel {
+	case "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel":
 		return f.ynabLoaded, nil
+	case "com.ericfeunekes.personal-mcp-gateway.obsidian-http":
+		return f.obsidianHTTPLoaded, nil
+	case "com.ericfeunekes.personal-mcp-gateway.ynab-http":
+		return f.ynabHTTPLoaded, nil
+	default:
+		return false, nil
 	}
-	return false, nil
 }
 
 func (f *fakeManagerRuntime) InstallCandidate(_ context.Context, m Manifest, _ RuntimeArtifacts) error {
@@ -889,6 +897,132 @@ func TestPrepareCapturesOnlyLoadedYNABServiceAndRestartsCapturedOrder(t *testing
 	}
 }
 
+func TestPrepareCapturesOnlyLoadedHTTPServicesAndRestartsCapturedOrder(t *testing.T) {
+	manager, runtime, request := newManagerFixture(t, true)
+	root := filepath.Dir(request.TargetPath)
+	write := func(name string) string {
+		path := filepath.Join(root, name)
+		if err := os.WriteFile(path, []byte(name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	obsidianHTTP := ServiceCandidate{Server: "obsidian-http", LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.obsidian-http",
+		PlistPath: write("obsidian-http.plist"), WrapperPath: write("run-obsidian-http.sh"),
+		StdoutPath: filepath.Join(root, "obsidian-http.out"), StderrPath: filepath.Join(root, "obsidian-http.err"),
+		EnvironmentPath: write("obsidian-http.env"), HealthURLFile: filepath.Join(root, "obsidian-http.health")}
+	ynabHTTP := ServiceCandidate{Server: "ynab-http", LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.ynab-http",
+		PlistPath: write("ynab-http.plist"), WrapperPath: write("run-ynab-http.sh"),
+		StdoutPath: filepath.Join(root, "ynab-http.out"), StderrPath: filepath.Join(root, "ynab-http.err"),
+		EnvironmentPath: write("ynab-http.env"), HealthURLFile: filepath.Join(root, "ynab-http.health")}
+	request.ServiceCandidates = []ServiceCandidate{obsidianHTTP, ynabHTTP}
+	prepared, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prepared.Services) != 1 || prepared.Services[0].Server != "obsidian" {
+		t.Fatalf("absent HTTP services captured: %#v", prepared.Services)
+	}
+
+	manager, runtime, request = newManagerFixture(t, true)
+	root = filepath.Dir(request.TargetPath)
+	write = func(name string) string {
+		path := filepath.Join(root, name)
+		if err := os.WriteFile(path, []byte(name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	obsidianHTTPEnv := write("obsidian-http.env")
+	if err := os.WriteFile(obsidianHTTPEnv, []byte("GATEWAY_BIN="+request.TargetPath+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ynabHTTPEnv := write("ynab-http.env")
+	if err := os.WriteFile(ynabHTTPEnv, []byte("GATEWAY_BIN="+request.TargetPath+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request.ServiceCandidates = []ServiceCandidate{
+		{Server: "obsidian-http", LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.obsidian-http",
+			PlistPath: write("obsidian-http.plist"), WrapperPath: write("run-obsidian-http.sh"),
+			StdoutPath: filepath.Join(root, "obsidian-http.out"), StderrPath: filepath.Join(root, "obsidian-http.err"),
+			EnvironmentPath: obsidianHTTPEnv, HealthURLFile: filepath.Join(root, "obsidian-http.health")},
+		{Server: "ynab-http", LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.ynab-http",
+			PlistPath: write("ynab-http.plist"), WrapperPath: write("run-ynab-http.sh"),
+			StdoutPath: filepath.Join(root, "ynab-http.out"), StderrPath: filepath.Join(root, "ynab-http.err"),
+			EnvironmentPath: ynabHTTPEnv, HealthURLFile: filepath.Join(root, "ynab-http.health")},
+	}
+	runtime.obsidianHTTPLoaded = true // loaded but not ready models a crashed child.
+	runtime.ynabHTTPLoaded = true
+	prepared, err = manager.Prepare(context.Background(), request)
+	if err != nil || len(prepared.Services) != 3 || prepared.Services[1].Server != "obsidian-http" || prepared.Services[2].Server != "ynab-http" {
+		t.Fatalf("loaded HTTP services not captured in canonical order: %#v err=%v", prepared, err)
+	}
+	if prepared.Services[1].MCPWrapperPath != "" || prepared.Services[1].MCPWrapperSHA256 != "" ||
+		prepared.Services[2].MCPWrapperPath != "" || prepared.Services[2].MCPWrapperSHA256 != "" {
+		t.Fatalf("HTTP service descriptor recorded an MCP wrapper: %#v", prepared.Services)
+	}
+	if _, err := manager.Resume(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"local.test.gateway", "com.ericfeunekes.personal-mcp-gateway.obsidian-http", "com.ericfeunekes.personal-mcp-gateway.ynab-http"}
+	if !reflect.DeepEqual(runtime.serviceRestarts, want) {
+		t.Fatalf("restart order = %v, want %v", runtime.serviceRestarts, want)
+	}
+}
+
+func TestPrepareCapturesAllLoadedAdditionalServicesInCanonicalOrder(t *testing.T) {
+	manager, runtime, request := newManagerFixture(t, true)
+	root := filepath.Dir(request.TargetPath)
+	write := func(name, contents string) string {
+		path := filepath.Join(root, name)
+		if err := os.WriteFile(path, []byte(contents), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	gatewayBinding := "GATEWAY_BIN=" + request.TargetPath + "\n"
+	runtime.ynabLoaded, runtime.obsidianHTTPLoaded, runtime.ynabHTTPLoaded = true, true, true
+	request.ServiceCandidates = []ServiceCandidate{
+		{Server: "ynab", LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel",
+			PlistPath: write("ynab.plist", "plist"), WrapperPath: write("run-ynab.sh", "wrapper"), MCPWrapperPath: write("run-ynab-mcp.sh", "mcp"),
+			StdoutPath: filepath.Join(root, "ynab.out"), StderrPath: filepath.Join(root, "ynab.err"),
+			EnvironmentPath: write("ynab.env", gatewayBinding), HealthURLFile: filepath.Join(root, "ynab.health")},
+		{Server: "obsidian-http", LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.obsidian-http",
+			PlistPath: write("obsidian-http.plist", "plist"), WrapperPath: write("run-obsidian-http.sh", "wrapper"),
+			StdoutPath: filepath.Join(root, "obsidian-http.out"), StderrPath: filepath.Join(root, "obsidian-http.err"),
+			EnvironmentPath: write("obsidian-http.env", gatewayBinding), HealthURLFile: filepath.Join(root, "obsidian-http.health")},
+		{Server: "ynab-http", LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.ynab-http",
+			PlistPath: write("ynab-http.plist", "plist"), WrapperPath: write("run-ynab-http.sh", "wrapper"),
+			StdoutPath: filepath.Join(root, "ynab-http.out"), StderrPath: filepath.Join(root, "ynab-http.err"),
+			EnvironmentPath: write("ynab-http.env", gatewayBinding), HealthURLFile: filepath.Join(root, "ynab-http.health")},
+	}
+	prepared, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantServers := []string{"obsidian", "ynab", "obsidian-http", "ynab-http"}
+	if len(prepared.Services) != len(wantServers) {
+		t.Fatalf("services = %#v, want servers %v", prepared.Services, wantServers)
+	}
+	for i, server := range wantServers {
+		if prepared.Services[i].Server != server {
+			t.Fatalf("services[%d].Server = %q, want %q (%#v)", i, prepared.Services[i].Server, server, prepared.Services)
+		}
+	}
+	if _, err := manager.Resume(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	wantRestarts := []string{
+		"local.test.gateway",
+		"com.ericfeunekes.personal-mcp-gateway.ynab-tunnel",
+		"com.ericfeunekes.personal-mcp-gateway.obsidian-http",
+		"com.ericfeunekes.personal-mcp-gateway.ynab-http",
+	}
+	if !reflect.DeepEqual(runtime.serviceRestarts, wantRestarts) {
+		t.Fatalf("restart order = %v, want %v", runtime.serviceRestarts, wantRestarts)
+	}
+}
+
 func TestServiceGatewayBindingRejectsDifferentBinary(t *testing.T) {
 	root := t.TempDir()
 	environment := filepath.Join(root, ".env.ynab.local")
@@ -927,6 +1061,48 @@ func TestFirstInstallRollbackBootsOutCapturedServicesInOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{"local.test.gateway", "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel"}
+	if !reflect.DeepEqual(runtime.serviceBootouts, want) {
+		t.Fatalf("bootout order = %v, want %v", runtime.serviceBootouts, want)
+	}
+	if prepared == nil {
+		t.Fatal("prepared release disappeared")
+	}
+}
+
+func TestFirstInstallRollbackBootsOutCapturedHTTPServicesInOrder(t *testing.T) {
+	manager, runtime, request := newManagerFixture(t, false)
+	root := filepath.Dir(request.TargetPath)
+	write := func(name, contents string) string {
+		path := filepath.Join(root, name)
+		if err := os.WriteFile(path, []byte(contents), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	gatewayBinding := "GATEWAY_BIN=" + request.TargetPath + "\n"
+	runtime.obsidianHTTPLoaded, runtime.ynabHTTPLoaded = true, true
+	request.ServiceCandidates = []ServiceCandidate{
+		{Server: "obsidian-http", LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.obsidian-http",
+			PlistPath: write("obsidian-http.plist", "plist"), WrapperPath: write("run-obsidian-http.sh", "wrapper"),
+			StdoutPath: filepath.Join(root, "obsidian-http.out"), StderrPath: filepath.Join(root, "obsidian-http.err"),
+			EnvironmentPath: write("obsidian-http.env", gatewayBinding), HealthURLFile: filepath.Join(root, "obsidian-http.health")},
+		{Server: "ynab-http", LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.ynab-http",
+			PlistPath: write("ynab-http.plist", "plist"), WrapperPath: write("run-ynab-http.sh", "wrapper"),
+			StdoutPath: filepath.Join(root, "ynab-http.out"), StderrPath: filepath.Join(root, "ynab-http.err"),
+			EnvironmentPath: write("ynab-http.env", gatewayBinding), HealthURLFile: filepath.Join(root, "ynab-http.health")},
+	}
+	prepared, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := manager.Resume(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Rollback(context.Background(), pending.ID); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"local.test.gateway", "com.ericfeunekes.personal-mcp-gateway.obsidian-http", "com.ericfeunekes.personal-mcp-gateway.ynab-http"}
 	if !reflect.DeepEqual(runtime.serviceBootouts, want) {
 		t.Fatalf("bootout order = %v, want %v", runtime.serviceBootouts, want)
 	}

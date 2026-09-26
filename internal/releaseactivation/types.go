@@ -3,7 +3,7 @@ package releaseactivation
 
 import "fmt"
 
-const ManifestVersion = 3
+const ManifestVersion = 4
 
 // ServiceDescriptor is one already-installed local tunnel service captured at
 // prepare time. It deliberately contains no credentials.

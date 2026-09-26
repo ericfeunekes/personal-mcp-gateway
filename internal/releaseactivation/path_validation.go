@@ -175,10 +175,12 @@ func ValidatePrepareTopology(store *Store, sources ArtifactSources, manifest *Ma
 		if service.Server == "obsidian" {
 			continue
 		}
+		if service.MCPWrapperPath != "" {
+			operational = append(operational, struct{ role, path string }{"service_" + service.Server + "_mcp_wrapper", service.MCPWrapperPath})
+		}
 		operational = append(operational,
 			struct{ role, path string }{"service_" + service.Server + "_plist", service.PlistPath},
 			struct{ role, path string }{"service_" + service.Server + "_wrapper", service.WrapperPath},
-			struct{ role, path string }{"service_" + service.Server + "_mcp_wrapper", service.MCPWrapperPath},
 			struct{ role, path string }{"service_" + service.Server + "_environment", service.EnvironmentPath},
 			struct{ role, path string }{"service_" + service.Server + "_health", service.HealthURLFile},
 			struct{ role, path string }{"service_" + service.Server + "_stdout", service.StdoutPath},
@@ -264,10 +266,12 @@ func validateRuntimeTopology(store *Store, manifest *Manifest) error {
 		if service.Server == "obsidian" {
 			continue
 		}
+		if service.MCPWrapperPath != "" {
+			paths = append(paths, runtimePath{role: "service_" + service.Server + "_mcp_wrapper", path: service.MCPWrapperPath})
+		}
 		paths = append(paths,
 			runtimePath{role: "service_" + service.Server + "_plist", path: service.PlistPath},
 			runtimePath{role: "service_" + service.Server + "_wrapper", path: service.WrapperPath},
-			runtimePath{role: "service_" + service.Server + "_mcp_wrapper", path: service.MCPWrapperPath},
 			runtimePath{role: "service_" + service.Server + "_environment", path: service.EnvironmentPath},
 			runtimePath{role: "service_" + service.Server + "_health", path: service.HealthURLFile},
 			runtimePath{role: "service_" + service.Server + "_stdout", path: service.StdoutPath},
@@ -294,12 +298,29 @@ func validateRuntimeTopology(store *Store, manifest *Manifest) error {
 		}
 		for j := 0; j < i; j++ {
 			sameInode := paths[i].info != nil && paths[j].info != nil && os.SameFile(paths[i].info, paths[j].info)
-			if paths[i].canonical == paths[j].canonical || sameInode {
+			if (paths[i].canonical == paths[j].canonical || sameInode) && !environmentAliasAllowed(paths[i].role, paths[j].role) {
 				return &PathTopologyError{Kind: PathTopologyRuntimeAlias, Role: paths[i].role, OtherRole: paths[j].role}
 			}
 		}
 	}
 	return nil
+}
+
+// environmentAliasAllowed is the one deliberate exception to runtime path
+// distinctness: an HTTP service shares its tunnel counterpart's environment
+// file rather than duplicating credentials into a second copy. Every other
+// role pair must still be pairwise distinct.
+func environmentAliasAllowed(roleA, roleB string) bool {
+	pairs := [...][2]string{
+		{"environment", "service_obsidian-http_environment"},
+		{"service_ynab_environment", "service_ynab-http_environment"},
+	}
+	for _, pair := range pairs {
+		if (roleA == pair[0] && roleB == pair[1]) || (roleA == pair[1] && roleB == pair[0]) {
+			return true
+		}
+	}
+	return false
 }
 
 func canonicalizeAllowMissing(path string) (string, error) {

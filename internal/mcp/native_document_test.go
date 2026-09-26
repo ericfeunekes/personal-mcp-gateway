@@ -191,7 +191,7 @@ func TestNativeDocumentHTTPPreservesLargeOrdinaryResponse(t *testing.T) {
 
 func TestNativeDocumentHTTPBoundsRequestBeforeDispatch(t *testing.T) {
 	server := sdk.NewServer(&sdk.Implementation{Name: "test", Version: "1"}, &sdk.ServerOptions{})
-	handler := StreamableHTTPHandlerWithNativeDocuments(server, NewNativeDocumentBridge())
+	handler := StreamableHTTPHandlerWithNativeDocuments(server, NewNativeDocumentBridge(), "")
 	request := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(strings.Repeat("x", int(nativeDocumentMarkerBytes)+1)))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json, text/event-stream")

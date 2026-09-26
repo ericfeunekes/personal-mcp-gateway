@@ -352,6 +352,92 @@ func TestValidatePrepareTopologyRejectsCrossRoleAliases(t *testing.T) {
 	})
 }
 
+func TestValidatePrepareTopologyAllowsOnlyTheNarrowEnvironmentAliasPairs(t *testing.T) {
+	obsidianService := func(manifest Manifest) ServiceDescriptor {
+		return ServiceDescriptor{
+			Server: "obsidian", LaunchAgentLabel: manifest.LaunchAgentLabel,
+			PlistPath: manifest.PlistPath, PlistSHA256: manifest.PlistSHA256,
+			WrapperPath: manifest.WrapperPath, WrapperSHA256: manifest.WrapperSHA256,
+			MCPWrapperPath: manifest.MCPWrapperPath, MCPWrapperSHA256: manifest.MCPWrapperSHA256,
+			StdoutPath: manifest.StdoutPath, StderrPath: manifest.StderrPath,
+			EnvironmentPath: manifest.EnvironmentPath, EnvironmentSHA256: manifest.EnvironmentSHA256,
+			HealthURLFile: manifest.HealthURLFile,
+		}
+	}
+
+	t.Run("obsidian-http may share obsidian's own environment file", func(t *testing.T) {
+		store, sources := newStoreFixture(t, false)
+		manifest := storeTestManifest(false)
+		manifest.Services = []ServiceDescriptor{
+			obsidianService(manifest),
+			storeServiceDescriptor("obsidian-http", "com.ericfeunekes.personal-mcp-gateway.obsidian-http", manifest.EnvironmentPath, manifest.EnvironmentSHA256),
+		}
+		if err := ValidatePrepareTopology(store, sources, &manifest); err != nil {
+			t.Fatalf("shared obsidian-http environment rejected: %v", err)
+		}
+	})
+
+	t.Run("ynab-http may share ynab's own environment file", func(t *testing.T) {
+		store, sources := newStoreFixture(t, false)
+		manifest := storeTestManifest(false)
+		ynabEnv, ynabEnvHash := "/tmp/personal-mcp-gateway-ynab.env", strings.Repeat("4", 64)
+		manifest.Services = []ServiceDescriptor{
+			obsidianService(manifest),
+			storeServiceDescriptor("ynab", "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel", ynabEnv, ynabEnvHash),
+			storeServiceDescriptor("ynab-http", "com.ericfeunekes.personal-mcp-gateway.ynab-http", ynabEnv, ynabEnvHash),
+		}
+		if err := ValidatePrepareTopology(store, sources, &manifest); err != nil {
+			t.Fatalf("shared ynab-http environment rejected: %v", err)
+		}
+	})
+
+	t.Run("obsidian-http cannot share ynab's environment file", func(t *testing.T) {
+		store, sources := newStoreFixture(t, false)
+		manifest := storeTestManifest(false)
+		ynabEnv, ynabEnvHash := "/tmp/personal-mcp-gateway-ynab.env", strings.Repeat("4", 64)
+		manifest.Services = []ServiceDescriptor{
+			obsidianService(manifest),
+			storeServiceDescriptor("ynab", "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel", ynabEnv, ynabEnvHash),
+			storeServiceDescriptor("obsidian-http", "com.ericfeunekes.personal-mcp-gateway.obsidian-http", ynabEnv, ynabEnvHash),
+		}
+		err := ValidatePrepareTopology(store, sources, &manifest)
+		var topologyErr *PathTopologyError
+		if !errors.As(err, &topologyErr) || topologyErr.Kind != PathTopologyRuntimeAlias {
+			t.Fatalf("error = %v, want runtime alias", err)
+		}
+	})
+
+	t.Run("ynab-http cannot share obsidian's environment file", func(t *testing.T) {
+		store, sources := newStoreFixture(t, false)
+		manifest := storeTestManifest(false)
+		manifest.Services = []ServiceDescriptor{
+			obsidianService(manifest),
+			storeServiceDescriptor("ynab-http", "com.ericfeunekes.personal-mcp-gateway.ynab-http", manifest.EnvironmentPath, manifest.EnvironmentSHA256),
+		}
+		err := ValidatePrepareTopology(store, sources, &manifest)
+		var topologyErr *PathTopologyError
+		if !errors.As(err, &topologyErr) || topologyErr.Kind != PathTopologyRuntimeAlias {
+			t.Fatalf("error = %v, want runtime alias", err)
+		}
+	})
+}
+
+func storeServiceDescriptor(server, label, environmentPath, environmentSHA256 string) ServiceDescriptor {
+	descriptor := ServiceDescriptor{
+		Server: server, LaunchAgentLabel: label,
+		PlistPath: "/tmp/personal-mcp-gateway-" + server + ".plist", PlistSHA256: strings.Repeat("1", 64),
+		WrapperPath: "/tmp/personal-mcp-gateway-" + server + "-wrapper", WrapperSHA256: strings.Repeat("2", 64),
+		StdoutPath: "/tmp/personal-mcp-gateway-" + server + ".stdout.log", StderrPath: "/tmp/personal-mcp-gateway-" + server + ".stderr.log",
+		EnvironmentPath: environmentPath, EnvironmentSHA256: environmentSHA256,
+		HealthURLFile: "/tmp/personal-mcp-gateway-" + server + ".health-url",
+	}
+	if server == "ynab" {
+		descriptor.MCPWrapperPath = "/tmp/personal-mcp-gateway-" + server + "-mcp-wrapper"
+		descriptor.MCPWrapperSHA256 = strings.Repeat("3", 64)
+	}
+	return descriptor
+}
+
 func TestStorePrepareAndLoadEnforceOperationalTopology(t *testing.T) {
 	t.Run("prepare", func(t *testing.T) {
 		store, sources := newStoreFixture(t, false)

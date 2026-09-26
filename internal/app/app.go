@@ -136,9 +136,9 @@ func (a *App) HTTPHandler() http.Handler {
 	mux.Handle("/readyz", a.auditHTTP("readyz", http.HandlerFunc(a.ready)))
 	var handler http.Handler
 	if a.documents != nil {
-		handler = localmcp.StreamableHTTPHandlerWithNativeDocuments(a.server, a.documents)
+		handler = localmcp.StreamableHTTPHandlerWithNativeDocuments(a.server, a.documents, a.cfg.AllowedHost)
 	} else {
-		handler = localmcp.StreamableHTTPHandler(a.server)
+		handler = localmcp.StreamableHTTPHandlerWithNativeDocuments(a.server, nil, a.cfg.AllowedHost)
 	}
 	mux.Handle("/mcp", a.auditHTTP("mcp", handler))
 	return mux

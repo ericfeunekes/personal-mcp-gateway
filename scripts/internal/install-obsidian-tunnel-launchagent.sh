@@ -29,7 +29,10 @@ reject_xml_controls() {
 
 [[ "$repo_root" = /* && "$home" = /* && "$uid" =~ ^[0-9]+$ ]] || exit 2
 valid_label "$label" || exit 2
-[[ "$server" == "obsidian" || "$server" == "ynab" ]] || exit 2
+case "$server" in
+  obsidian | ynab | obsidian-http | ynab-http) ;;
+  *) exit 2 ;;
+esac
 reject_xml_controls "$repo_root" && reject_xml_controls "$home" && reject_xml_controls "$label" || exit 2
 [[ -d "$repo_root" && -d "$home" && ! -L "$repo_root" && ! -L "$home" ]] || exit 2
 
@@ -40,7 +43,14 @@ launch_agents_dir="$library_dir/LaunchAgents"
 logs_dir="$library_dir/Logs"
 log_dir="$logs_dir/personal-mcp-gateway"
 plist_path="$launch_agents_dir/$label.plist"
-runner_path="$repo_root/scripts/run-${server}-tunnel.sh"
+case "$server" in
+  obsidian | ynab)
+    runner_path="$repo_root/scripts/run-${server}-tunnel.sh"
+    ;;
+  obsidian-http | ynab-http)
+    runner_path="$repo_root/scripts/run-${server}.sh"
+    ;;
+esac
 
 [[ ! -L "$library_dir" && ! -L "$launch_agents_dir" && ! -L "$logs_dir" && ! -L "$log_dir" && ! -L "$plist_path" ]] || exit 2
 [[ "$(dirname -- "$plist_path")" == "$launch_agents_dir" && "$(basename -- "$plist_path")" == "$label.plist" ]] || exit 2
@@ -54,8 +64,16 @@ mkdir -p -- "$launch_agents_dir" "$log_dir"
 label_xml="$(xml_escape "$label")"
 runner_xml="$(xml_escape "$runner_path")"
 repo_xml="$(xml_escape "$repo_root")"
-stdout_path="$log_dir/${server}-tunnel.out.log"
-stderr_path="$log_dir/${server}-tunnel.err.log"
+case "$server" in
+  obsidian | ynab)
+    stdout_path="$log_dir/${server}-tunnel.out.log"
+    stderr_path="$log_dir/${server}-tunnel.err.log"
+    ;;
+  obsidian-http | ynab-http)
+    stdout_path="$log_dir/${server}.out.log"
+    stderr_path="$log_dir/${server}.err.log"
+    ;;
+esac
 stdout_xml="$(xml_escape "$stdout_path")"
 stderr_xml="$(xml_escape "$stderr_path")"
 

@@ -7,7 +7,9 @@ server="${SERVER:-obsidian}"
 case "$server" in
   obsidian) env_file="${MCP_GATEWAY_ENV_FILE:-$repo_root/.env.local}"; default_label="com.ericfeunekes.personal-mcp-gateway.obsidian-tunnel"; default_health="/tmp/personal-mcp-gateway/tunnel-health.url" ;;
   ynab) env_file="${MCP_GATEWAY_YNAB_ENV_FILE:-$repo_root/.env.ynab.local}"; default_label="com.ericfeunekes.personal-mcp-gateway.ynab-tunnel"; default_health="/tmp/personal-mcp-gateway/ynab-tunnel-health.url" ;;
-  *) fail "SERVER must be obsidian or ynab." ;;
+  obsidian-http) env_file="${MCP_GATEWAY_ENV_FILE:-$repo_root/.env.local}"; default_label="com.ericfeunekes.personal-mcp-gateway.obsidian-http"; default_health="/tmp/personal-mcp-gateway/obsidian-http-health.url" ;;
+  ynab-http) env_file="${MCP_GATEWAY_YNAB_ENV_FILE:-$repo_root/.env.ynab.local}"; default_label="com.ericfeunekes.personal-mcp-gateway.ynab-http"; default_health="/tmp/personal-mcp-gateway/ynab-http-health.url" ;;
+  *) fail "SERVER must be obsidian, ynab, obsidian-http, or ynab-http." ;;
 esac
 
 fail() {
@@ -27,12 +29,17 @@ fi
 # launchctl, and any diagnostics those commands may emit.
 unset CONTROL_PLANE_API_KEY OPENAI_API_KEY YNAB_TOKEN
 
-if [[ "$server" == "ynab" ]]; then
-  label="$default_label"
-else
+if [[ "$server" == "obsidian" ]]; then
   label="${LAUNCHD_LABEL:-$default_label}"
+else
+  label="$default_label"
 fi
-health_url_file="${TUNNEL_HEALTH_URL_FILE:-$default_health}"
+# The HTTP services write a fixed health file themselves; the tunnel
+# override must not point verification elsewhere.
+case "$server" in
+  *-http) health_url_file="$default_health" ;;
+  *) health_url_file="${TUNNEL_HEALTH_URL_FILE:-$default_health}" ;;
+esac
 timeout_seconds="${RELEASE_READY_TIMEOUT_SECONDS:-45}"
 poll_seconds="${RELEASE_READY_POLL_SECONDS:-1}"
 uid="$(id -u)"

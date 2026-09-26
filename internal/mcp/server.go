@@ -9,8 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
+	"strings"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -106,10 +109,14 @@ func runStdio(ctx context.Context, server *sdk.Server, bridge *NativeDocumentBri
 }
 
 func StreamableHTTPHandler(server *sdk.Server) http.Handler {
-	return StreamableHTTPHandlerWithNativeDocuments(server, nil)
+	return StreamableHTTPHandlerWithNativeDocuments(server, nil, "")
 }
 
-func StreamableHTTPHandlerWithNativeDocuments(server *sdk.Server, bridge *NativeDocumentBridge) http.Handler {
+// StreamableHTTPHandlerWithNativeDocuments serves MCP over Streamable HTTP.
+// allowedHost is the one exact non-loopback Host name accepted on the
+// loopback listener, such as the tailnet name `tailscale serve` forwards; an
+// empty value accepts loopback Host names only.
+func StreamableHTTPHandlerWithNativeDocuments(server *sdk.Server, bridge *NativeDocumentBridge, allowedHost string) http.Handler {
 	handler := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server {
 		return server
 	}, &sdk.StreamableHTTPOptions{
@@ -117,8 +124,46 @@ func StreamableHTTPHandlerWithNativeDocuments(server *sdk.Server, bridge *Native
 		Stateless:                    true,
 		MaxRequestBodyBytes:          limits.HTTPRequestBodyBytes,
 		PropagateRequestCancellation: true,
+		// requireAllowedHost replaces the SDK's loopback-only Host check so the
+		// configured tailnet name can pass without accepting any other name.
+		DisableLocalhostProtection: true,
 	})
-	return limitHTTPRequestBody(nativeDocumentHTTPHandler(handler, bridge))
+	return requireAllowedHost(allowedHost, http.NewCrossOriginProtection().Handler(
+		limitHTTPRequestBody(nativeDocumentHTTPHandler(handler, bridge))))
+}
+
+// requireAllowedHost is DNS-rebinding protection for the loopback listener. A
+// request that arrived on a loopback socket must name a loopback Host or the
+// single configured allowedHost; any other Host is rejected before dispatch.
+func requireAllowedHost(allowedHost string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if localAddr, ok := req.Context().Value(http.LocalAddrContextKey).(net.Addr); ok && localAddr != nil &&
+			isLoopbackHost(localAddr.String()) && !isLoopbackHost(req.Host) && !hostNameIs(req.Host, allowedHost) {
+			http.Error(w, "forbidden host", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, req)
+	})
+}
+
+func isLoopbackHost(hostport string) bool {
+	host := hostOnly(hostport)
+	if host == "localhost" {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.IsLoopback()
+}
+
+func hostNameIs(hostport, name string) bool {
+	return name != "" && strings.EqualFold(hostOnly(hostport), name)
+}
+
+func hostOnly(hostport string) string {
+	if host, _, err := net.SplitHostPort(hostport); err == nil {
+		return host
+	}
+	return strings.Trim(hostport, "[]")
 }
 
 // limitHTTPRequestBody preserves the gateway's body-limit precedence over

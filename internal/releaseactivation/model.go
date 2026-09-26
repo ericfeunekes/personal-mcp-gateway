@@ -12,7 +12,7 @@ func ValidateSnapshot(snapshot Snapshot) *Error {
 		return nil
 	}
 	m := snapshot.Manifest
-	if (m.Version != 2 && m.Version != ManifestVersion) || !isActiveState(m.State) ||
+	if !validManifestVersion(m.Version) || !isActiveState(m.State) ||
 		!validReleaseID(m.ID) || !validCommit(m.Commit) || !validSHA256(m.DependencySHA256) ||
 		m.CandidateFile == "" || !validSHA256(m.CandidateSHA256) ||
 		m.AuthorityFile == "" || !validSHA256(m.AuthoritySHA256) ||
@@ -25,12 +25,22 @@ func ValidateSnapshot(snapshot Snapshot) *Error {
 		m.ReadyPollMilliseconds <= 0 || m.ReadyPollMilliseconds > int(maxReadyPoll/time.Millisecond) {
 		return lifecycleError(ErrorStateMalformed)
 	}
-	if m.Version == ManifestVersion && len(m.Services) != 0 {
-		if len(m.Services) > 2 || m.Services[0].Server != "obsidian" {
+	if len(m.Services) != 0 {
+		// Only the manifest shapes that ever ship a Services array get a
+		// canonical-order check; a pinned version-2 controller's manifest never
+		// carries one, so any Services there is already unexpected.
+		maxIndex := -1
+		switch m.Version {
+		case ManifestVersion:
+			maxIndex = len(canonicalServiceOrder) - 1
+		case 3:
+			maxIndex = 1 // legacy shape: obsidian, optionally followed by ynab.
+		}
+		if maxIndex < 0 || !validServiceOrder(m.Services, maxIndex) {
 			return lifecycleError(ErrorStateMalformed)
 		}
-		for index, service := range m.Services {
-			if (index == 1 && service.Server != "ynab") || !validServiceDescriptor(service) {
+		for _, service := range m.Services {
+			if !validServiceDescriptor(service) {
 				return lifecycleError(ErrorStateMalformed)
 			}
 		}
@@ -321,11 +331,71 @@ func cloneManifest(manifest Manifest) Manifest {
 	return manifest
 }
 
+// canonicalServiceOrder is the fixed, explicit set and relative order of
+// supervised services. Obsidian is required and always first; every other
+// slot is optional but, when present, must appear in this exact relative
+// order. This is deliberately not a configurable registry: adding a service
+// means adding a name here, not a new caller-supplied ordering.
+var canonicalServiceOrder = [...]string{"obsidian", "ynab", "obsidian-http", "ynab-http"}
+
+func canonicalServiceIndex(server string) int {
+	for i, name := range canonicalServiceOrder {
+		if name == server {
+			return i
+		}
+	}
+	return -1
+}
+
+// validServiceOrder reports whether services names a strictly increasing
+// subsequence of canonicalServiceOrder[:maxIndex+1] that starts with the
+// required first slot. Skipped optional slots are allowed; duplicates,
+// reordering, and servers outside the allowed prefix are not.
+func validServiceOrder(services []ServiceDescriptor, maxIndex int) bool {
+	if len(services) == 0 || services[0].Server != canonicalServiceOrder[0] {
+		return false
+	}
+	cursor := -1
+	for _, service := range services {
+		index := canonicalServiceIndex(service.Server)
+		if index < 0 || index > maxIndex || index <= cursor {
+			return false
+		}
+		cursor = index
+	}
+	return true
+}
+
 func validServiceDescriptor(service ServiceDescriptor) bool {
-	return (service.Server == "obsidian" || service.Server == "ynab") &&
-		ValidLaunchAgentLabel(service.LaunchAgentLabel) &&
+	switch service.Server {
+	case "obsidian", "ynab":
+		return validTunnelServiceDescriptor(service)
+	case "obsidian-http", "ynab-http":
+		return validHTTPServiceDescriptor(service)
+	default:
+		return false
+	}
+}
+
+func validTunnelServiceDescriptor(service ServiceDescriptor) bool {
+	return ValidLaunchAgentLabel(service.LaunchAgentLabel) &&
 		absolutePaths(service.PlistPath, service.WrapperPath, service.MCPWrapperPath, service.StdoutPath, service.StderrPath, service.EnvironmentPath, service.HealthURLFile) &&
 		validSHA256(service.PlistSHA256) && validSHA256(service.WrapperSHA256) && validSHA256(service.MCPWrapperSHA256) && validSHA256(service.EnvironmentSHA256)
+}
+
+// validHTTPServiceDescriptor mirrors the tunnel shape, except the loopback
+// HTTP services exec the gateway binary directly: there is no second-level
+// MCP stdio wrapper, so MCPWrapperPath/MCPWrapperSHA256 must stay empty
+// rather than alias the process wrapper's own fields.
+func validHTTPServiceDescriptor(service ServiceDescriptor) bool {
+	return ValidLaunchAgentLabel(service.LaunchAgentLabel) &&
+		absolutePaths(service.PlistPath, service.WrapperPath, service.StdoutPath, service.StderrPath, service.EnvironmentPath, service.HealthURLFile) &&
+		service.MCPWrapperPath == "" && service.MCPWrapperSHA256 == "" &&
+		validSHA256(service.PlistSHA256) && validSHA256(service.WrapperSHA256) && validSHA256(service.EnvironmentSHA256)
+}
+
+func validManifestVersion(version int) bool {
+	return version == 2 || version == 3 || version == ManifestVersion
 }
 
 func isActiveState(state State) bool {

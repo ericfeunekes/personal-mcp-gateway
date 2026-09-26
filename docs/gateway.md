@@ -251,6 +251,41 @@ unspecified, public, and non-loopback hostname binds are configuration errors.
 Readiness is local gateway readiness only; it does not prove OpenAI tunnel,
 ChatGPT connector, `launchd`, or always-on suitability.
 
+`/mcp` accepts a request only when its `Host` names loopback (`127.0.0.1`,
+`::1`, `localhost`) or the single exact DNS name given by `--allowed-host`.
+Any other `Host` gets 403 before dispatch. This replaces the SDK's
+loopback-only DNS-rebinding check, which would otherwise reject the tailnet
+name that `tailscale serve` forwards unchanged. `/mcp` also rejects cross-site
+browser requests (Go `http.CrossOriginProtection`). Non-browser MCP clients
+send no `Origin` or `Sec-Fetch-Site` and are unaffected. `--allowed-host` is
+valid only in HTTP mode and accepts no wildcard, port, or IP literal.
+
+## Tailnet HTTP Services
+
+Separately from the ChatGPT tunnel, two optional LaunchAgents serve Obsidian
+and YNAB over HTTP to clients on Eric's tailnet (currently Muse):
+
+| Service | LaunchAgent label suffix | Loopback address | Tailnet path |
+| --- | --- | --- | --- |
+| Obsidian | `obsidian-http` | `127.0.0.1:8765` | `/obsidian/mcp` |
+| YNAB | `ynab-http` | `127.0.0.1:8768` | `/ynab/mcp` |
+
+- The gateways still bind loopback only. `tailscale serve` (tailnet-only,
+  never `funnel`) is the sole path in, and it forwards the Mac's `ts.net`
+  name, which the service allows through `MCP_GATEWAY_ALLOWED_HOST` in the
+  domain's existing env file.
+- **Tailscale policy is the access boundary.** There is no bearer token. Any
+  device the tailnet policy lets reach this Mac on tcp:443 gets the full
+  Obsidian and YNAB tool surface, including writes. The policy must admit
+  only Eric's own devices.
+- Each HTTP service shares its domain's env file, state directory, telemetry
+  database, and (for YNAB) quota database with the stdio tunnel process, so
+  both YNAB processes draw on one quota budget.
+- The release transaction captures, restarts, health-checks, and rolls back
+  these services when they are loaded, like the optional YNAB tunnel.
+
+Operator steps: [tailnet HTTP runbook](runbooks/tailnet-http.md).
+
 ## Current Gaps
 
 - `GAP-GW-003`: Current `launchd` readiness, bounded idle impact, and automatic

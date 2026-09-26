@@ -141,6 +141,10 @@ resources, and the authenticated journey covers live grouped retrieval.
 
 - OpenAI Secure MCP Tunnel is the external transport boundary for ChatGPT access.
 - Local services should not listen on a public interface.
+- Optional tailnet HTTP services expose Obsidian and YNAB to Eric's own
+  tailnet devices through `tailscale serve`. Tailscale policy is their only
+  access control: any admitted device gets full tool access, including writes.
+  See [tailnet HTTP services](docs/gateway.md#tailnet-http-services).
 - Read-only tools are the default until write paths are explicitly designed.
 - Each integration should have its own MCP server name and narrow capabilities instead of generic file or API access.
 - Secrets stay local and out of the repo.

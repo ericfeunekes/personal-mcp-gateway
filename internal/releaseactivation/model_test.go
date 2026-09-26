@@ -348,6 +348,149 @@ func TestValidateSnapshotRejectsMalformedAndPartialManifests(t *testing.T) {
 	}
 }
 
+func TestValidateSnapshotAcceptsEachCanonicalServiceSubsetAndOrder(t *testing.T) {
+	t.Parallel()
+	obsidian := validTunnelDescriptor("obsidian", "dev.personal-mcp-gateway.obsidian")
+	ynab := validTunnelDescriptor("ynab", "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel")
+	obsidianHTTP := validHTTPDescriptor("obsidian-http", "com.ericfeunekes.personal-mcp-gateway.obsidian-http")
+	ynabHTTP := validHTTPDescriptor("ynab-http", "com.ericfeunekes.personal-mcp-gateway.ynab-http")
+	optional := []ServiceDescriptor{ynab, obsidianHTTP, ynabHTTP}
+
+	// Every subset (including empty and full) of the three optional slots, kept
+	// in their fixed canonical relative order, must validate behind the
+	// required obsidian descriptor.
+	for mask := 0; mask < 1<<len(optional); mask++ {
+		services := []ServiceDescriptor{obsidian}
+		var names []string
+		for i, service := range optional {
+			if mask&(1<<i) != 0 {
+				services = append(services, service)
+				names = append(names, service.Server)
+			}
+		}
+		t.Run(strings.Join(append([]string{"obsidian"}, names...), "+"), func(t *testing.T) {
+			m := validManifest(StatePrepared, true)
+			m.Services = services
+			if err := ValidateSnapshot(Snapshot{Manifest: &m}); err != nil {
+				t.Fatalf("ValidateSnapshot error = %#v, want accepted", err)
+			}
+		})
+	}
+}
+
+func TestValidateSnapshotRejectsInvalidServiceOrderingAndShape(t *testing.T) {
+	t.Parallel()
+	obsidian := validTunnelDescriptor("obsidian", "dev.personal-mcp-gateway.obsidian")
+	ynab := validTunnelDescriptor("ynab", "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel")
+	obsidianHTTP := validHTTPDescriptor("obsidian-http", "com.ericfeunekes.personal-mcp-gateway.obsidian-http")
+	ynabHTTP := validHTTPDescriptor("ynab-http", "com.ericfeunekes.personal-mcp-gateway.ynab-http")
+
+	tests := []struct {
+		name     string
+		services []ServiceDescriptor
+	}{
+		{name: "missing required obsidian first slot", services: []ServiceDescriptor{ynab}},
+		{name: "wrong relative order", services: []ServiceDescriptor{obsidian, obsidianHTTP, ynab}},
+		{name: "duplicate service", services: []ServiceDescriptor{obsidian, ynab, ynab}},
+		{name: "unknown server", services: []ServiceDescriptor{obsidian, {
+			Server: "unknown", LaunchAgentLabel: ynab.LaunchAgentLabel,
+			PlistPath: ynab.PlistPath, PlistSHA256: ynab.PlistSHA256,
+			WrapperPath: ynab.WrapperPath, WrapperSHA256: ynab.WrapperSHA256,
+			MCPWrapperPath: ynab.MCPWrapperPath, MCPWrapperSHA256: ynab.MCPWrapperSHA256,
+			StdoutPath: ynab.StdoutPath, StderrPath: ynab.StderrPath,
+			EnvironmentPath: ynab.EnvironmentPath, EnvironmentSHA256: ynab.EnvironmentSHA256,
+			HealthURLFile: ynab.HealthURLFile,
+		}}},
+		{name: "http service records an mcp wrapper", services: []ServiceDescriptor{obsidian, func() ServiceDescriptor {
+			d := obsidianHTTP
+			d.MCPWrapperPath, d.MCPWrapperSHA256 = "/private/test/obsidian-http-mcp.sh", testMCPWrapper
+			return d
+		}()}},
+		{name: "tunnel service missing its mcp wrapper", services: []ServiceDescriptor{obsidian, func() ServiceDescriptor {
+			d := ynab
+			d.MCPWrapperPath, d.MCPWrapperSHA256 = "", ""
+			return d
+		}()}},
+		{name: "http service missing wrapper hash", services: []ServiceDescriptor{obsidian, func() ServiceDescriptor {
+			d := ynabHTTP
+			d.WrapperSHA256 = ""
+			return d
+		}()}},
+		{name: "tunnel service unsafe label", services: []ServiceDescriptor{obsidian, func() ServiceDescriptor {
+			d := ynab
+			d.LaunchAgentLabel = "../ynab"
+			return d
+		}()}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := validManifest(StatePrepared, true)
+			m.Services = tt.services
+			if err := ValidateSnapshot(Snapshot{Manifest: &m}); err == nil || err.Code != ErrorStateMalformed {
+				t.Fatalf("ValidateSnapshot error = %#v, want %q", err, ErrorStateMalformed)
+			}
+		})
+	}
+}
+
+func TestValidateSnapshotHonorsLegacyManifestVersionServiceShapes(t *testing.T) {
+	t.Parallel()
+	obsidian := validTunnelDescriptor("obsidian", "dev.personal-mcp-gateway.obsidian")
+	ynab := validTunnelDescriptor("ynab", "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel")
+	obsidianHTTP := validHTTPDescriptor("obsidian-http", "com.ericfeunekes.personal-mcp-gateway.obsidian-http")
+
+	tests := []struct {
+		name     string
+		version  int
+		services []ServiceDescriptor
+		wantErr  bool
+	}{
+		{name: "version 2 with no services", version: 2, services: nil, wantErr: false},
+		{name: "version 2 never carries a services array", version: 2, services: []ServiceDescriptor{obsidian}, wantErr: true},
+		{name: "version 3 obsidian only", version: 3, services: []ServiceDescriptor{obsidian}, wantErr: false},
+		{name: "version 3 obsidian and ynab", version: 3, services: []ServiceDescriptor{obsidian, ynab}, wantErr: false},
+		{name: "version 3 cannot carry an http service", version: 3, services: []ServiceDescriptor{obsidian, obsidianHTTP}, wantErr: true},
+		{name: "current version carries every optional slot", version: ManifestVersion, services: []ServiceDescriptor{obsidian, ynab, obsidianHTTP}, wantErr: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := validManifest(StatePrepared, true)
+			m.Version = tt.version
+			m.Services = tt.services
+			err := ValidateSnapshot(Snapshot{Manifest: &m})
+			if tt.wantErr && (err == nil || err.Code != ErrorStateMalformed) {
+				t.Fatalf("ValidateSnapshot error = %#v, want %q", err, ErrorStateMalformed)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("ValidateSnapshot error = %#v, want accepted", err)
+			}
+		})
+	}
+}
+
+func validTunnelDescriptor(server, label string) ServiceDescriptor {
+	return ServiceDescriptor{
+		Server: server, LaunchAgentLabel: label,
+		PlistPath: "/private/test/" + server + ".plist", PlistSHA256: testPlist,
+		WrapperPath: "/private/test/" + server + ".sh", WrapperSHA256: testWrapper,
+		MCPWrapperPath: "/private/test/" + server + "-mcp.sh", MCPWrapperSHA256: testMCPWrapper,
+		StdoutPath: "/private/test/" + server + ".out", StderrPath: "/private/test/" + server + ".err",
+		EnvironmentPath: "/private/test/" + server + ".env", EnvironmentSHA256: testEnv,
+		HealthURLFile: "/private/test/" + server + ".health",
+	}
+}
+
+func validHTTPDescriptor(server, label string) ServiceDescriptor {
+	return ServiceDescriptor{
+		Server: server, LaunchAgentLabel: label,
+		PlistPath: "/private/test/" + server + ".plist", PlistSHA256: testPlist,
+		WrapperPath: "/private/test/" + server + ".sh", WrapperSHA256: testWrapper,
+		StdoutPath: "/private/test/" + server + ".out", StderrPath: "/private/test/" + server + ".err",
+		EnvironmentPath: "/private/test/" + server + ".env", EnvironmentSHA256: testEnv,
+		HealthURLFile: "/private/test/" + server + ".health",
+	}
+}
+
 func TestPrepareValidatesCandidateAndCurrentTargetBeforePublication(t *testing.T) {
 	t.Parallel()
 	m := validManifest(StatePrepared, true)

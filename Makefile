@@ -80,24 +80,24 @@ update:
 
 restart:
 	@if ! $(MAKE) --no-print-directory build-release-controller >/dev/null 2>&1; then echo 'error=release_build_failed message=release build failed' >&2; exit 1; fi
-	@case "$(SERVER)" in obsidian) label="$(LAUNCHD_LABEL)"; env_file="$(CURDIR)/.env.local"; default_health="/tmp/personal-mcp-gateway/tunnel-health.url";; ynab) label="com.ericfeunekes.personal-mcp-gateway.ynab-tunnel"; env_file="$(CURDIR)/.env.ynab.local"; default_health="/tmp/personal-mcp-gateway/ynab-tunnel-health.url";; *) echo 'error=usage message=invalid server' >&2; exit 2;; esac; \
+	@case "$(SERVER)" in obsidian) label="$(LAUNCHD_LABEL)"; env_file="$(CURDIR)/.env.local"; default_health="/tmp/personal-mcp-gateway/tunnel-health.url"; health_overridable=1;; ynab) label="com.ericfeunekes.personal-mcp-gateway.ynab-tunnel"; env_file="$(CURDIR)/.env.ynab.local"; default_health="/tmp/personal-mcp-gateway/ynab-tunnel-health.url"; health_overridable=1;; obsidian-http) label="com.ericfeunekes.personal-mcp-gateway.obsidian-http"; env_file="$(CURDIR)/.env.local"; default_health="/tmp/personal-mcp-gateway/obsidian-http-health.url"; health_overridable=0;; ynab-http) label="com.ericfeunekes.personal-mcp-gateway.ynab-http"; env_file="$(CURDIR)/.env.ynab.local"; default_health="/tmp/personal-mcp-gateway/ynab-http-health.url"; health_overridable=0;; *) echo 'error=usage message=invalid server' >&2; exit 2;; esac; \
 	if ! source "$(CURDIR)/scripts/internal/release-config.sh" >/dev/null 2>&1; then echo 'error=release_config message=release configuration is invalid' >&2; exit 1; fi; \
 	if [[ -f "$$env_file" ]] && ! load_release_config "$$env_file"; then echo 'error=release_config message=release configuration is invalid' >&2; exit 1; fi; \
-	default_health="$${TUNNEL_HEALTH_URL_FILE:-$$default_health}"; \
+	if [[ "$$health_overridable" == "1" ]]; then default_health="$${TUNNEL_HEALTH_URL_FILE:-$$default_health}"; fi; \
 	./scripts/release-activation.sh restart --repo-root "$(CURDIR)" --server "$(SERVER)" --label "$$label" --health-url-file "$$default_health"
 
 verify-live:
 	@SERVER="$(SERVER)" ./scripts/verify-live.sh
 
 install-launchagent:
-	@case "$(SERVER)" in obsidian) env_file="$(CURDIR)/.env.local";; ynab) env_file="$(CURDIR)/.env.ynab.local";; *) echo 'error=usage message=invalid server' >&2; exit 2;; esac; \
+	@case "$(SERVER)" in obsidian) env_file="$(CURDIR)/.env.local";; ynab) env_file="$(CURDIR)/.env.ynab.local";; obsidian-http) env_file="$(CURDIR)/.env.local";; ynab-http) env_file="$(CURDIR)/.env.ynab.local";; *) echo 'error=usage message=invalid server' >&2; exit 2;; esac; \
 	if ! source "$(CURDIR)/scripts/internal/release-config.sh" >/dev/null 2>&1; then echo 'error=release_config message=release configuration is invalid' >&2; exit 1; fi; \
 	if [[ -f "$$env_file" ]] && ! load_release_config "$$env_file"; then echo 'error=release_config message=release configuration is invalid' >&2; exit 1; fi
 	@if ! $(MAKE) --no-print-directory build-release-controller >/dev/null 2>&1; then echo 'error=release_build_failed message=release build failed' >&2; exit 1; fi
-	@case "$(SERVER)" in obsidian) label="$(LAUNCHD_LABEL)";; ynab) label="com.ericfeunekes.personal-mcp-gateway.ynab-tunnel";; *) echo 'error=usage message=invalid server' >&2; exit 2;; esac; \
+	@case "$(SERVER)" in obsidian) label="$(LAUNCHD_LABEL)";; ynab) label="com.ericfeunekes.personal-mcp-gateway.ynab-tunnel";; obsidian-http) label="com.ericfeunekes.personal-mcp-gateway.obsidian-http";; ynab-http) label="com.ericfeunekes.personal-mcp-gateway.ynab-http";; *) echo 'error=usage message=invalid server' >&2; exit 2;; esac; \
 	./scripts/release-activation.sh install-launchagent --repo-root "$(CURDIR)" --server "$(SERVER)" --label "$$label"
 
 uninstall-launchagent:
 	@if ! $(MAKE) --no-print-directory build-release-controller >/dev/null 2>&1; then echo 'error=release_build_failed message=release build failed' >&2; exit 1; fi
-	@case "$(SERVER)" in obsidian) label="$(LAUNCHD_LABEL)";; ynab) label="com.ericfeunekes.personal-mcp-gateway.ynab-tunnel";; *) echo 'error=usage message=invalid server' >&2; exit 2;; esac; \
+	@case "$(SERVER)" in obsidian) label="$(LAUNCHD_LABEL)";; ynab) label="com.ericfeunekes.personal-mcp-gateway.ynab-tunnel";; obsidian-http) label="com.ericfeunekes.personal-mcp-gateway.obsidian-http";; ynab-http) label="com.ericfeunekes.personal-mcp-gateway.ynab-http";; *) echo 'error=usage message=invalid server' >&2; exit 2;; esac; \
 	./scripts/release-activation.sh uninstall-launchagent --repo-root "$(CURDIR)" --server "$(SERVER)" --label "$$label"

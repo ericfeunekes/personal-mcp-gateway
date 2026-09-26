@@ -121,8 +121,13 @@ func (r *OSRuntime) Observe(ctx context.Context, m Manifest, controllerPath stri
 	if observed.WrapperSHA256, err = hashRuntimeFile(m.WrapperPath, true); err != nil {
 		return Observed{}, runtimeFailure("observation", err)
 	}
-	if observed.MCPWrapperSHA256, err = hashRuntimeFile(m.MCPWrapperPath, true); err != nil {
-		return Observed{}, runtimeFailure("observation", err)
+	// HTTP services exec the gateway binary directly with no second-level MCP
+	// stdio wrapper, so their manifest leaves MCPWrapperPath empty by design;
+	// leave the fingerprint empty too rather than hash a path that never exists.
+	if m.MCPWrapperPath != "" {
+		if observed.MCPWrapperSHA256, err = hashRuntimeFile(m.MCPWrapperPath, true); err != nil {
+			return Observed{}, runtimeFailure("observation", err)
+		}
 	}
 	if observed.EnvironmentSHA256, err = hashRuntimeFile(m.EnvironmentPath, false); err != nil {
 		return Observed{}, runtimeFailure("observation", err)

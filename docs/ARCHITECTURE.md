@@ -37,6 +37,9 @@ The chosen public namespace shape is the MCP server name, not dotted tool names.
 
 Obsidian and YNAB use one executable in separate processes with independent
 configuration, readiness, telemetry, and private tunnel identities. Each domain
+may also run an optional loopback HTTP process for tailnet clients (see
+[tailnet HTTP services](gateway.md#tailnet-http-services)); it shares that
+domain's config and state, never the other domain's. Each domain
 uses the same backend for stdio and HTTP; do not build separate transport-specific
 server implementations. The release controller owns one shared binary transaction
 and captures the loaded service set for both forward activation and rollback.
