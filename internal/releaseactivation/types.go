@@ -1,7 +1,16 @@
 // Package releaseactivation owns the local release transaction lifecycle.
 package releaseactivation
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// ErrUpdateCheckFailed means one of the update path's post-fetch git
+// preconditions or the fast-forward itself failed. It carries no repo path,
+// commit, or git output; SanitizedError maps it to the fixed update_failed
+// record.
+var ErrUpdateCheckFailed = errors.New("release activation update check failed")
 
 const ManifestVersion = 4
 
@@ -185,6 +194,9 @@ const (
 	ErrorRuntimeDrift        ErrorCode = "runtime_drift"
 	ErrorStateConflict       ErrorCode = "state_conflict"
 	ErrorRecoveryUnconfirmed ErrorCode = "recovery_unconfirmed"
+	ErrorHostEffectFailed    ErrorCode = "host_effect_failed"
+	ErrorRolledBack          ErrorCode = "rolled_back"
+	ErrorUpdateFailed        ErrorCode = "update_failed"
 )
 
 // Error is a sanitized lifecycle error. Message is fixed per code and must not
@@ -227,6 +239,12 @@ func errorMessage(code ErrorCode) string {
 		return "event conflicts with release state"
 	case ErrorRecoveryUnconfirmed:
 		return "recovery could not be confirmed"
+	case ErrorHostEffectFailed:
+		return "a host effect failed"
+	case ErrorRolledBack:
+		return "candidate failed; previous runtime restored"
+	case ErrorUpdateFailed:
+		return "update precondition or fast-forward check failed"
 	default:
 		return "release operation failed"
 	}

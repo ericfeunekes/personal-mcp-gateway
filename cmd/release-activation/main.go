@@ -457,11 +457,18 @@ func runAdmin(ctx context.Context, runtime releaseactivation.Runtime, request ad
 
 func cleanupNewAdditionalService(ctx context.Context, runtime releaseactivation.Runtime, manifest releaseactivation.Manifest) error {
 	if err := runtime.Bootout(ctx, manifest); err != nil {
-		return releaseactivation.SanitizedError(errors.New("new service cleanup failed"))
+		return releaseactivation.HostEffectFailure("new service cleanup", err)
 	}
 	unloaded, err := runtime.ConfirmUnloaded(ctx, manifest)
-	if err != nil || !unloaded {
-		return releaseactivation.SanitizedError(errors.New("new service cleanup unconfirmed"))
+	if err != nil {
+		return releaseactivation.HostEffectFailure("new service cleanup", err)
+	}
+	if !unloaded {
+		// Bootout and the unload check both ran without error, but launchctl
+		// still reports the new service loaded: recovery genuinely cannot be
+		// confirmed, so this stays recovery_unconfirmed rather than
+		// host_effect_failed.
+		return errors.New("new service cleanup unconfirmed")
 	}
 	return nil
 }
@@ -472,25 +479,25 @@ func updateAfterFetch(ctx context.Context, request updateRequest, timeout time.D
 	}
 	branch, err := gitOutputWithTimeout(ctx, timeout, request.repo, "branch", "--show-current")
 	if err != nil || branch != "main" {
-		return errors.New("branch check failed")
+		return fmt.Errorf("branch check failed: %w", releaseactivation.ErrUpdateCheckFailed)
 	}
 	status, err := gitOutputWithTimeout(ctx, timeout, request.repo, "status", "--porcelain", "--untracked-files=all")
 	if err != nil || status != "" {
-		return errors.New("tree check failed")
+		return fmt.Errorf("tree check failed: %w", releaseactivation.ErrUpdateCheckFailed)
 	}
 	head, err := gitOutputWithTimeout(ctx, timeout, request.repo, "rev-parse", "HEAD")
 	if err != nil || head != request.expectedHead {
-		return errors.New("head changed after fetch")
+		return fmt.Errorf("head changed after fetch: %w", releaseactivation.ErrUpdateCheckFailed)
 	}
 	if _, err := gitOutputWithTimeout(ctx, timeout, request.repo, "cat-file", "-e", request.expectedRemoteOID+"^{commit}"); err != nil {
-		return errors.New("remote object check failed")
+		return fmt.Errorf("remote object check failed: %w", releaseactivation.ErrUpdateCheckFailed)
 	}
 	if _, err := gitOutputWithTimeout(ctx, timeout, request.repo, "merge", "--ff-only", request.expectedRemoteOID); err != nil {
-		return errors.New("fast-forward failed")
+		return fmt.Errorf("fast-forward failed: %w", releaseactivation.ErrUpdateCheckFailed)
 	}
 	finalHead, err := gitOutputWithTimeout(ctx, timeout, request.repo, "rev-parse", "HEAD")
 	if err != nil || finalHead != request.expectedRemoteOID {
-		return errors.New("updated head mismatch")
+		return fmt.Errorf("updated head mismatch: %w", releaseactivation.ErrUpdateCheckFailed)
 	}
 	return nil
 }

@@ -538,11 +538,20 @@ func runtimeFailure(operation string, cause error) error {
 	return &runtimeError{operation: operation, cause: cause}
 }
 
+// exitStatusError carries a child's exit status so SanitizedError's cause
+// classification can extract it without formatting or relaying any child
+// output.
+type exitStatusError struct {
+	code int
+}
+
+func (e *exitStatusError) Error() string { return fmt.Sprintf("child exited with status %d", e.code) }
+
 func exitError(code int) error {
 	if code == 0 {
 		return nil
 	}
-	return fmt.Errorf("child exited with status %d", code)
+	return &exitStatusError{code: code}
 }
 
 type execRunner struct {

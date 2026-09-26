@@ -104,6 +104,20 @@ preserves the plist/configuration; run `make install-launchagent` before a later
 release if the job is no longer loaded. If recovery cannot be confirmed, the
 transaction and remaining evidence stay active rather than reporting success.
 
+A failed candidate whose rollback is confirmed reports the fixed
+`rolled_back` record, naming only the fixed step that failed (for example
+`launch agent installation` or `readiness`); it never restates cause detail.
+A private host-effect adapter invocation (launchctl restart/bootout/print, an
+install/uninstall adapter, or new-service cleanup) that itself fails, times
+out, or exits nonzero reports the fixed `host_effect_failed` record: the same
+kind of fixed step name plus a coarse `timeout`, `exit_status=<n>`, or
+`failed` class, never child stdout/stderr, paths, or environment data. `make
+update`'s post-fetch branch/tree/HEAD/fast-forward checks report the fixed
+`update_failed` record on any check failure. `recovery_unconfirmed` is now
+reserved for the narrower case where the transaction's outcome genuinely
+cannot be determined, such as `launchctl print` itself failing while
+confirming a rollback or an unload.
+
 The summary and status records contain only bounded state, full release ID, and
 short commit/hash identity. They do not print the vault root, target path,
 tunnel identifier, runtime key, wrapper/config fingerprints, or child command

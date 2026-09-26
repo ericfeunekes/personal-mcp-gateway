@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -174,6 +175,49 @@ func TestUpdateLockScopeHonorsCallerDeadline(t *testing.T) {
 	}
 }
 
+func TestUpdateAfterFetchGitCheckFailuresAreUpdateFailed(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRepo := func(t *testing.T, branch string) (repo, head string) {
+		t.Helper()
+		repo = t.TempDir()
+		runGit(t, git, "init", "-b", branch, repo)
+		runGit(t, git, "-C", repo, "config", "user.email", "test@example.invalid")
+		runGit(t, git, "-C", repo, "config", "user.name", "Release Test")
+		writeRaceFile(t, filepath.Join(repo, "payload.txt"), "initial\n", 0o600)
+		runGit(t, git, "-C", repo, "add", "payload.txt")
+		runGit(t, git, "-C", repo, "commit", "-m", "initial")
+		return repo, strings.TrimSpace(runGit(t, git, "-C", repo, "rev-parse", "HEAD"))
+	}
+
+	t.Run("wrong branch", func(t *testing.T) {
+		repo, head := newRepo(t, "not-main")
+		err := updateAfterFetch(context.Background(), updateRequest{repo: repo, expectedHead: head, expectedRemoteOID: strings.Repeat("b", 40)}, gitChildTimeout)
+		if got := releaseactivation.SanitizedError(err); got == nil || got.Code != releaseactivation.ErrorUpdateFailed {
+			t.Fatalf("update error = %#v, %v", got, err)
+		}
+	})
+
+	t.Run("dirty tree", func(t *testing.T) {
+		repo, head := newRepo(t, "main")
+		writeRaceFile(t, filepath.Join(repo, "untracked.txt"), "dirty\n", 0o600)
+		err := updateAfterFetch(context.Background(), updateRequest{repo: repo, expectedHead: head, expectedRemoteOID: strings.Repeat("b", 40)}, gitChildTimeout)
+		if got := releaseactivation.SanitizedError(err); got == nil || got.Code != releaseactivation.ErrorUpdateFailed {
+			t.Fatalf("update error = %#v, %v", got, err)
+		}
+	})
+
+	t.Run("remote object unreachable", func(t *testing.T) {
+		repo, head := newRepo(t, "main")
+		err := updateAfterFetch(context.Background(), updateRequest{repo: repo, expectedHead: head, expectedRemoteOID: strings.Repeat("b", 40)}, gitChildTimeout)
+		if got := releaseactivation.SanitizedError(err); got == nil || got.Code != releaseactivation.ErrorUpdateFailed {
+			t.Fatalf("update error = %#v, %v", got, err)
+		}
+	})
+}
+
 func TestGitChildHonorsEarlierContextDeadline(t *testing.T) {
 	bin := t.TempDir()
 	git := filepath.Join(bin, "git")
@@ -192,17 +236,43 @@ func TestGitChildHonorsEarlierContextDeadline(t *testing.T) {
 	}
 }
 
+func TestInstallAdapterTimeoutIsHostEffectFailed(t *testing.T) {
+	repoRoot := t.TempDir()
+	adapterDir := filepath.Join(repoRoot, "scripts", "internal")
+	if err := os.MkdirAll(adapterDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	adapter := filepath.Join(adapterDir, "install-obsidian-tunnel-launchagent.sh")
+	if err := os.WriteFile(adapter, []byte("#!/bin/sh\nexec sleep 10\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A real OSRuntime bounds every child to a fixed maximum, but also honors
+	// an earlier caller deadline; a short deadline here exercises the same
+	// bounded-child-time mechanism as the production 30-second bound without
+	// waiting for it.
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	request := adminRequest{command: "install-launchagent", server: "obsidian", repoRoot: repoRoot, home: t.TempDir(), uid: 501, label: "com.ericfeunekes.personal-mcp-gateway.obsidian-tunnel"}
+	err := runAdmin(ctx, releaseactivation.NewOSRuntime(), request)
+	got := releaseactivation.SanitizedError(err)
+	if got == nil || got.Code != releaseactivation.ErrorHostEffectFailed || got.Message != "launch agent installation: timeout" {
+		t.Fatalf("install error = %#v, %v; want host_effect_failed timeout", got, err)
+	}
+}
+
 type fakeRuntime struct {
 	releaseactivation.Runtime
-	installPath string
-	installArgs []string
-	restart     releaseactivation.Manifest
-	bootout     releaseactivation.Manifest
-	readyErr    error
-	adapterErr  error
-	bootoutErr  error
-	confirmed   bool
-	loaded      bool
+	installPath    string
+	installArgs    []string
+	restart        releaseactivation.Manifest
+	bootout        releaseactivation.Manifest
+	readyErr       error
+	adapterErr     error
+	bootoutErr     error
+	bootoutFailErr error
+	confirmErr     error
+	confirmed      bool
+	loaded         bool
 }
 
 func (f *fakeRuntime) InvokeInstallAdapter(_ context.Context, path string, args ...string) error {
@@ -221,10 +291,10 @@ func (f *fakeRuntime) ServiceLoaded(context.Context, releaseactivation.Manifest)
 func (f *fakeRuntime) WaitReady(context.Context, releaseactivation.Manifest) error { return f.readyErr }
 func (f *fakeRuntime) Bootout(_ context.Context, manifest releaseactivation.Manifest) error {
 	f.bootout = manifest
-	return nil
+	return f.bootoutFailErr
 }
 func (f *fakeRuntime) ConfirmUnloaded(context.Context, releaseactivation.Manifest) (bool, error) {
-	return f.confirmed, nil
+	return f.confirmed, f.confirmErr
 }
 
 func TestRunFormatsPendingRecords(t *testing.T) {
@@ -714,6 +784,38 @@ func TestYNABHTTPCleanupFailureIsRecoveryUnconfirmed(t *testing.T) {
 	request := adminRequest{command: "install-launchagent", server: "ynab-http", repoRoot: t.TempDir(), home: t.TempDir(), uid: 501, label: "com.ericfeunekes.personal-mcp-gateway.ynab-http", healthURLFile: "/tmp/personal-mcp-gateway/ynab-http-health.url"}
 	err := runAdmin(context.Background(), runtime, request)
 	if got := releaseactivation.SanitizedError(err); got.Code != releaseactivation.ErrorRecoveryUnconfirmed {
+		t.Fatalf("cleanup error = %#v", got)
+	}
+}
+
+func TestCleanupNewAdditionalServiceBootoutFailureIsHostEffectFailed(t *testing.T) {
+	runtime := &fakeRuntime{bootoutFailErr: errors.New("launchctl bootout failed")}
+	manifest := releaseactivation.Manifest{LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel"}
+	err := cleanupNewAdditionalService(context.Background(), runtime, manifest)
+	got := releaseactivation.SanitizedError(err)
+	if got == nil || got.Code != releaseactivation.ErrorHostEffectFailed || got.Message != "new service cleanup: failed" {
+		t.Fatalf("cleanup error = %#v", got)
+	}
+}
+
+func TestCleanupNewAdditionalServiceConfirmErrorIsHostEffectFailed(t *testing.T) {
+	runtime := &fakeRuntime{confirmErr: errors.New("launchctl print failed")}
+	manifest := releaseactivation.Manifest{LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel"}
+	err := cleanupNewAdditionalService(context.Background(), runtime, manifest)
+	got := releaseactivation.SanitizedError(err)
+	if got == nil || got.Code != releaseactivation.ErrorHostEffectFailed || got.Message != "new service cleanup: failed" {
+		t.Fatalf("cleanup error = %#v", got)
+	}
+}
+
+func TestCleanupNewAdditionalServiceStillLoadedIsRecoveryUnconfirmed(t *testing.T) {
+	// Bootout and the unload check both ran without error, but the service
+	// still reports loaded: recovery genuinely cannot be confirmed.
+	runtime := &fakeRuntime{confirmed: false}
+	manifest := releaseactivation.Manifest{LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel"}
+	err := cleanupNewAdditionalService(context.Background(), runtime, manifest)
+	got := releaseactivation.SanitizedError(err)
+	if got == nil || got.Code != releaseactivation.ErrorRecoveryUnconfirmed {
 		t.Fatalf("cleanup error = %#v", got)
 	}
 }

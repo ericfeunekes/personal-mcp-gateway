@@ -3,6 +3,7 @@ package releaseactivation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -359,9 +360,11 @@ func TestManagerReadinessFailureDurablyRestoresPrevious(t *testing.T) {
 	}
 	runtime.waitFailures = 1
 
+	// Readiness failed but rollback to the previous runtime was confirmed
+	// (asserted below), so this is rolled_back, not recovery_unconfirmed.
 	got, err := manager.Resume(ctx, prepared.ID)
-	if SanitizedError(err).Code != ErrorRecoveryUnconfirmed || got == nil {
-		t.Fatalf("resume = %#v, %v; want sanitized deployment failure", got, err)
+	if SanitizedError(err).Code != ErrorRolledBack || got == nil {
+		t.Fatalf("resume = %#v, %v; want sanitized rolled-back failure", got, err)
 	}
 	if runtime.installedHash != prepared.PreviousSHA256 || !runtime.ready {
 		t.Fatalf("recovered runtime = hash %q ready=%v", runtime.installedHash, runtime.ready)
@@ -654,6 +657,75 @@ func TestManagerWithClearAndBusyGate(t *testing.T) {
 	defer locked.Close()
 	if _, err := manager.Status(ctx); SanitizedError(err).Code != ErrorBusy {
 		t.Fatalf("busy status error = %v", err)
+	}
+}
+
+func TestSanitizedErrorClassifiesHostEffectRolledBackAndUpdateFailures(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		err         error
+		code        ErrorCode
+		wantMessage string
+	}{
+		{
+			name:        "host effect timeout",
+			err:         runtimeFailure("runtime restart", context.DeadlineExceeded),
+			code:        ErrorHostEffectFailed,
+			wantMessage: "runtime restart: timeout",
+		},
+		{
+			name: "host effect timeout through errors.Join, matching the adapter path",
+			// invokeAdapter and Restart build their cause with
+			// errors.Join(err, exitError(result.ExitCode)); a bounded child
+			// deadline reports err=context.DeadlineExceeded and a zero exit
+			// code, so exitError(0) is nil and errors.Join drops it.
+			err:         runtimeFailure("launch agent installation", errors.Join(context.DeadlineExceeded, exitError(0))),
+			code:        ErrorHostEffectFailed,
+			wantMessage: "launch agent installation: timeout",
+		},
+		{
+			name: "host effect exit status through errors.Join, matching the adapter path",
+			// A child that exits nonzero without a context error reports
+			// err=nil and a nonzero exit code, so errors.Join drops the nil
+			// err and keeps only the typed exit status.
+			err:         runtimeFailure("runtime bootout", errors.Join(nil, exitError(17))),
+			code:        ErrorHostEffectFailed,
+			wantMessage: "runtime bootout: exit_status=17",
+		},
+		{
+			name:        "host effect generic failure",
+			err:         runtimeFailure("readiness", errors.New("bounded readiness exhausted")),
+			code:        ErrorHostEffectFailed,
+			wantMessage: "readiness: failed",
+		},
+		{
+			name:        "rolled back after a runtime-operation cause",
+			err:         rolledBackFailure(causeOperation(runtimeFailure("runtime restart", errors.New("synthetic")))),
+			code:        ErrorRolledBack,
+			wantMessage: "candidate failed at runtime restart; previous runtime restored",
+		},
+		{
+			name:        "rolled back after a non-runtime cause falls back to a generic step name",
+			err:         rolledBackFailure(causeOperation(errors.New("plain cause"))),
+			code:        ErrorRolledBack,
+			wantMessage: "candidate failed at deployment; previous runtime restored",
+		},
+		{
+			name:        "update check failure",
+			err:         fmt.Errorf("branch check failed: %w", ErrUpdateCheckFailed),
+			code:        ErrorUpdateFailed,
+			wantMessage: "update precondition or fast-forward check failed",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SanitizedError(tt.err)
+			if got == nil || got.Code != tt.code || got.Message != tt.wantMessage {
+				t.Fatalf("SanitizedError(%v) = %#v, want code %s message %q", tt.err, got, tt.code, tt.wantMessage)
+			}
+			if strings.Contains(got.Message, "synthetic") || strings.Contains(got.Message, "plain cause") || strings.Contains(got.Message, "bounded readiness exhausted") {
+				t.Fatalf("sanitized error leaked cause text: %q", got.Message)
+			}
+		})
 	}
 }
 

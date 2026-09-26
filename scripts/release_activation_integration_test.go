@@ -150,7 +150,13 @@ func TestReleaseActivationRealisticLocalComposition(t *testing.T) {
 		fixture.extraEnv = append(fixture.extraEnv, "LAUNCHCTL_HOSTILE=1")
 		fixture.seedPrepared(t, "hostile-candidate")
 		stdout, stderr, exit := fixture.dispatch(t, "resume-if-active")
-		assertCompositionResult(t, stdout, stderr, exit, "", "error=recovery_unconfirmed message=recovery could not be confirmed\n", 1)
+		// resume-if-active's first step observes current state before any
+		// decision is made; launchctl print failing here is a host-effect
+		// adapter failure with a known exit status, not an unconfirmed
+		// recovery, so it reports the fixed host_effect_failed record. The
+		// hostile stderr payload (path-shaped secret sentinel) must still
+		// never reach either channel.
+		assertCompositionResult(t, stdout, stderr, exit, "", "error=host_effect_failed message=supervisor observation: exit_status=9\n", 1)
 		assertNoSentinel(t, stdout, stderr)
 	})
 }

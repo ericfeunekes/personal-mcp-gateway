@@ -3,6 +3,7 @@ package releaseactivation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -398,7 +399,7 @@ func (m *Manager) rollbackDeploymentFailure(ctx context.Context, locked *LockedS
 	if _, err := m.finishRollback(ctx, locked, decision.Next.Manifest, observed); err != nil {
 		return lifecycleError(ErrorRecoveryUnconfirmed)
 	}
-	return SanitizedError(cause)
+	return rolledBackFailure(causeOperation(cause))
 }
 
 func (m *Manager) finishAccept(ctx context.Context, locked *LockedStore, manifest *Manifest, id ReleaseID) (*Manifest, error) {
@@ -678,6 +679,46 @@ func pathExists(path string) (bool, error) {
 	return true, nil
 }
 
+// rollbackRecoveredError marks a deployment failure whose rollback was
+// confirmed. operation is the fixed, non-sensitive step that failed; it never
+// carries the underlying cause so SanitizedError cannot leak it.
+type rollbackRecoveredError struct {
+	operation string
+}
+
+func (e *rollbackRecoveredError) Error() string {
+	return "release " + e.operation + " failed; rollback confirmed"
+}
+
+func rolledBackFailure(operation string) error {
+	return &rollbackRecoveredError{operation: operation}
+}
+
+// causeOperation extracts the fixed operation string a runtimeError carries,
+// falling back to a generic step name when cause is not one (for example a
+// lifecycle decision rejection observed while rolling back).
+func causeOperation(cause error) string {
+	var re *runtimeError
+	if errors.As(cause, &re) {
+		return re.operation
+	}
+	return "deployment"
+}
+
+// causeClass reduces a host-effect cause to one of a fixed set of coarse,
+// non-sensitive classes. It never returns child stdout/stderr, paths, or
+// environment data.
+func causeClass(cause error) string {
+	if errors.Is(cause, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	var exit *exitStatusError
+	if errors.As(cause, &exit) {
+		return fmt.Sprintf("exit_status=%d", exit.code)
+	}
+	return "failed"
+}
+
 // SanitizedError maps internal/store/runtime failures to the stable public
 // taxonomy without preserving causes, paths, child output, or environment data.
 func SanitizedError(err error) *Error {
@@ -687,6 +728,14 @@ func SanitizedError(err error) *Error {
 	var lifecycle *Error
 	if errors.As(err, &lifecycle) {
 		return lifecycleError(lifecycle.Code)
+	}
+	var recovered *rollbackRecoveredError
+	if errors.As(err, &recovered) {
+		return &Error{Code: ErrorRolledBack, Message: fmt.Sprintf("candidate failed at %s; previous runtime restored", recovered.operation)}
+	}
+	var hostEffect *runtimeError
+	if errors.As(err, &hostEffect) {
+		return &Error{Code: ErrorHostEffectFailed, Message: fmt.Sprintf("%s: %s", hostEffect.operation, causeClass(hostEffect.cause))}
 	}
 	var topology *PathTopologyError
 	switch {
@@ -698,9 +747,21 @@ func SanitizedError(err error) *Error {
 		return lifecycleError(ErrorStateConflict)
 	case errors.Is(err, ErrStateMalformed):
 		return lifecycleError(ErrorStateMalformed)
+	case errors.Is(err, ErrUpdateCheckFailed):
+		return lifecycleError(ErrorUpdateFailed)
 	case errors.As(err, &topology):
 		return lifecycleError(ErrorStateMalformed)
 	default:
 		return lifecycleError(ErrorRecoveryUnconfirmed)
 	}
+}
+
+// HostEffectFailure sanitizes a private host-effect adapter's cause into the
+// stable host_effect_failed record. operation must be a fixed, non-sensitive
+// string; cause classification never surfaces child output, paths, or
+// environment data. Command adapters outside this package (for example
+// cmd/release-activation) use this to report launchctl/adapter failures
+// instead of collapsing them into recovery_unconfirmed.
+func HostEffectFailure(operation string, cause error) error {
+	return runtimeFailure(operation, cause)
 }
