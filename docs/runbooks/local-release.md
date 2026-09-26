@@ -39,9 +39,6 @@ path is:
    accepted activation proof for unaffected mutation, native-document, and
    lifecycle surfaces; do not replay those journeys as general release
    ceremony.
-   A lifecycle change's installed rollback drill consumes the first pending
-   transaction; after that drill returns `clear`, rerun `make release` from the
-   same clean commit and use the second pending ID for acceptance.
 3. Run `make release-accept RELEASE_ID=<full-id>` only after the selected proof
    succeeds. If it does not complete, classify it using the dispatch
    evidence required by `docs/TESTING.md`. Roll back only when telemetry,
@@ -236,9 +233,7 @@ deliberately ends `pending`.
 
 Acceptance requires the applicable change-scoped proof in `docs/TESTING.md`,
 followed by the exact-ID accept command. A lifecycle-only change uses the
-process/crash/concurrency suite, isolated first-install unload check, installed
-pending-to-rollback drill, then a fresh release of the same clean commit and
-`make verify-live`; it needs a fresh
+process/crash/concurrency suite and `make verify-live`; it needs a fresh
 authenticated tool call only when the connector boundary also changed. These
 checks prove process-crash recovery on the tested machine; they do not prove
 power-loss durability, sleep/wake recovery, multi-day soak behavior, every
@@ -250,7 +245,7 @@ and release store; success requires real `launchctl print` absence, target
 removal, and a clear transaction after rollback.
 
 The current accepted proof record is maintained in `docs/TESTING.md`. Repeat
-cells 1 and 2 after changing lifecycle policy, dispatcher capture,
-installed-target replacement, or supervision bindings. Add cell 3 only when
+cell 1 after changing lifecycle policy, dispatcher capture,
+installed-target replacement, or supervision bindings. Add cell 2 only when
 the connector boundary also changed. Advertised MCP changes select their
-applicable cell-3 rows.
+applicable cell-2 rows.

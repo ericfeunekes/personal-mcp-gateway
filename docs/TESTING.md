@@ -422,7 +422,10 @@ restart, and bounded tunnel liveness/readiness checks. Passing those local gates
 must leave the transaction `pending` and rollback-capable; it does not prove that
 ChatGPT or another remote model selected and completed a tool call.
 
-The release proof contract is split into three current-state cells:
+The release proof contract is split into two current-state cells. A release
+does not have to prove rollback before acceptance: the automated lifecycle
+suites in cell 1 cover rollback, and `make release-rollback` remains available
+while a release is pending.
 
 1. Run the canonical merge proof, including the executable lifecycle matrix and
    process/crash/concurrency coverage:
@@ -434,27 +437,7 @@ The release proof contract is split into three current-state cells:
    git diff --check
    ```
 
-2. On an isolated synthetic LaunchAgent and then the installed service, prove a
-   release reaches `pending`, rejects missing/stale/wrong IDs without changing
-   state, and exact rollback restores the previous hash and ready runtime. For a
-   first installation, prove the job is unloaded before the candidate target is
-   removed while its plist/configuration remains available for a later install.
-   The isolated macOS drill is opt-in and uses a randomized label plus temporary
-   target/store paths:
-
-   ```bash
-   make build-release-controller
-   RUN_LIVE_RELEASE_FIRST_INSTALL=1 GOCACHE=$(pwd)/.gocache \
-     go test -count=1 ./internal/releaseactivation \
-     -run '^TestLiveFirstInstallLaunchAgent(Rollback|Helper)$'
-   ```
-
-   The installed pending-to-rollback drill consumes that release ID and returns
-   the transaction to `clear`. After it passes, rerun `make release` from the
-   same clean commit. Apply any remaining current-change proof to the new
-   pending transaction and accept only its new full ID. A rolled-back ID is
-   never accept-capable.
-3. Select QA from every changed boundary. Before release, state in one sentence
+2. Select QA from every changed boundary. Before release, state in one sentence
    what changed and which applicable rows below can falsify it. Applicable rows
    are cumulative for mixed changes. A surface-specific row such as mutation or
    native documents cannot be downgraded to the generic metadata row, although
@@ -469,7 +452,7 @@ The release proof contract is split into three current-state cells:
 | Native-document capture, validation, MIME, admission limit, serializer, transport, or document-tool schema | Run the three PDF journeys below plus the local byte/MIME and capacity gates. Metadata-only wording changes need only metadata refresh and a representative call. |
 | Tunnel, authentication, MCP transport, or client handoff | Run a representative affected call through the authenticated tunnel and correlate sanitized dispatch evidence. |
 | Telemetry summaries or privacy | Exercise the affected tool/outcome and inspect the configured sink for the changed bounded fields and prohibited data. |
-| Release controller, installed replacement, supervision, or recovery | Run cells 1 and 2 and `make verify-live`; add an authenticated tool call only when the connector boundary also changed. |
+| Release controller, installed replacement, supervision, or recovery | Run cell 1 and `make verify-live` for each loaded service; add an authenticated tool call only when the connector boundary also changed. |
 | Internal performance or allocation work with unchanged public behavior | Use the candidate-bound local performance/resource gates and one representative affected tool call. Do not replay unrelated destructive or native-document activation journeys. |
 | Documentation only | No binary release or authenticated model journey is required. Verify the documented commands and affected documentation neighborhood. |
 

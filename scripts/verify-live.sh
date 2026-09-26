@@ -56,7 +56,10 @@ launch_state="$(launchctl print "gui/$uid/$label" 2>/dev/null)" ||
 if [[ -z "$launch_state" ]]; then
   fail "the tunnel LaunchAgent returned no state."
 fi
-expected_program="$repo_root/scripts/run-${server}-tunnel.sh"
+case "$server" in
+  *-http) expected_program="$repo_root/scripts/run-${server}.sh" ;;
+  *) expected_program="$repo_root/scripts/run-${server}-tunnel.sh" ;;
+esac
 if ! printf '%s\n' "$launch_state" | grep -Fq -- "program = $expected_program"; then
   fail "the loaded LaunchAgent does not use this repo's tunnel wrapper."
 fi

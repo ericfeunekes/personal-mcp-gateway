@@ -144,6 +144,9 @@ cleanup_failed_install() {
 trap cleanup_failed_install ERR
 launchctl bootstrap "gui/$uid" "$plist_path"
 bootstrapped=1
-launchctl kickstart -k "gui/$uid/$label"
+# RunAtLoad already started the job. A killing kickstart here would land inside
+# launchd's ThrottleInterval and stall the respawn past the controller's child
+# deadline, so only ensure it is running.
+launchctl kickstart "gui/$uid/$label"
 launchctl print "gui/$uid/$label"
 trap - ERR
