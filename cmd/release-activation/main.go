@@ -24,6 +24,7 @@ type lifecycleManager interface {
 	Accept(context.Context, releaseactivation.ReleaseID) (*releaseactivation.Manifest, error)
 	Rollback(context.Context, releaseactivation.ReleaseID) (*releaseactivation.Manifest, error)
 	WithClear(context.Context, func(context.Context, releaseactivation.Runtime) error) error
+	Probe(context.Context, func(context.Context, releaseactivation.Runtime) error) error
 }
 
 type dependencies struct {
@@ -182,6 +183,22 @@ func execute(ctx context.Context, args []string, deps dependencies) ([]string, e
 			return nil, err
 		}
 		return []string{"state=clear action=" + args[0]}, nil
+	case "verify-live":
+		// verify-live is a read-only probe: it must succeed while a release is
+		// pending (docs require checking liveness/readiness before accept), so
+		// it runs under Probe rather than WithClear and never prunes orphans or
+		// requires a clear transaction.
+		request, err := parseAdmin(args[0], args[1:], deps)
+		if err != nil {
+			return nil, err
+		}
+		err = deps.manager.Probe(ctx, func(ctx context.Context, runtime releaseactivation.Runtime) error {
+			return runAdmin(ctx, runtime, request)
+		})
+		if err != nil {
+			return nil, err
+		}
+		return []string{"action=verify-live result=ready"}, nil
 	default:
 		return nil, &usageError{}
 	}
@@ -240,17 +257,15 @@ func parsePrepare(args []string, deps dependencies) (releaseactivation.PrepareRe
 	set.StringVar(&request.CandidatePath, "candidate", "", "")
 	set.StringVar(&request.AuthorityPath, "authority", "", "")
 	set.StringVar(&request.TargetPath, "target", "", "")
-	set.StringVar(&request.LaunchAgentLabel, "label", "", "")
 	set.StringVar(&repoRoot, "repo-root", "", "")
 	set.StringVar(&request.EnvironmentPath, "environment", "", "")
-	set.StringVar(&request.HealthURLFile, "health-url-file", "", "")
 	set.IntVar(&request.ReadyTimeoutSeconds, "ready-timeout-seconds", 45, "")
 	set.IntVar(&request.ReadyPollMilliseconds, "ready-poll-milliseconds", 1000, "")
 	if err := set.Parse(args); err != nil || set.NArg() != 0 {
 		return request, &usageError{}
 	}
 	if !allNonempty(request.Commit, request.CandidateSHA256, request.AuthoritySHA256, request.DependencySHA256, request.CandidatePath, request.AuthorityPath, request.TargetPath,
-		request.LaunchAgentLabel, repoRoot, request.EnvironmentPath, request.HealthURLFile) {
+		repoRoot, request.EnvironmentPath) {
 		return request, &usageError{}
 	}
 	if !validGitOID(request.Commit) || len(request.CandidateSHA256) != 64 || !validGitOID(request.CandidateSHA256) ||
@@ -258,58 +273,35 @@ func parsePrepare(args []string, deps dependencies) (releaseactivation.PrepareRe
 		len(request.DependencySHA256) != 64 || !validGitOID(request.DependencySHA256) {
 		return request, &usageError{}
 	}
-	if !releaseactivation.ValidLaunchAgentLabel(request.LaunchAgentLabel) {
-		return request, &usageError{}
-	}
-	for _, path := range []string{request.CandidatePath, request.AuthorityPath, request.TargetPath, repoRoot, request.EnvironmentPath, request.HealthURLFile} {
+	for _, path := range []string{request.CandidatePath, request.AuthorityPath, request.TargetPath, repoRoot, request.EnvironmentPath} {
 		if !filepath.IsAbs(path) {
 			return request, &usageError{}
 		}
 	}
 	repoRoot = filepath.Clean(repoRoot)
+	obsidian := serviceTable["obsidian"]
 	request.EffectiveUID = deps.uid
-	request.PlistPath = filepath.Join(deps.home, "Library", "LaunchAgents", request.LaunchAgentLabel+".plist")
-	request.WrapperPath = filepath.Join(repoRoot, "scripts", "run-obsidian-tunnel.sh")
-	request.MCPWrapperPath = filepath.Join(repoRoot, "scripts", "run-obsidian-mcp-stdio.sh")
-	request.StdoutPath = filepath.Join(deps.home, "Library", "Logs", "personal-mcp-gateway", "obsidian-tunnel.out.log")
-	request.StderrPath = filepath.Join(deps.home, "Library", "Logs", "personal-mcp-gateway", "obsidian-tunnel.err.log")
-	request.ServiceCandidates = []releaseactivation.ServiceCandidate{
-		{
-			Server:           "ynab",
-			LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel",
-			PlistPath:        filepath.Join(deps.home, "Library", "LaunchAgents", "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel.plist"),
-			WrapperPath:      filepath.Join(repoRoot, "scripts", "run-ynab-tunnel.sh"),
-			MCPWrapperPath:   filepath.Join(repoRoot, "scripts", "run-ynab-mcp-stdio.sh"),
-			StdoutPath:       filepath.Join(deps.home, "Library", "Logs", "personal-mcp-gateway", "ynab-tunnel.out.log"),
-			StderrPath:       filepath.Join(deps.home, "Library", "Logs", "personal-mcp-gateway", "ynab-tunnel.err.log"),
-			EnvironmentPath:  filepath.Join(repoRoot, ".env.ynab.local"),
-			HealthURLFile:    "/tmp/personal-mcp-gateway/ynab-tunnel-health.url",
-		},
-		{
-			// obsidian-http execs the gateway binary directly over loopback HTTP:
-			// no second-level MCP stdio wrapper, so MCPWrapperPath stays unset. It
-			// shares the obsidian tunnel's environment file rather than duplicating
-			// credentials into a second copy.
-			Server:           "obsidian-http",
-			LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.obsidian-http",
-			PlistPath:        filepath.Join(deps.home, "Library", "LaunchAgents", "com.ericfeunekes.personal-mcp-gateway.obsidian-http.plist"),
-			WrapperPath:      filepath.Join(repoRoot, "scripts", "run-obsidian-http.sh"),
-			StdoutPath:       filepath.Join(deps.home, "Library", "Logs", "personal-mcp-gateway", "obsidian-http.out.log"),
-			StderrPath:       filepath.Join(deps.home, "Library", "Logs", "personal-mcp-gateway", "obsidian-http.err.log"),
-			EnvironmentPath:  request.EnvironmentPath,
-			HealthURLFile:    "/tmp/personal-mcp-gateway/obsidian-http-health.url",
-		},
-		{
-			// ynab-http shares the ynab tunnel's environment file for the same reason.
-			Server:           "ynab-http",
-			LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.ynab-http",
-			PlistPath:        filepath.Join(deps.home, "Library", "LaunchAgents", "com.ericfeunekes.personal-mcp-gateway.ynab-http.plist"),
-			WrapperPath:      filepath.Join(repoRoot, "scripts", "run-ynab-http.sh"),
-			StdoutPath:       filepath.Join(deps.home, "Library", "Logs", "personal-mcp-gateway", "ynab-http.out.log"),
-			StderrPath:       filepath.Join(deps.home, "Library", "Logs", "personal-mcp-gateway", "ynab-http.err.log"),
-			EnvironmentPath:  filepath.Join(repoRoot, ".env.ynab.local"),
-			HealthURLFile:    "/tmp/personal-mcp-gateway/ynab-http-health.url",
-		},
+	request.LaunchAgentLabel = obsidian.label
+	request.PlistPath = obsidian.plistPath(deps.home)
+	request.WrapperPath = obsidian.wrapperPath(repoRoot)
+	request.MCPWrapperPath = obsidian.mcpWrapperPath(repoRoot)
+	request.StdoutPath = obsidian.stdoutPath(deps.home)
+	request.StderrPath = obsidian.stderrPath(deps.home)
+	request.HealthURLFile = obsidian.healthURLFile
+	request.ServiceCandidates = make([]releaseactivation.ServiceCandidate, 0, len(additionalServiceOrder))
+	for _, server := range additionalServiceOrder {
+		spec := serviceTable[server]
+		request.ServiceCandidates = append(request.ServiceCandidates, releaseactivation.ServiceCandidate{
+			Server:           server,
+			LaunchAgentLabel: spec.label,
+			PlistPath:        spec.plistPath(deps.home),
+			WrapperPath:      spec.wrapperPath(repoRoot),
+			MCPWrapperPath:   spec.mcpWrapperPath(repoRoot),
+			StdoutPath:       spec.stdoutPath(deps.home),
+			StderrPath:       spec.stderrPath(deps.home),
+			EnvironmentPath:  serviceEnvironmentPath(server, repoRoot, request.EnvironmentPath),
+			HealthURLFile:    spec.healthURLFile,
+		})
 	}
 	return request, nil
 }
@@ -344,8 +336,8 @@ func parseUpdate(args []string) (updateRequest, error) {
 }
 
 type adminRequest struct {
-	command, repoRoot, label, home, healthURLFile, server string
-	uid                                                   int
+	command, repoRoot, home, healthURLFile, server string
+	uid                                            int
 }
 
 func parseAdmin(command string, args []string, deps dependencies) (adminRequest, error) {
@@ -353,124 +345,61 @@ func parseAdmin(command string, args []string, deps dependencies) (adminRequest,
 	set.SetOutput(io.Discard)
 	request := adminRequest{command: command, home: deps.home, uid: deps.uid}
 	set.StringVar(&request.repoRoot, "repo-root", "", "")
-	set.StringVar(&request.label, "label", "", "")
-	set.StringVar(&request.healthURLFile, "health-url-file", "", "")
 	set.StringVar(&request.server, "server", "obsidian", "")
-	if err := set.Parse(args); err != nil || set.NArg() != 0 || !filepath.IsAbs(request.repoRoot) || request.label == "" {
+	if err := set.Parse(args); err != nil || set.NArg() != 0 || !filepath.IsAbs(request.repoRoot) {
 		return request, &usageError{}
 	}
-	if !releaseactivation.ValidLaunchAgentLabel(request.label) {
+	spec, ok := serviceTable[request.server]
+	if !ok {
 		return request, &usageError{}
 	}
-	switch request.server {
-	case "obsidian", "ynab", "obsidian-http", "ynab-http":
-	default:
-		return request, &usageError{}
-	}
-	if command == "restart" && !filepath.IsAbs(request.healthURLFile) {
-		return request, &usageError{}
-	}
-	if command == "install-launchagent" {
-		switch request.server {
-		case "ynab":
-			request.healthURLFile = "/tmp/personal-mcp-gateway/ynab-tunnel-health.url"
-		case "obsidian-http":
-			request.healthURLFile = "/tmp/personal-mcp-gateway/obsidian-http-health.url"
-		case "ynab-http":
-			request.healthURLFile = "/tmp/personal-mcp-gateway/ynab-http-health.url"
-		}
-	}
+	request.healthURLFile = spec.healthURLFile
 	return request, nil
 }
 
 func runAdmin(ctx context.Context, runtime releaseactivation.Runtime, request adminRequest) error {
-	manifest := releaseactivation.Manifest{EffectiveUID: request.uid, LaunchAgentLabel: request.label, HealthURLFile: request.healthURLFile}
-	// obsidian is the required base service and predates this admin surface's
-	// readiness handling; every other server is an additional service that is
-	// captured, restarted onto the candidate, and health-checked the same way.
-	isAdditionalService := request.server != "obsidian"
-	switch request.server {
-	case "ynab":
-		manifest.WrapperPath = filepath.Join(request.repoRoot, "scripts", "run-ynab-tunnel.sh")
-	case "obsidian-http":
-		manifest.WrapperPath = filepath.Join(request.repoRoot, "scripts", "run-obsidian-http.sh")
-	case "ynab-http":
-		manifest.WrapperPath = filepath.Join(request.repoRoot, "scripts", "run-ynab-http.sh")
+	spec, ok := serviceTable[request.server]
+	if !ok {
+		return &usageError{}
 	}
-	if isAdditionalService {
-		manifest.ReadyTimeoutSeconds = 45
-		manifest.ReadyPollMilliseconds = 1000
+	manifest := releaseactivation.Manifest{
+		EffectiveUID:          request.uid,
+		LaunchAgentLabel:      spec.label,
+		WrapperPath:           spec.wrapperPath(request.repoRoot),
+		HealthURLFile:         request.healthURLFile,
+		ReadyTimeoutSeconds:   spec.readyTimeoutSeconds,
+		ReadyPollMilliseconds: spec.readyPollMilliseconds,
 	}
 	switch request.command {
 	case "restart":
 		return runtime.Restart(ctx, manifest)
+	case "verify-live":
+		// A read-only probe: reuse WaitReady's bounded poll so a service that
+		// just restarted (or is still coming up after install) has the same
+		// grace period release/rollback give it, instead of failing on a
+		// single premature check.
+		return runtime.WaitReady(ctx, manifest)
 	case "install-launchagent":
-		if isAdditionalService {
-			loadedRuntime, ok := runtime.(interface {
-				ServiceLoaded(context.Context, releaseactivation.Manifest) (bool, error)
-			})
-			if !ok {
-				return releaseactivation.ErrStateConflict
-			}
-			loaded, err := loadedRuntime.ServiceLoaded(ctx, manifest)
-			if err != nil {
-				return err
-			}
-			if loaded {
-				return releaseactivation.ErrStateConflict
-			}
+		// The adapter refreshes an already-loaded job (bootout then bootstrap)
+		// before returning, so every server installs the same way whether it
+		// is new or already running. Install must never unload a job on
+		// failure and must succeed before GATEWAY_BIN exists (the job is
+		// allowed to retry); readiness is checked separately with
+		// `make verify-live`.
+		adapter := filepath.Join(request.repoRoot, "scripts", "internal", "install-launchagent.sh")
+		args := []string{
+			request.home, strconv.Itoa(request.uid), spec.label,
+			manifest.WrapperPath, spec.stdoutPath(request.home), spec.stderrPath(request.home),
+			request.repoRoot,
 		}
-		adapter := filepath.Join(request.repoRoot, "scripts", "internal", "install-obsidian-tunnel-launchagent.sh")
-		args := []string{request.repoRoot, request.home, strconv.Itoa(request.uid), request.label}
-		if isAdditionalService {
-			args = append(args, request.server)
-		}
-		if err := runtime.InvokeInstallAdapter(ctx, adapter, args...); err != nil {
-			if isAdditionalService {
-				if cleanupErr := cleanupNewAdditionalService(ctx, runtime, manifest); cleanupErr != nil {
-					return cleanupErr
-				}
-			}
-			return err
-		}
-		if !isAdditionalService {
-			return nil
-		}
-		if err := runtime.WaitReady(ctx, manifest); err == nil {
-			return nil
-		} else if cleanupErr := cleanupNewAdditionalService(ctx, runtime, manifest); cleanupErr != nil {
-			return cleanupErr
-		} else {
-			return err
-		}
+		return runtime.InvokeInstallAdapter(ctx, adapter, args...)
 	case "uninstall-launchagent":
-		adapter := filepath.Join(request.repoRoot, "scripts", "internal", "uninstall-obsidian-tunnel-launchagent.sh")
-		args := []string{request.home, strconv.Itoa(request.uid), request.label}
-		if isAdditionalService {
-			args = append(args, request.server)
-		}
+		adapter := filepath.Join(request.repoRoot, "scripts", "internal", "uninstall-launchagent.sh")
+		args := []string{request.home, strconv.Itoa(request.uid), spec.label}
 		return runtime.InvokeUninstallAdapter(ctx, adapter, args...)
 	default:
 		return &usageError{}
 	}
-}
-
-func cleanupNewAdditionalService(ctx context.Context, runtime releaseactivation.Runtime, manifest releaseactivation.Manifest) error {
-	if err := runtime.Bootout(ctx, manifest); err != nil {
-		return releaseactivation.HostEffectFailure("new service cleanup", err)
-	}
-	unloaded, err := runtime.ConfirmUnloaded(ctx, manifest)
-	if err != nil {
-		return releaseactivation.HostEffectFailure("new service cleanup", err)
-	}
-	if !unloaded {
-		// Bootout and the unload check both ran without error, but launchctl
-		// still reports the new service loaded: recovery genuinely cannot be
-		// confirmed, so this stays recovery_unconfirmed rather than
-		// host_effect_failed.
-		return errors.New("new service cleanup unconfirmed")
-	}
-	return nil
 }
 
 func updateAfterFetch(ctx context.Context, request updateRequest, timeout time.Duration) error {

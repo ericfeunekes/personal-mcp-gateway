@@ -278,6 +278,16 @@ func (updateRaceRuntime) InvokeUninstallAdapter(context.Context, string, ...stri
 	return errors.New("unexpected uninstall adapter")
 }
 
+// ServiceLoaded is a non-mutating probe, not a lifecycle effect: Prepare
+// calls it while capturing every additional-service candidate, so it must
+// answer "absent" rather than fail the way the mutating methods above do.
+func (updateRaceRuntime) ServiceLoaded(context.Context, releaseactivation.Manifest) (bool, error) {
+	return false, nil
+}
+func (updateRaceRuntime) ReadyOnce(context.Context, releaseactivation.Manifest) bool {
+	return false
+}
+
 type prepareRaceRuntime struct{ updateRaceRuntime }
 
 func (prepareRaceRuntime) Observe(_ context.Context, manifest releaseactivation.Manifest, controller string, artifacts releaseactivation.RuntimeArtifacts) (releaseactivation.Observed, error) {
@@ -304,7 +314,7 @@ func (prepareRaceRuntime) Observe(_ context.Context, manifest releaseactivation.
 func prepareRaceCLI(root string, uid int, candidate, authority string, manager *releaseactivation.Manager) ([]string, dependencies, error) {
 	home := filepath.Join(root, "prepare-home")
 	repo := filepath.Join(root, "prepare-repo")
-	label := "com.example.release-race"
+	label := serviceTable["obsidian"].label
 	paths := map[string]struct {
 		content string
 		mode    os.FileMode
@@ -332,8 +342,8 @@ func prepareRaceCLI(root string, uid int, candidate, authority string, manager *
 	}
 	args := []string{"prepare", "--commit", strings.Repeat("b", 40), "--candidate-sha256", candidateSHA256, "--authority-sha256", authoritySHA256, "--dependency-sha256", strings.Repeat("9", 64),
 		"--candidate", candidate, "--authority", authority,
-		"--target", filepath.Join(root, "target"), "--label", label, "--repo-root", repo,
-		"--environment", filepath.Join(root, "prepare.env"), "--health-url-file", filepath.Join(root, "health-url"),
+		"--target", filepath.Join(root, "target"), "--repo-root", repo,
+		"--environment", filepath.Join(root, "prepare.env"),
 		"--ready-timeout-seconds", "5", "--ready-poll-milliseconds", "50"}
 	return args, dependencies{manager: manager, uid: uid, home: home}, nil
 }

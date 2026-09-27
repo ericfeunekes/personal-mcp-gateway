@@ -7,7 +7,6 @@ covers:
   - scripts/release-local.sh
   - scripts/release-activation.sh
   - scripts/update-local.sh
-  - scripts/verify-live.sh
   - cmd/gateway-smoke/
   - cmd/release-activation/
   - internal/releaseactivation/
@@ -169,9 +168,10 @@ GATEWAY_BIN="$HOME/.local/bin/personal-mcp-gateway"
 Release deliberately uses this checkout's `.env.local`, because that is the
 file the LaunchAgent wrapper consumes. It rejects another environment-file
 override and parses the file as bounded configuration data rather than shell
-code. Only the keys documented in `.env.example` plus the release readiness and
-health-file overrides are accepted; values may be unquoted or single/double
-quoted, and the only expansion is a leading `$HOME` or `${HOME}`. Commands,
+code. Only the keys documented in `.env.example` plus the release readiness
+overrides (`RELEASE_READY_TIMEOUT_SECONDS`, `RELEASE_READY_POLL_SECONDS`) are
+accepted; values may be unquoted or single/double quoted, and the only
+expansion is a leading `$HOME` or `${HOME}`. Commands,
 substitutions, escapes, continuations, duplicate or unknown keys, oversized
 files, and oversized lines fail closed with the fixed `release_config` record.
 Release strips tunnel credentials before invoking tests/builds/smokes and
@@ -215,9 +215,16 @@ runtime. `make restart`, `make install-launchagent`, and
 the same lock, require a clear transaction, and invoke private narrow host-effect
 adapters while retaining the lock. Do not invoke files under `scripts/internal/`
 directly; there are no public install/uninstall script alternatives.
-`make verify-live` checks the loaded LaunchAgent and the current loopback tunnel
-liveness/readiness endpoints without changing state. Release and rollback own
-their required readiness checks, so `make verify-live` is diagnostic and
+`make verify-live` checks the loaded LaunchAgent and the selected service's
+liveness/readiness endpoint (`SERVER=obsidian` by default; pass `SERVER=ynab`,
+`SERVER=obsidian-http`, or `SERVER=ynab-http` for the others) by polling under
+the service's own bounded readiness timeout; it never unloads or restarts the
+job and never mutates transaction state. Unlike `make restart`,
+`make install-launchagent`, and `make uninstall-launchagent`, it does not
+require a clear transaction: it always dispatches through the current
+controller, so `make release && make verify-live` also works while that
+release is still `pending`, before `make release-accept`. Release and rollback
+own their required readiness checks, so `make verify-live` is diagnostic and
 one-time evidence rather than an extra transaction transition.
 
 ## State And Authority
@@ -231,10 +238,13 @@ terminal commands select the pinned controller and revalidate its hash under the
 lock, so mutable checkout, `.build`, or environment drift cannot silently replace
 the authority that created the transaction. Wrapper/config fingerprint drift
 fails closed because the supervised runtime can no longer be proven.
-New transactions use manifest version 3 with per-service descriptors under the
-same single slot. Existing pending transactions finish with their pinned
-controller. Both services' configuration and wrapper fingerprints are checked
-before terminal operations; do not edit either during an active release.
+New transactions use manifest version 4 with per-service descriptors, in the
+fixed canonical order obsidian, ynab, obsidian-http, ynab-http, under the same
+single slot; obsidian is always present and the other three are captured only
+when already loaded. Existing pending transactions from an earlier pinned
+controller finish unchanged under their own manifest version. Every captured
+service's configuration and wrapper fingerprints are checked before terminal
+operations; do not edit any of them during an active release.
 
 ## Proof Boundary
 

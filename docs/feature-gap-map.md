@@ -6,6 +6,7 @@ covers:
   - docs/requirements/
   - docs/gateway.md
   - docs/obsidian.md
+  - docs/runbooks/local-release.md
 ---
 
 # Feature Gap Map
@@ -24,3 +25,4 @@ covers:
 | GAP-OBS-009 | proof | `docs/obsidian.md` / `docs/requirements/obsidian-filesystem-tools.md` | The accepted five-tool summaries have local JSONL/SQLite proof plus live model-driven `ls`, `grep`, and continued `read_many` telemetry; graph-tool summaries have not been proven. |
 | GAP-OBS-010 | implementation | `docs/obsidian.md` / `docs/requirements/obsidian-filesystem-tools.md` | Live request-local `backlinks` and `path_between` are not implemented for pre-activation benchmark and proof. |
 | GAP-OBS-013 | remaining formats | `docs/requirements/obsidian-document-reading.md` / Issue #12 | PDF is activated under the 7,000,000-byte raw ceiling after local byte/MIME, capacity, resource, cleanup, and telemetry gates plus authenticated small text/visual, scanned visual/OCR, and exact-ceiling tunnel/ChatGPT journeys. Issue #12 owns text/code, rich-document, presentation, and spreadsheet/delimited representations until each is activated or explicitly dispositioned under its evidence and approval contract. |
+| GAP-RELEASE-001 | implementation | `docs/runbooks/local-release.md` | The release-activation manifest still accepts legacy version-2/3 shapes, records Obsidian twice (once through the manifest's flat legacy fields, again as a duplicate `Services[0]` descriptor built from those same fields), and rehashes the shared release artifacts once per captured service rather than once per observation (~1-2 GB of hashing per release under the lifecycle lock). Dropping v2/v3 handling, storing Obsidian only once, and hashing once per observation is a deferred manifest restructure with no target release yet. |

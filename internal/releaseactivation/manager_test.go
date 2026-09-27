@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -629,6 +630,55 @@ func TestManagerRejectsAuthorityIdentityAndEventBeforeCleanupOrObservation(t *te
 	}
 }
 
+// TestManagerProbeRunsWhileTransactionActiveWithoutOrphanCleanup proves the
+// contrast at the center of Probe's contract: unlike WithClear, it must
+// succeed while a transaction is active (verify-live has to work while a
+// release is pending) and it must never prune orphans.
+func TestManagerProbeRunsWhileTransactionActiveWithoutOrphanCleanup(t *testing.T) {
+	manager, runtime, request := newManagerFixture(t, true)
+	ctx := context.Background()
+
+	orphanCleanupFired := false
+	store, err := NewStoreAtWithHook(manager.Store.Root(), 501, func(point StoreHookPoint) error {
+		if point == StoreBeforeOrphanCleanup {
+			orphanCleanupFired = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.Store = store
+
+	if _, err := manager.Prepare(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	// Prepare itself prunes orphans before publishing; reset so the assertion
+	// below is about Probe alone.
+	orphanCleanupFired = false
+
+	called := false
+	var gotRuntime Runtime
+	if err := manager.Probe(ctx, func(_ context.Context, got Runtime) error {
+		called = true
+		gotRuntime = got
+		return nil
+	}); err != nil {
+		t.Fatalf("probe during an active transaction failed: %v", err)
+	}
+	if !called || gotRuntime != runtime {
+		t.Fatalf("probe callback = called %v, runtime match %v", called, gotRuntime == runtime)
+	}
+	if orphanCleanupFired {
+		t.Fatal("Probe pruned orphans; it must never do so, unlike WithClear")
+	}
+
+	// Contrast: the same active transaction still correctly rejects WithClear.
+	if err := manager.WithClear(ctx, func(context.Context, Runtime) error { return nil }); SanitizedError(err).Code != ErrorStateConflict {
+		t.Fatalf("WithClear during the same active transaction = %v, want state conflict", err)
+	}
+}
+
 func TestManagerWithClearAndBusyGate(t *testing.T) {
 	manager, runtime, request := newManagerFixture(t, true)
 	ctx := context.Background()
@@ -811,6 +861,10 @@ func (f *fakeManagerRuntime) ServiceLoaded(_ context.Context, m Manifest) (bool,
 	default:
 		return false, nil
 	}
+}
+
+func (f *fakeManagerRuntime) ReadyOnce(context.Context, Manifest) bool {
+	return f.ready
 }
 
 func (f *fakeManagerRuntime) InstallCandidate(_ context.Context, m Manifest, _ RuntimeArtifacts) error {
@@ -1181,6 +1235,105 @@ func TestFirstInstallRollbackBootsOutCapturedHTTPServicesInOrder(t *testing.T) {
 	if prepared == nil {
 		t.Fatal("prepared release disappeared")
 	}
+}
+
+// TestGatewayBinParsingMatchesShellLoaderGoldenTable runs the same raw
+// GATEWAY_BIN values through the real scripts/internal/release-config.sh
+// shell loader and through parseGatewayBinValue (the Go parser
+// validateServiceGatewayBinding uses), and checks they agree. The two must
+// agree exactly whenever the shell loader accepts a value that resolves to
+// an absolute path: that is the case a release's active environment file is
+// actually validated against. When the shell loader's result is not an
+// absolute path (for example a single-quoted "$HOME/..." literal, which bash
+// never expands), the Go parser is expected to reject it even though the
+// shell loader itself accepted the (unusable) literal string — Go's job is
+// to confirm the binding resolves to the target path, which a non-absolute
+// value can never do.
+func TestGatewayBinParsingMatchesShellLoaderGoldenTable(t *testing.T) {
+	configScript, err := filepath.Abs(filepath.Join("..", "..", "scripts", "internal", "release-config.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(configScript); err != nil {
+		t.Fatalf("release-config.sh not found at %s: %v", configScript, err)
+	}
+	home := t.TempDir()
+
+	cases := []string{
+		`/absolute/gateway`,
+		`relative/gateway`,
+		`$HOME`,
+		`$HOME/bin/gw`,
+		`${HOME}/bin/gw`,
+		`"$HOME/bin/gw"`,
+		`'$HOME/bin/gw'`,
+		`'/absolute/gateway'`,
+		`"/absolute/gateway"`,
+		`$OTHER/bin/gw`,
+		`"$OTHER/bin/gw"`,
+		`'$OTHER/bin/gw'`,
+		"`touch pwned`/gw",
+		`"a\b"`,
+		// Single-quoted values are bash literal text: backtick, backslash,
+		// and a double quote are ordinary characters inside single quotes,
+		// so the shell loader accepts all three unlike inside double quotes
+		// or a bare value.
+		`'/absolute/gate"way'`,
+		`'/absolute/gate\way'`,
+		"'/absolute/gate`way'",
+		// A double-quoted value allows an embedded single quote (only
+		// backtick, backslash, and a double quote are disallowed).
+		`"/absolute/gate'way"`,
+		// A bare (unquoted) value disallows embedded whitespace and "#",
+		// which the shell's line regex still captures into the raw value.
+		`/absolute/gate way`,
+		`/absolute/gate#way`,
+		// ${HOME}/ prefix expansion inside each quoting mode: double-quoted
+		// expands like bare; single-quoted stays literal (never absolute).
+		`"${HOME}/bin/gw"`,
+		`'${HOME}/bin/gw'`,
+	}
+
+	for _, raw := range cases {
+		t.Run(raw, func(t *testing.T) {
+			dir := t.TempDir()
+			envPath := filepath.Join(dir, "env")
+			if err := os.WriteFile(envPath, []byte("GATEWAY_BIN="+raw+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			shellValue, shellOK := runShellGatewayBinLoader(t, configScript, home, envPath)
+			shellAbs := shellOK && filepath.IsAbs(shellValue)
+
+			goValue, goOK := parseGatewayBinValue(raw, home)
+
+			if goOK != shellAbs {
+				t.Fatalf("accept mismatch: shell ok=%v value=%q (abs=%v); go ok=%v value=%q",
+					shellOK, shellValue, shellAbs, goOK, goValue)
+			}
+			if goOK && goValue != filepath.Clean(shellValue) {
+				t.Fatalf("value mismatch: shell=%q go=%q", shellValue, goValue)
+			}
+		})
+	}
+}
+
+// runShellGatewayBinLoader sources the real release-config.sh and runs
+// load_release_config against envPath with HOME=home, exactly as the
+// wrapper scripts do, returning the resulting GATEWAY_BIN value.
+func runShellGatewayBinLoader(t *testing.T, configScript, home, envPath string) (value string, ok bool) {
+	t.Helper()
+	script := `
+source "$1"
+HOME="$2" load_release_config "$3" || exit 1
+printf '%s' "$GATEWAY_BIN"
+`
+	cmd := exec.Command("bash", "-c", script, "bash", configScript, home, envPath)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", false
+	}
+	return string(output), true
 }
 
 func contains(values []string, want string) bool {

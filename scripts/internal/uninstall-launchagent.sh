@@ -4,7 +4,6 @@ set -euo pipefail
 home="${1:?}"
 uid="${2:?}"
 label="${3:?}"
-server="${4:-obsidian}"
 
 valid_label() {
   local candidate="$1"
@@ -14,10 +13,6 @@ valid_label() {
 
 [[ "$home" = /* && "$uid" =~ ^[0-9]+$ && "$home" != *$'\n'* && "$home" != *$'\r'* ]] || exit 2
 valid_label "$label" || exit 2
-case "$server" in
-  obsidian | ynab | obsidian-http | ynab-http) ;;
-  *) exit 2 ;;
-esac
 [[ -d "$home" && ! -L "$home" ]] || exit 2
 home="$(cd -P -- "$home" && pwd)"
 launch_agents_dir="$home/Library/LaunchAgents"

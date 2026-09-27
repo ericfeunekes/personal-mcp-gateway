@@ -88,7 +88,10 @@ targets acquire the release lock and invoke private narrow LaunchAgent adapters;
 do not invoke files under `scripts/internal/` directly. A first-install rollback
 unloads the job before removing the unproven target but preserves its
 plist/configuration, so run `make install-launchagent` before a later release if
-the job remains unloaded.
+the job remains unloaded. `make install-launchagent` itself never waits for
+readiness and never unloads an already-running job, even on failure, so a
+first install before `GATEWAY_BIN` exists still returns immediately; confirm
+the service actually came up with `make verify-live` afterward.
 
 Once the LaunchAgent exists, use the release flow rather than manually
 rebuilding its configured gateway binary. `make release` deploys the current

@@ -52,6 +52,13 @@ type Runtime interface {
 	RemoveTarget(context.Context, Manifest) error
 	InvokeInstallAdapter(context.Context, string, ...string) error
 	InvokeUninstallAdapter(context.Context, string, ...string) error
+	// ServiceLoaded observes launchd registration only. It intentionally does
+	// not treat a crashed child as absent: launchctl still reports the loaded
+	// job.
+	ServiceLoaded(context.Context, Manifest) (bool, error)
+	// ReadyOnce probes health/ready endpoints exactly once, with no polling or
+	// retry. It reports readiness only, independent of launchd registration.
+	ReadyOnce(context.Context, Manifest) bool
 }
 
 // CommandResult is captured in memory and is never written by Runtime.
@@ -155,6 +162,13 @@ func (r *OSRuntime) Observe(ctx context.Context, m Manifest, controllerPath stri
 // treat a crashed child as absent: launchctl still reports the loaded job.
 func (r *OSRuntime) ServiceLoaded(ctx context.Context, m Manifest) (bool, error) {
 	return r.launchAgentLoaded(ctx, m)
+}
+
+// ReadyOnce exposes the private single-attempt readiness probe used inside
+// WaitReady's poll loop, for callers (verify-live) that want exactly one
+// bounded check rather than bounded polling.
+func (r *OSRuntime) ReadyOnce(ctx context.Context, m Manifest) bool {
+	return r.readyOnce(ctx, m)
 }
 
 func (r *OSRuntime) InstallCandidate(ctx context.Context, m Manifest, artifacts RuntimeArtifacts) error {

@@ -122,8 +122,12 @@ Source fetch may occur outside the lifecycle lock because it does not mutate the
 checkout. Final clear-state, branch, tree, HEAD, and fetched-ref validation plus
 the fast-forward occur while holding the same lock used by release preparation.
 Repo-owned restart, LaunchAgent install, and LaunchAgent uninstall are also
-clear-only, lock-held administrative effects. The adapters that invoke
-`launchctl` remain private implementation details.
+clear-only, lock-held administrative effects. Repo-owned verify-live is not: it
+is a read-only probe that never unloads or restarts a job, dispatches through
+the current controller even while a release is pending, and reuses the
+service's bounded readiness poll to report liveness without mutating the
+lifecycle lock or transaction state. The adapters that invoke `launchctl`
+remain private implementation details.
 
 ## Quality Attributes
 

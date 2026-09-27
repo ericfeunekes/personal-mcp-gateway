@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="${1:?}"
-home="${2:?}"
-uid="${3:?}"
-label="${4:?}"
-server="${5:-obsidian}"
+home="${1:?}"
+uid="${2:?}"
+label="${3:?}"
+runner_path="${4:?}"
+stdout_path="${5:?}"
+stderr_path="${6:?}"
+repo_root="${7:?}"
 
 valid_label() {
   local candidate="$1"
@@ -27,53 +29,49 @@ reject_xml_controls() {
   [[ "$1" != *$'\n'* && "$1" != *$'\r'* ]]
 }
 
-[[ "$repo_root" = /* && "$home" = /* && "$uid" =~ ^[0-9]+$ ]] || exit 2
+[[ "$home" = /* && "$uid" =~ ^[0-9]+$ && "$runner_path" = /* && "$stdout_path" = /* && "$stderr_path" = /* && "$repo_root" = /* ]] || exit 2
 valid_label "$label" || exit 2
-case "$server" in
-  obsidian | ynab | obsidian-http | ynab-http) ;;
-  *) exit 2 ;;
-esac
-reject_xml_controls "$repo_root" && reject_xml_controls "$home" && reject_xml_controls "$label" || exit 2
-[[ -d "$repo_root" && -d "$home" && ! -L "$repo_root" && ! -L "$home" ]] || exit 2
+reject_xml_controls "$home" && reject_xml_controls "$label" &&
+  reject_xml_controls "$runner_path" && reject_xml_controls "$stdout_path" && reject_xml_controls "$stderr_path" &&
+  reject_xml_controls "$repo_root" || exit 2
+[[ -d "$home" && ! -L "$home" ]] || exit 2
+[[ -d "$repo_root" && ! -L "$repo_root" ]] || exit 2
 
-repo_root="$(cd -P -- "$repo_root" && pwd)"
 home="$(cd -P -- "$home" && pwd)"
+repo_root="$(cd -P -- "$repo_root" && pwd)"
 library_dir="$home/Library"
 launch_agents_dir="$library_dir/LaunchAgents"
-logs_dir="$library_dir/Logs"
-log_dir="$logs_dir/personal-mcp-gateway"
 plist_path="$launch_agents_dir/$label.plist"
-case "$server" in
-  obsidian | ynab)
-    runner_path="$repo_root/scripts/run-${server}-tunnel.sh"
-    ;;
-  obsidian-http | ynab-http)
-    runner_path="$repo_root/scripts/run-${server}.sh"
-    ;;
-esac
 
-[[ ! -L "$library_dir" && ! -L "$launch_agents_dir" && ! -L "$logs_dir" && ! -L "$log_dir" && ! -L "$plist_path" ]] || exit 2
+[[ ! -L "$library_dir" && ! -L "$launch_agents_dir" && ! -L "$plist_path" ]] || exit 2
 [[ "$(dirname -- "$plist_path")" == "$launch_agents_dir" && "$(basename -- "$plist_path")" == "$label.plist" ]] || exit 2
 [[ -f "$runner_path" && ! -L "$runner_path" ]] || exit 2
 
-mkdir -p -- "$launch_agents_dir" "$log_dir"
-[[ ! -L "$launch_agents_dir" && ! -L "$log_dir" ]] || exit 2
+mkdir -p -- "$launch_agents_dir"
+[[ ! -L "$launch_agents_dir" ]] || exit 2
 [[ "$(cd -P -- "$launch_agents_dir" && pwd)" == "$launch_agents_dir" ]] || exit 2
-[[ "$(cd -P -- "$log_dir" && pwd)" == "$log_dir" ]] || exit 2
+
+# stdout/stderr paths are caller-supplied arguments, not built from the
+# already-canonicalized $home the way launch_agents_dir is, so (unlike that
+# directory) there is no already-resolved baseline to re-check a leaf-only
+# symlink check against. Require both to canonicalize under the
+# canonicalized, trusted log root instead: this rejects a log path outside
+# personal-mcp-gateway's own log directory even if some component of it is a
+# symlink that a leaf-only check would miss.
+log_root="$home/Library/Logs/personal-mcp-gateway"
+mkdir -p -- "$log_root"
+[[ -d "$log_root" && ! -L "$log_root" ]] || exit 2
+canonical_log_root="$(cd -P -- "$log_root" && pwd)"
+for log_path in "$stdout_path" "$stderr_path"; do
+  log_dir="$(dirname -- "$log_path")"
+  mkdir -p -- "$log_dir"
+  [[ -d "$log_dir" && ! -L "$log_dir" ]] || exit 2
+  [[ "$(cd -P -- "$log_dir" && pwd)" == "$canonical_log_root" ]] || exit 2
+done
 
 label_xml="$(xml_escape "$label")"
 runner_xml="$(xml_escape "$runner_path")"
-repo_xml="$(xml_escape "$repo_root")"
-case "$server" in
-  obsidian | ynab)
-    stdout_path="$log_dir/${server}-tunnel.out.log"
-    stderr_path="$log_dir/${server}-tunnel.err.log"
-    ;;
-  obsidian-http | ynab-http)
-    stdout_path="$log_dir/${server}.out.log"
-    stderr_path="$log_dir/${server}.err.log"
-    ;;
-esac
+repo_root_xml="$(xml_escape "$repo_root")"
 stdout_xml="$(xml_escape "$stdout_path")"
 stderr_xml="$(xml_escape "$stderr_path")"
 
@@ -91,7 +89,7 @@ cat >"$tmp_plist" <<PLIST
     <string>$runner_xml</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>$repo_xml</string>
+  <string>$repo_root_xml</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -135,18 +133,13 @@ if launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
   launchctl bootout "gui/$uid" "$plist_path" >/dev/null 2>&1 || true
 fi
 
-bootstrapped=0
-cleanup_failed_install() {
-  if (( bootstrapped )); then
-    launchctl bootout "gui/$uid" "$plist_path" >/dev/null 2>&1 || true
-  fi
-}
-trap cleanup_failed_install ERR
+# Install must never unload a job on failure: once bootstrap below succeeds,
+# nothing in the rest of this script unloads it again, even if a later step
+# (kickstart or the final print) fails. Readiness is confirmed separately
+# with `make verify-live`, not by this adapter rolling itself back.
 launchctl bootstrap "gui/$uid" "$plist_path"
-bootstrapped=1
 # RunAtLoad already started the job. A killing kickstart here would land inside
 # launchd's ThrottleInterval and stall the respawn past the controller's child
 # deadline, so only ensure it is running.
 launchctl kickstart "gui/$uid/$label"
 launchctl print "gui/$uid/$label"
-trap - ERR

@@ -45,7 +45,10 @@ selection=""
 select_controller() {
   selected=""
   selection=""
-  if [[ -e "$active" || -L "$active" ]]; then
+  # verify-live is a read-only probe that must work while a release is
+  # pending, so it always dispatches through the current checked-out
+  # controller and never through the pinned transaction authority.
+  if [[ "$command" != "verify-live" && ( -e "$active" || -L "$active" ) ]]; then
     if [[ ! -d "$active" || -L "$active" || ! -f "$authority" || -L "$authority" || ! -x "$authority" ]]; then
       return 1
     fi

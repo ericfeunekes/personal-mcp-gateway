@@ -51,9 +51,9 @@ if [[ ! -x "$mcp_command" ]]; then
   fail "repo-local MCP stdio wrapper is missing or not executable."
 fi
 
-profile_name="${TUNNEL_CLIENT_PROFILE:-obsidian-stdio}"
-profile_dir="${TUNNEL_CLIENT_PROFILE_DIR:-${TMPDIR:-/tmp}/personal-mcp-gateway/tunnel-client-profiles}"
-health_url_file="${TUNNEL_HEALTH_URL_FILE:-/tmp/personal-mcp-gateway/tunnel-health.url}"
+profile_name="obsidian-stdio"
+profile_dir="${TMPDIR:-/tmp}/personal-mcp-gateway/tunnel-client-profiles"
+health_url_file="/tmp/personal-mcp-gateway/tunnel-health.url"
 health_listen_addr="${TUNNEL_HEALTH_LISTEN_ADDR:-127.0.0.1:0}"
 log_format="${TUNNEL_LOG_FORMAT:-json}"
 

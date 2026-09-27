@@ -7,7 +7,6 @@ repo_root="$(cd -- "$script_dir/.." && pwd)"
 env_file="$repo_root/.env.local"
 make_command="${MAKE:-make}"
 go_command="${GO:-go}"
-uid="$(id -u)"
 readonly report_limit=1048576
 readonly report_capture_limit=$((report_limit + 1))
 
@@ -72,7 +71,6 @@ unset CONTROL_PLANE_API_KEY OPENAI_API_KEY YNAB_TOKEN
 
 candidate="${GATEWAY_CANDIDATE:-$repo_root/.build/personal-mcp-gateway}"
 controller="${RELEASE_ACTIVATION_CANDIDATE:-$repo_root/.build/release-activation}"
-label="${LAUNCHD_LABEL:-com.ericfeunekes.personal-mcp-gateway.obsidian-tunnel}"
 
 if [[ -z "${GATEWAY_BIN:-}" ]]; then
   fail release_config 'release configuration is invalid'
@@ -106,9 +104,6 @@ if [[ -L "$candidate" || -L "$GATEWAY_BIN" ]]; then
 fi
 if [[ -e "$candidate" && -e "$GATEWAY_BIN" && "$candidate" -ef "$GATEWAY_BIN" ]]; then
   fail release_config 'release configuration is invalid'
-fi
-if ! launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
-  fail runtime_unavailable 'supervised runtime is unavailable'
 fi
 
 if ! "$make_command" --no-print-directory -C "$repo_root" test >/dev/null 2>&1; then
@@ -225,7 +220,6 @@ if ! env GOCACHE="${GOCACHE:-$repo_root/.gocache}" "$go_command" run ./cmd/gatew
   "$functional_report" "$performance_report" "$resource_report" "$document_report" >/dev/null 2>&1; then
   fail release_smoke_failed 'release candidate report set is invalid'
 fi
-health_url_file="${TUNNEL_HEALTH_URL_FILE:-/tmp/personal-mcp-gateway/tunnel-health.url}"
 ready_timeout="${RELEASE_READY_TIMEOUT_SECONDS:-45}"
 ready_poll="${RELEASE_READY_POLL_SECONDS:-1}"
 if ! [[ "$ready_timeout" =~ ^[1-9][0-9]*$ ]]; then
@@ -252,9 +246,7 @@ exec "$script_dir/release-activation.sh" release \
   --candidate "$candidate" \
   --authority "$controller" \
   --target "$GATEWAY_BIN" \
-  --label "$label" \
   --repo-root "$repo_root" \
   --environment "$env_file" \
-  --health-url-file "$health_url_file" \
   --ready-timeout-seconds "$ready_timeout" \
   --ready-poll-milliseconds "$ready_poll_ms"

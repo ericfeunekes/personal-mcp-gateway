@@ -5,10 +5,9 @@ GOCACHE ?= $(CURDIR)/.gocache
 BUILD_DIR ?= $(CURDIR)/.build
 GATEWAY_CANDIDATE ?= $(BUILD_DIR)/personal-mcp-gateway
 RELEASE_ACTIVATION_CANDIDATE ?= $(BUILD_DIR)/release-activation
-LAUNCHD_LABEL ?= com.ericfeunekes.personal-mcp-gateway.obsidian-tunnel
 SERVER ?= obsidian
 
-export GO GOCACHE BUILD_DIR GATEWAY_CANDIDATE RELEASE_ACTIVATION_CANDIDATE LAUNCHD_LABEL SERVER
+export GO GOCACHE BUILD_DIR GATEWAY_CANDIDATE RELEASE_ACTIVATION_CANDIDATE SERVER
 
 .PHONY: help test test-ynab build build-release-controller release release-status release-accept release-rollback update restart verify-live install-launchagent uninstall-launchagent
 
@@ -22,8 +21,8 @@ help:
 	@echo "  make release-accept RELEASE_ID=<id>   Accept a model-proven candidate"
 	@echo "  make release-rollback RELEASE_ID=<id> Roll back an exact pending candidate"
 	@echo "  make update               Fast-forward local main from origin, then release"
-	@echo "  make restart              Restart the installed tunnel LaunchAgent"
-	@echo "  make verify-live          Verify LaunchAgent, tunnel liveness, and readiness"
+	@echo "  make restart              Restart the installed service LaunchAgent (SERVER=obsidian|ynab|obsidian-http|ynab-http)"
+	@echo "  make verify-live          Verify LaunchAgent, service liveness, and readiness"
 	@echo "  make install-launchagent  Install or refresh the user LaunchAgent"
 	@echo "  make uninstall-launchagent Remove the user LaunchAgent"
 
@@ -80,24 +79,32 @@ update:
 
 restart:
 	@if ! $(MAKE) --no-print-directory build-release-controller >/dev/null 2>&1; then echo 'error=release_build_failed message=release build failed' >&2; exit 1; fi
-	@case "$(SERVER)" in obsidian) label="$(LAUNCHD_LABEL)"; env_file="$(CURDIR)/.env.local"; default_health="/tmp/personal-mcp-gateway/tunnel-health.url"; health_overridable=1;; ynab) label="com.ericfeunekes.personal-mcp-gateway.ynab-tunnel"; env_file="$(CURDIR)/.env.ynab.local"; default_health="/tmp/personal-mcp-gateway/ynab-tunnel-health.url"; health_overridable=1;; obsidian-http) label="com.ericfeunekes.personal-mcp-gateway.obsidian-http"; env_file="$(CURDIR)/.env.local"; default_health="/tmp/personal-mcp-gateway/obsidian-http-health.url"; health_overridable=0;; ynab-http) label="com.ericfeunekes.personal-mcp-gateway.ynab-http"; env_file="$(CURDIR)/.env.ynab.local"; default_health="/tmp/personal-mcp-gateway/ynab-http-health.url"; health_overridable=0;; *) echo 'error=usage message=invalid server' >&2; exit 2;; esac; \
-	if ! source "$(CURDIR)/scripts/internal/release-config.sh" >/dev/null 2>&1; then echo 'error=release_config message=release configuration is invalid' >&2; exit 1; fi; \
-	if [[ -f "$$env_file" ]] && ! load_release_config "$$env_file"; then echo 'error=release_config message=release configuration is invalid' >&2; exit 1; fi; \
-	if [[ "$$health_overridable" == "1" ]]; then default_health="$${TUNNEL_HEALTH_URL_FILE:-$$default_health}"; fi; \
-	./scripts/release-activation.sh restart --repo-root "$(CURDIR)" --server "$(SERVER)" --label "$$label" --health-url-file "$$default_health"
+	@( \
+	  case "$(SERVER)" in \
+	    ynab|ynab-http) env_file="$(CURDIR)/.env.ynab.local" ;; \
+	    *) env_file="$(CURDIR)/.env.local" ;; \
+	  esac; \
+	  source "$(CURDIR)/scripts/internal/release-config.sh" >/dev/null 2>&1 || exit 1; \
+	  if [[ -f "$$env_file" ]] && ! load_release_config "$$env_file"; then exit 1; fi \
+	) || { echo 'error=release_config message=release configuration is invalid' >&2; exit 1; }
+	./scripts/release-activation.sh restart --repo-root "$(CURDIR)" --server "$(SERVER)"
 
 verify-live:
-	@SERVER="$(SERVER)" ./scripts/verify-live.sh
+	@if ! $(MAKE) --no-print-directory build-release-controller >/dev/null 2>&1; then echo 'error=release_build_failed message=release build failed' >&2; exit 1; fi
+	./scripts/release-activation.sh verify-live --repo-root "$(CURDIR)" --server "$(SERVER)"
 
 install-launchagent:
-	@case "$(SERVER)" in obsidian) env_file="$(CURDIR)/.env.local";; ynab) env_file="$(CURDIR)/.env.ynab.local";; obsidian-http) env_file="$(CURDIR)/.env.local";; ynab-http) env_file="$(CURDIR)/.env.ynab.local";; *) echo 'error=usage message=invalid server' >&2; exit 2;; esac; \
-	if ! source "$(CURDIR)/scripts/internal/release-config.sh" >/dev/null 2>&1; then echo 'error=release_config message=release configuration is invalid' >&2; exit 1; fi; \
-	if [[ -f "$$env_file" ]] && ! load_release_config "$$env_file"; then echo 'error=release_config message=release configuration is invalid' >&2; exit 1; fi
+	@( \
+	  case "$(SERVER)" in \
+	    ynab|ynab-http) env_file="$(CURDIR)/.env.ynab.local" ;; \
+	    *) env_file="$(CURDIR)/.env.local" ;; \
+	  esac; \
+	  source "$(CURDIR)/scripts/internal/release-config.sh" >/dev/null 2>&1 || exit 1; \
+	  if [[ -f "$$env_file" ]] && ! load_release_config "$$env_file"; then exit 1; fi \
+	) || { echo 'error=release_config message=release configuration is invalid' >&2; exit 1; }
 	@if ! $(MAKE) --no-print-directory build-release-controller >/dev/null 2>&1; then echo 'error=release_build_failed message=release build failed' >&2; exit 1; fi
-	@case "$(SERVER)" in obsidian) label="$(LAUNCHD_LABEL)";; ynab) label="com.ericfeunekes.personal-mcp-gateway.ynab-tunnel";; obsidian-http) label="com.ericfeunekes.personal-mcp-gateway.obsidian-http";; ynab-http) label="com.ericfeunekes.personal-mcp-gateway.ynab-http";; *) echo 'error=usage message=invalid server' >&2; exit 2;; esac; \
-	./scripts/release-activation.sh install-launchagent --repo-root "$(CURDIR)" --server "$(SERVER)" --label "$$label"
+	./scripts/release-activation.sh install-launchagent --repo-root "$(CURDIR)" --server "$(SERVER)"
 
 uninstall-launchagent:
 	@if ! $(MAKE) --no-print-directory build-release-controller >/dev/null 2>&1; then echo 'error=release_build_failed message=release build failed' >&2; exit 1; fi
-	@case "$(SERVER)" in obsidian) label="$(LAUNCHD_LABEL)";; ynab) label="com.ericfeunekes.personal-mcp-gateway.ynab-tunnel";; obsidian-http) label="com.ericfeunekes.personal-mcp-gateway.obsidian-http";; ynab-http) label="com.ericfeunekes.personal-mcp-gateway.ynab-http";; *) echo 'error=usage message=invalid server' >&2; exit 2;; esac; \
-	./scripts/release-activation.sh uninstall-launchagent --repo-root "$(CURDIR)" --server "$(SERVER)" --label "$$label"
+	./scripts/release-activation.sh uninstall-launchagent --repo-root "$(CURDIR)" --server "$(SERVER)"
