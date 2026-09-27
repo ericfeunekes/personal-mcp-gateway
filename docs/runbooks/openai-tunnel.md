@@ -88,7 +88,10 @@ targets acquire the release lock and invoke private narrow LaunchAgent adapters;
 do not invoke files under `scripts/internal/` directly. A first-install rollback
 unloads the job before removing the unproven target but preserves its
 plist/configuration, so run `make install-launchagent` before a later release if
-the job remains unloaded.
+the job remains unloaded. `make install-launchagent` itself never waits for
+readiness and never unloads an already-running job, even on failure, so a
+first install before `GATEWAY_BIN` exists still returns immediately; confirm
+the service actually came up with `make verify-live` afterward.
 
 Once the LaunchAgent exists, use the release flow rather than manually
 rebuilding its configured gateway binary. `make release` deploys the current
@@ -127,7 +130,7 @@ runtime. `make release-status` is available after interruption or for bounded
 diagnostics; it is not an extra mandatory step in the successful flow. For a
 connector-affecting release, never accept based only on `/healthz`, `/readyz`,
 `make verify-live`, local MCP smoke, or an old model journey. A lifecycle-only
-change follows cells 1 and 2 in `docs/TESTING.md` without inventing an unrelated
+change follows cell 1 in `docs/TESTING.md` without inventing an unrelated
 model journey. Record only the authenticated surface, server, metadata
 observation, selected tool/journey, sanitized release/hash identity, and outcome;
 do not record prompts, note names/content, vault paths, credentials, or raw
@@ -137,8 +140,8 @@ The accepted five-tool core-retrieval implementation has passed the merge
 suite, installed rollback drills, and a fresh authenticated
 `grep` -> `read_many` -> continued `read_many` pending-to-accept journey.
 The sanitized accepted record is maintained in `docs/TESTING.md`. Repeat the
-affected cell-3 rows after changing advertised tools. Release-lifecycle changes
-repeat cells 1 and 2 and add cell 3 only when the connector boundary also
+affected cell-2 rows after changing advertised tools. Release-lifecycle changes
+repeat cell 1 and add cell 2 only when the connector boundary also
 changed. The historical evidence below proves only the original tunnel setup.
 
 ## Current Boundary

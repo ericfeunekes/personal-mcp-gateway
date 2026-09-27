@@ -65,7 +65,7 @@ func TestYNABResponseBudgetOnEmittedHTTPAndStdioFrames(t *testing.T) {
 						req.Header.Set("Mcp-Method", "tools/call")
 						req.Header.Set("Mcp-Name", "list")
 						response := httptest.NewRecorder()
-						localmcp.StreamableHTTPHandler(server).ServeHTTP(response, req)
+						localmcp.StreamableHTTPHandlerWithNativeDocuments(server, nil, "").ServeHTTP(response, req)
 						if response.Code != http.StatusOK {
 							t.Fatalf("HTTP status %d: %s", response.Code, response.Body.String())
 						}

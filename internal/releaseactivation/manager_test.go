@@ -3,7 +3,9 @@ package releaseactivation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -359,9 +361,11 @@ func TestManagerReadinessFailureDurablyRestoresPrevious(t *testing.T) {
 	}
 	runtime.waitFailures = 1
 
+	// Readiness failed but rollback to the previous runtime was confirmed
+	// (asserted below), so this is rolled_back, not recovery_unconfirmed.
 	got, err := manager.Resume(ctx, prepared.ID)
-	if SanitizedError(err).Code != ErrorRecoveryUnconfirmed || got == nil {
-		t.Fatalf("resume = %#v, %v; want sanitized deployment failure", got, err)
+	if SanitizedError(err).Code != ErrorRolledBack || got == nil {
+		t.Fatalf("resume = %#v, %v; want sanitized rolled-back failure", got, err)
 	}
 	if runtime.installedHash != prepared.PreviousSHA256 || !runtime.ready {
 		t.Fatalf("recovered runtime = hash %q ready=%v", runtime.installedHash, runtime.ready)
@@ -626,6 +630,55 @@ func TestManagerRejectsAuthorityIdentityAndEventBeforeCleanupOrObservation(t *te
 	}
 }
 
+// TestManagerProbeRunsWhileTransactionActiveWithoutOrphanCleanup proves the
+// contrast at the center of Probe's contract: unlike WithClear, it must
+// succeed while a transaction is active (verify-live has to work while a
+// release is pending) and it must never prune orphans.
+func TestManagerProbeRunsWhileTransactionActiveWithoutOrphanCleanup(t *testing.T) {
+	manager, runtime, request := newManagerFixture(t, true)
+	ctx := context.Background()
+
+	orphanCleanupFired := false
+	store, err := NewStoreAtWithHook(manager.Store.Root(), 501, func(point StoreHookPoint) error {
+		if point == StoreBeforeOrphanCleanup {
+			orphanCleanupFired = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.Store = store
+
+	if _, err := manager.Prepare(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	// Prepare itself prunes orphans before publishing; reset so the assertion
+	// below is about Probe alone.
+	orphanCleanupFired = false
+
+	called := false
+	var gotRuntime Runtime
+	if err := manager.Probe(ctx, func(_ context.Context, got Runtime) error {
+		called = true
+		gotRuntime = got
+		return nil
+	}); err != nil {
+		t.Fatalf("probe during an active transaction failed: %v", err)
+	}
+	if !called || gotRuntime != runtime {
+		t.Fatalf("probe callback = called %v, runtime match %v", called, gotRuntime == runtime)
+	}
+	if orphanCleanupFired {
+		t.Fatal("Probe pruned orphans; it must never do so, unlike WithClear")
+	}
+
+	// Contrast: the same active transaction still correctly rejects WithClear.
+	if err := manager.WithClear(ctx, func(context.Context, Runtime) error { return nil }); SanitizedError(err).Code != ErrorStateConflict {
+		t.Fatalf("WithClear during the same active transaction = %v, want state conflict", err)
+	}
+}
+
 func TestManagerWithClearAndBusyGate(t *testing.T) {
 	manager, runtime, request := newManagerFixture(t, true)
 	ctx := context.Background()
@@ -657,6 +710,75 @@ func TestManagerWithClearAndBusyGate(t *testing.T) {
 	}
 }
 
+func TestSanitizedErrorClassifiesHostEffectRolledBackAndUpdateFailures(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		err         error
+		code        ErrorCode
+		wantMessage string
+	}{
+		{
+			name:        "host effect timeout",
+			err:         runtimeFailure("runtime restart", context.DeadlineExceeded),
+			code:        ErrorHostEffectFailed,
+			wantMessage: "runtime restart: timeout",
+		},
+		{
+			name: "host effect timeout through errors.Join, matching the adapter path",
+			// invokeAdapter and Restart build their cause with
+			// errors.Join(err, exitError(result.ExitCode)); a bounded child
+			// deadline reports err=context.DeadlineExceeded and a zero exit
+			// code, so exitError(0) is nil and errors.Join drops it.
+			err:         runtimeFailure("launch agent installation", errors.Join(context.DeadlineExceeded, exitError(0))),
+			code:        ErrorHostEffectFailed,
+			wantMessage: "launch agent installation: timeout",
+		},
+		{
+			name: "host effect exit status through errors.Join, matching the adapter path",
+			// A child that exits nonzero without a context error reports
+			// err=nil and a nonzero exit code, so errors.Join drops the nil
+			// err and keeps only the typed exit status.
+			err:         runtimeFailure("runtime bootout", errors.Join(nil, exitError(17))),
+			code:        ErrorHostEffectFailed,
+			wantMessage: "runtime bootout: exit_status=17",
+		},
+		{
+			name:        "host effect generic failure",
+			err:         runtimeFailure("readiness", errors.New("bounded readiness exhausted")),
+			code:        ErrorHostEffectFailed,
+			wantMessage: "readiness: failed",
+		},
+		{
+			name:        "rolled back after a runtime-operation cause",
+			err:         rolledBackFailure(causeOperation(runtimeFailure("runtime restart", errors.New("synthetic")))),
+			code:        ErrorRolledBack,
+			wantMessage: "candidate failed at runtime restart; previous runtime restored",
+		},
+		{
+			name:        "rolled back after a non-runtime cause falls back to a generic step name",
+			err:         rolledBackFailure(causeOperation(errors.New("plain cause"))),
+			code:        ErrorRolledBack,
+			wantMessage: "candidate failed at deployment; previous runtime restored",
+		},
+		{
+			name:        "update check failure",
+			err:         fmt.Errorf("branch check failed: %w", ErrUpdateCheckFailed),
+			code:        ErrorUpdateFailed,
+			wantMessage: "update precondition or fast-forward check failed",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SanitizedError(tt.err)
+			if got == nil || got.Code != tt.code || got.Message != tt.wantMessage {
+				t.Fatalf("SanitizedError(%v) = %#v, want code %s message %q", tt.err, got, tt.code, tt.wantMessage)
+			}
+			if strings.Contains(got.Message, "synthetic") || strings.Contains(got.Message, "plain cause") || strings.Contains(got.Message, "bounded readiness exhausted") {
+				t.Fatalf("sanitized error leaked cause text: %q", got.Message)
+			}
+		})
+	}
+}
+
 func TestSanitizedErrorNeverCarriesInternalCause(t *testing.T) {
 	secret := "/Users/private/vault token=do-not-print"
 	got := SanitizedError(errors.New(secret))
@@ -672,19 +794,21 @@ func TestSanitizedErrorNeverCarriesInternalCause(t *testing.T) {
 }
 
 type fakeManagerRuntime struct {
-	installedPresent bool
-	installedHash    string
-	ready            bool
-	unloaded         bool
-	runtimeDrift     bool
-	waitFailures     int
-	confirmOverride  func() (bool, error)
-	calls            []string
-	serviceRestarts  []string
-	serviceBootouts  []string
-	observeCalls     int
-	afterObserve     func()
-	ynabLoaded       bool
+	installedPresent   bool
+	installedHash      string
+	ready              bool
+	unloaded           bool
+	runtimeDrift       bool
+	waitFailures       int
+	confirmOverride    func() (bool, error)
+	calls              []string
+	serviceRestarts    []string
+	serviceBootouts    []string
+	observeCalls       int
+	afterObserve       func()
+	ynabLoaded         bool
+	obsidianHTTPLoaded bool
+	ynabHTTPLoaded     bool
 }
 
 func (f *fakeManagerRuntime) Observe(_ context.Context, m Manifest, controller string, artifacts RuntimeArtifacts) (Observed, error) {
@@ -727,10 +851,20 @@ func (f *fakeManagerRuntime) Observe(_ context.Context, m Manifest, controller s
 }
 
 func (f *fakeManagerRuntime) ServiceLoaded(_ context.Context, m Manifest) (bool, error) {
-	if m.LaunchAgentLabel == "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel" {
+	switch m.LaunchAgentLabel {
+	case "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel":
 		return f.ynabLoaded, nil
+	case "com.ericfeunekes.personal-mcp-gateway.obsidian-http":
+		return f.obsidianHTTPLoaded, nil
+	case "com.ericfeunekes.personal-mcp-gateway.ynab-http":
+		return f.ynabHTTPLoaded, nil
+	default:
+		return false, nil
 	}
-	return false, nil
+}
+
+func (f *fakeManagerRuntime) ReadyOnce(context.Context, Manifest) bool {
+	return f.ready
 }
 
 func (f *fakeManagerRuntime) InstallCandidate(_ context.Context, m Manifest, _ RuntimeArtifacts) error {
@@ -889,6 +1023,132 @@ func TestPrepareCapturesOnlyLoadedYNABServiceAndRestartsCapturedOrder(t *testing
 	}
 }
 
+func TestPrepareCapturesOnlyLoadedHTTPServicesAndRestartsCapturedOrder(t *testing.T) {
+	manager, runtime, request := newManagerFixture(t, true)
+	root := filepath.Dir(request.TargetPath)
+	write := func(name string) string {
+		path := filepath.Join(root, name)
+		if err := os.WriteFile(path, []byte(name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	obsidianHTTP := ServiceCandidate{Server: "obsidian-http", LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.obsidian-http",
+		PlistPath: write("obsidian-http.plist"), WrapperPath: write("run-obsidian-http.sh"),
+		StdoutPath: filepath.Join(root, "obsidian-http.out"), StderrPath: filepath.Join(root, "obsidian-http.err"),
+		EnvironmentPath: write("obsidian-http.env"), HealthURLFile: filepath.Join(root, "obsidian-http.health")}
+	ynabHTTP := ServiceCandidate{Server: "ynab-http", LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.ynab-http",
+		PlistPath: write("ynab-http.plist"), WrapperPath: write("run-ynab-http.sh"),
+		StdoutPath: filepath.Join(root, "ynab-http.out"), StderrPath: filepath.Join(root, "ynab-http.err"),
+		EnvironmentPath: write("ynab-http.env"), HealthURLFile: filepath.Join(root, "ynab-http.health")}
+	request.ServiceCandidates = []ServiceCandidate{obsidianHTTP, ynabHTTP}
+	prepared, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prepared.Services) != 1 || prepared.Services[0].Server != "obsidian" {
+		t.Fatalf("absent HTTP services captured: %#v", prepared.Services)
+	}
+
+	manager, runtime, request = newManagerFixture(t, true)
+	root = filepath.Dir(request.TargetPath)
+	write = func(name string) string {
+		path := filepath.Join(root, name)
+		if err := os.WriteFile(path, []byte(name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	obsidianHTTPEnv := write("obsidian-http.env")
+	if err := os.WriteFile(obsidianHTTPEnv, []byte("GATEWAY_BIN="+request.TargetPath+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ynabHTTPEnv := write("ynab-http.env")
+	if err := os.WriteFile(ynabHTTPEnv, []byte("GATEWAY_BIN="+request.TargetPath+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request.ServiceCandidates = []ServiceCandidate{
+		{Server: "obsidian-http", LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.obsidian-http",
+			PlistPath: write("obsidian-http.plist"), WrapperPath: write("run-obsidian-http.sh"),
+			StdoutPath: filepath.Join(root, "obsidian-http.out"), StderrPath: filepath.Join(root, "obsidian-http.err"),
+			EnvironmentPath: obsidianHTTPEnv, HealthURLFile: filepath.Join(root, "obsidian-http.health")},
+		{Server: "ynab-http", LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.ynab-http",
+			PlistPath: write("ynab-http.plist"), WrapperPath: write("run-ynab-http.sh"),
+			StdoutPath: filepath.Join(root, "ynab-http.out"), StderrPath: filepath.Join(root, "ynab-http.err"),
+			EnvironmentPath: ynabHTTPEnv, HealthURLFile: filepath.Join(root, "ynab-http.health")},
+	}
+	runtime.obsidianHTTPLoaded = true // loaded but not ready models a crashed child.
+	runtime.ynabHTTPLoaded = true
+	prepared, err = manager.Prepare(context.Background(), request)
+	if err != nil || len(prepared.Services) != 3 || prepared.Services[1].Server != "obsidian-http" || prepared.Services[2].Server != "ynab-http" {
+		t.Fatalf("loaded HTTP services not captured in canonical order: %#v err=%v", prepared, err)
+	}
+	if prepared.Services[1].MCPWrapperPath != "" || prepared.Services[1].MCPWrapperSHA256 != "" ||
+		prepared.Services[2].MCPWrapperPath != "" || prepared.Services[2].MCPWrapperSHA256 != "" {
+		t.Fatalf("HTTP service descriptor recorded an MCP wrapper: %#v", prepared.Services)
+	}
+	if _, err := manager.Resume(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"local.test.gateway", "com.ericfeunekes.personal-mcp-gateway.obsidian-http", "com.ericfeunekes.personal-mcp-gateway.ynab-http"}
+	if !reflect.DeepEqual(runtime.serviceRestarts, want) {
+		t.Fatalf("restart order = %v, want %v", runtime.serviceRestarts, want)
+	}
+}
+
+func TestPrepareCapturesAllLoadedAdditionalServicesInCanonicalOrder(t *testing.T) {
+	manager, runtime, request := newManagerFixture(t, true)
+	root := filepath.Dir(request.TargetPath)
+	write := func(name, contents string) string {
+		path := filepath.Join(root, name)
+		if err := os.WriteFile(path, []byte(contents), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	gatewayBinding := "GATEWAY_BIN=" + request.TargetPath + "\n"
+	runtime.ynabLoaded, runtime.obsidianHTTPLoaded, runtime.ynabHTTPLoaded = true, true, true
+	request.ServiceCandidates = []ServiceCandidate{
+		{Server: "ynab", LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel",
+			PlistPath: write("ynab.plist", "plist"), WrapperPath: write("run-ynab.sh", "wrapper"), MCPWrapperPath: write("run-ynab-mcp.sh", "mcp"),
+			StdoutPath: filepath.Join(root, "ynab.out"), StderrPath: filepath.Join(root, "ynab.err"),
+			EnvironmentPath: write("ynab.env", gatewayBinding), HealthURLFile: filepath.Join(root, "ynab.health")},
+		{Server: "obsidian-http", LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.obsidian-http",
+			PlistPath: write("obsidian-http.plist", "plist"), WrapperPath: write("run-obsidian-http.sh", "wrapper"),
+			StdoutPath: filepath.Join(root, "obsidian-http.out"), StderrPath: filepath.Join(root, "obsidian-http.err"),
+			EnvironmentPath: write("obsidian-http.env", gatewayBinding), HealthURLFile: filepath.Join(root, "obsidian-http.health")},
+		{Server: "ynab-http", LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.ynab-http",
+			PlistPath: write("ynab-http.plist", "plist"), WrapperPath: write("run-ynab-http.sh", "wrapper"),
+			StdoutPath: filepath.Join(root, "ynab-http.out"), StderrPath: filepath.Join(root, "ynab-http.err"),
+			EnvironmentPath: write("ynab-http.env", gatewayBinding), HealthURLFile: filepath.Join(root, "ynab-http.health")},
+	}
+	prepared, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantServers := []string{"obsidian", "ynab", "obsidian-http", "ynab-http"}
+	if len(prepared.Services) != len(wantServers) {
+		t.Fatalf("services = %#v, want servers %v", prepared.Services, wantServers)
+	}
+	for i, server := range wantServers {
+		if prepared.Services[i].Server != server {
+			t.Fatalf("services[%d].Server = %q, want %q (%#v)", i, prepared.Services[i].Server, server, prepared.Services)
+		}
+	}
+	if _, err := manager.Resume(context.Background(), ""); err != nil {
+		t.Fatal(err)
+	}
+	wantRestarts := []string{
+		"local.test.gateway",
+		"com.ericfeunekes.personal-mcp-gateway.ynab-tunnel",
+		"com.ericfeunekes.personal-mcp-gateway.obsidian-http",
+		"com.ericfeunekes.personal-mcp-gateway.ynab-http",
+	}
+	if !reflect.DeepEqual(runtime.serviceRestarts, wantRestarts) {
+		t.Fatalf("restart order = %v, want %v", runtime.serviceRestarts, wantRestarts)
+	}
+}
+
 func TestServiceGatewayBindingRejectsDifferentBinary(t *testing.T) {
 	root := t.TempDir()
 	environment := filepath.Join(root, ".env.ynab.local")
@@ -933,6 +1193,147 @@ func TestFirstInstallRollbackBootsOutCapturedServicesInOrder(t *testing.T) {
 	if prepared == nil {
 		t.Fatal("prepared release disappeared")
 	}
+}
+
+func TestFirstInstallRollbackBootsOutCapturedHTTPServicesInOrder(t *testing.T) {
+	manager, runtime, request := newManagerFixture(t, false)
+	root := filepath.Dir(request.TargetPath)
+	write := func(name, contents string) string {
+		path := filepath.Join(root, name)
+		if err := os.WriteFile(path, []byte(contents), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	gatewayBinding := "GATEWAY_BIN=" + request.TargetPath + "\n"
+	runtime.obsidianHTTPLoaded, runtime.ynabHTTPLoaded = true, true
+	request.ServiceCandidates = []ServiceCandidate{
+		{Server: "obsidian-http", LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.obsidian-http",
+			PlistPath: write("obsidian-http.plist", "plist"), WrapperPath: write("run-obsidian-http.sh", "wrapper"),
+			StdoutPath: filepath.Join(root, "obsidian-http.out"), StderrPath: filepath.Join(root, "obsidian-http.err"),
+			EnvironmentPath: write("obsidian-http.env", gatewayBinding), HealthURLFile: filepath.Join(root, "obsidian-http.health")},
+		{Server: "ynab-http", LaunchAgentLabel: "com.ericfeunekes.personal-mcp-gateway.ynab-http",
+			PlistPath: write("ynab-http.plist", "plist"), WrapperPath: write("run-ynab-http.sh", "wrapper"),
+			StdoutPath: filepath.Join(root, "ynab-http.out"), StderrPath: filepath.Join(root, "ynab-http.err"),
+			EnvironmentPath: write("ynab-http.env", gatewayBinding), HealthURLFile: filepath.Join(root, "ynab-http.health")},
+	}
+	prepared, err := manager.Prepare(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := manager.Resume(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Rollback(context.Background(), pending.ID); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"local.test.gateway", "com.ericfeunekes.personal-mcp-gateway.obsidian-http", "com.ericfeunekes.personal-mcp-gateway.ynab-http"}
+	if !reflect.DeepEqual(runtime.serviceBootouts, want) {
+		t.Fatalf("bootout order = %v, want %v", runtime.serviceBootouts, want)
+	}
+	if prepared == nil {
+		t.Fatal("prepared release disappeared")
+	}
+}
+
+// TestGatewayBinParsingMatchesShellLoaderGoldenTable runs the same raw
+// GATEWAY_BIN values through the real scripts/internal/release-config.sh
+// shell loader and through parseGatewayBinValue (the Go parser
+// validateServiceGatewayBinding uses), and checks they agree. The two must
+// agree exactly whenever the shell loader accepts a value that resolves to
+// an absolute path: that is the case a release's active environment file is
+// actually validated against. When the shell loader's result is not an
+// absolute path (for example a single-quoted "$HOME/..." literal, which bash
+// never expands), the Go parser is expected to reject it even though the
+// shell loader itself accepted the (unusable) literal string — Go's job is
+// to confirm the binding resolves to the target path, which a non-absolute
+// value can never do.
+func TestGatewayBinParsingMatchesShellLoaderGoldenTable(t *testing.T) {
+	configScript, err := filepath.Abs(filepath.Join("..", "..", "scripts", "internal", "release-config.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(configScript); err != nil {
+		t.Fatalf("release-config.sh not found at %s: %v", configScript, err)
+	}
+	home := t.TempDir()
+
+	cases := []string{
+		`/absolute/gateway`,
+		`relative/gateway`,
+		`$HOME`,
+		`$HOME/bin/gw`,
+		`${HOME}/bin/gw`,
+		`"$HOME/bin/gw"`,
+		`'$HOME/bin/gw'`,
+		`'/absolute/gateway'`,
+		`"/absolute/gateway"`,
+		`$OTHER/bin/gw`,
+		`"$OTHER/bin/gw"`,
+		`'$OTHER/bin/gw'`,
+		"`touch pwned`/gw",
+		`"a\b"`,
+		// Single-quoted values are bash literal text: backtick, backslash,
+		// and a double quote are ordinary characters inside single quotes,
+		// so the shell loader accepts all three unlike inside double quotes
+		// or a bare value.
+		`'/absolute/gate"way'`,
+		`'/absolute/gate\way'`,
+		"'/absolute/gate`way'",
+		// A double-quoted value allows an embedded single quote (only
+		// backtick, backslash, and a double quote are disallowed).
+		`"/absolute/gate'way"`,
+		// A bare (unquoted) value disallows embedded whitespace and "#",
+		// which the shell's line regex still captures into the raw value.
+		`/absolute/gate way`,
+		`/absolute/gate#way`,
+		// ${HOME}/ prefix expansion inside each quoting mode: double-quoted
+		// expands like bare; single-quoted stays literal (never absolute).
+		`"${HOME}/bin/gw"`,
+		`'${HOME}/bin/gw'`,
+	}
+
+	for _, raw := range cases {
+		t.Run(raw, func(t *testing.T) {
+			dir := t.TempDir()
+			envPath := filepath.Join(dir, "env")
+			if err := os.WriteFile(envPath, []byte("GATEWAY_BIN="+raw+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			shellValue, shellOK := runShellGatewayBinLoader(t, configScript, home, envPath)
+			shellAbs := shellOK && filepath.IsAbs(shellValue)
+
+			goValue, goOK := parseGatewayBinValue(raw, home)
+
+			if goOK != shellAbs {
+				t.Fatalf("accept mismatch: shell ok=%v value=%q (abs=%v); go ok=%v value=%q",
+					shellOK, shellValue, shellAbs, goOK, goValue)
+			}
+			if goOK && goValue != filepath.Clean(shellValue) {
+				t.Fatalf("value mismatch: shell=%q go=%q", shellValue, goValue)
+			}
+		})
+	}
+}
+
+// runShellGatewayBinLoader sources the real release-config.sh and runs
+// load_release_config against envPath with HOME=home, exactly as the
+// wrapper scripts do, returning the resulting GATEWAY_BIN value.
+func runShellGatewayBinLoader(t *testing.T, configScript, home, envPath string) (value string, ok bool) {
+	t.Helper()
+	script := `
+source "$1"
+HOME="$2" load_release_config "$3" || exit 1
+printf '%s' "$GATEWAY_BIN"
+`
+	cmd := exec.Command("bash", "-c", script, "bash", configScript, home, envPath)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", false
+	}
+	return string(output), true
 }
 
 func contains(values []string, want string) bool {

@@ -37,6 +37,9 @@ The chosen public namespace shape is the MCP server name, not dotted tool names.
 
 Obsidian and YNAB use one executable in separate processes with independent
 configuration, readiness, telemetry, and private tunnel identities. Each domain
+may also run an optional loopback HTTP process for tailnet clients (see
+[tailnet HTTP services](gateway.md#tailnet-http-services)); it shares that
+domain's config and state, never the other domain's. Each domain
 uses the same backend for stdio and HTTP; do not build separate transport-specific
 server implementations. The release controller owns one shared binary transaction
 and captures the loaded service set for both forward activation and rollback.
@@ -119,8 +122,12 @@ Source fetch may occur outside the lifecycle lock because it does not mutate the
 checkout. Final clear-state, branch, tree, HEAD, and fetched-ref validation plus
 the fast-forward occur while holding the same lock used by release preparation.
 Repo-owned restart, LaunchAgent install, and LaunchAgent uninstall are also
-clear-only, lock-held administrative effects. The adapters that invoke
-`launchctl` remain private implementation details.
+clear-only, lock-held administrative effects. Repo-owned verify-live is not: it
+is a read-only probe that never unloads or restarts a job, dispatches through
+the current controller even while a release is pending, and reuses the
+service's bounded readiness poll to report liveness without mutating the
+lifecycle lock or transaction state. The adapters that invoke `launchctl`
+remain private implementation details.
 
 ## Quality Attributes
 
@@ -139,6 +146,19 @@ clear-only, lock-held administrative effects. The adapters that invoke
 - No unrelated integration tools inside the `obsidian` server.
 - No custom MCP protocol implementation unless the official SDK blocks a proven tunnel or ChatGPT compatibility requirement.
 - The native-document serializer is the only current protocol contingency. It accepts only process-private one-shot payload markers and cannot dereference paths, URLs, or generic resources.
+
+## Accepted Exceptions
+
+`internal/resourceprobe` is a private controller with no MCP, CLI, or network
+surface. `FromEnvironment` activates it only when `PERSONAL_MCP_GATEWAY_RESOURCE_PROBE_FDS`
+names two inherited pipe file descriptors that pass strict access-mode and
+pipe-type checks; without that environment variable, `cmd/gateway`'s startup
+gets a nil controller back and runs with no probe at all. When active, it
+serves exactly two commands, `gc` and `snapshot`, over those private pipes and
+replies with aggregate counters only — heap stats and activity totals — never
+vault paths, tool arguments, or content. This is the one runtime contingency
+outside ordinary MCP request handling, and it stays fenced to a test harness's
+inherited descriptors rather than becoming a general control channel.
 
 ## Current Gaps
 

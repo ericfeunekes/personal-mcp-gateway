@@ -16,10 +16,13 @@ import (
 
 // These are realistic-local composition tests, not actual LaunchAgent tests:
 // the shell dispatcher, controller command logic, Manager, Store, OSRuntime,
-// child-process capture, and loopback HTTP probes are real. A test-binary-only
-// seam supplies the synthetic Store instead of exercising production passwd
-// lookup; launchctl and the supervised process that publishes its loopback URL
-// are deterministic local fakes.
+// child-process capture, and loopback HTTP probes are real. Test-binary-only
+// seams (see cmd/release-activation main_test.go's TestMain) supply the
+// synthetic Store instead of exercising production passwd lookup, and
+// relocate serviceTable's healthURLFile entries off the real
+// /tmp/personal-mcp-gateway paths so a dispatched admin command can never
+// touch a real health-marker file; launchctl and the supervised process that
+// publishes its loopback URL are deterministic local fakes.
 func TestReleaseActivationRealisticLocalComposition(t *testing.T) {
 	controller := buildRealReleaseController(t)
 
@@ -39,7 +42,7 @@ func TestReleaseActivationRealisticLocalComposition(t *testing.T) {
 		}
 		fixture.extraEnv = append(fixture.extraEnv, "RELEASE_ACTIVATION_CANDIDATE="+lookalike)
 
-		stdout, stderr, exit := fixture.dispatch(t, "restart", "--repo-root", fixture.repo, "--label", "com.example.realistic-local", "--health-url-file", fixture.healthFile)
+		stdout, stderr, exit := fixture.dispatch(t, "restart", "--repo-root", fixture.repo)
 		assertCompositionResult(t, stdout, stderr, exit, "state=clear action=restart\n", "", 0)
 		fixture.assertClear(t)
 		if _, err := os.Lstat(filepath.Join(filepath.Dir(filepath.Dir(lookalike)), "lock")); !os.IsNotExist(err) {
@@ -150,8 +153,99 @@ func TestReleaseActivationRealisticLocalComposition(t *testing.T) {
 		fixture.extraEnv = append(fixture.extraEnv, "LAUNCHCTL_HOSTILE=1")
 		fixture.seedPrepared(t, "hostile-candidate")
 		stdout, stderr, exit := fixture.dispatch(t, "resume-if-active")
-		assertCompositionResult(t, stdout, stderr, exit, "", "error=recovery_unconfirmed message=recovery could not be confirmed\n", 1)
+		// resume-if-active's first step observes current state before any
+		// decision is made; launchctl print failing here is a host-effect
+		// adapter failure with a known exit status, not an unconfirmed
+		// recovery, so it reports the fixed host_effect_failed record. The
+		// hostile stderr payload (path-shaped secret sentinel) must still
+		// never reach either channel.
+		assertCompositionResult(t, stdout, stderr, exit, "", "error=host_effect_failed message=supervisor observation: exit_status=9\n", 1)
 		assertNoSentinel(t, stdout, stderr)
+	})
+
+	// verify-live is the one admin command decision #6 calls out for its own
+	// dispatcher-level coverage: it runs through the real OSRuntime (not a
+	// fake Manager/Runtime), so launchctl's four observable states each
+	// exercise a different real code path (launchAgentLoaded's not-found
+	// exit, its program-mismatch check, and WaitReady's bounded poll against
+	// a real HTTP health probe) instead of only a Go-level fake.
+	t.Run("verify-live observes real launchctl states through WaitReady", func(t *testing.T) {
+		t.Run("loaded and ready succeeds on the first poll", func(t *testing.T) {
+			fixture := newCompositionFixture(t, controller)
+			defer fixture.server.Close()
+			wrapperPath := filepath.Join(fixture.repo, "scripts", "run-obsidian-tunnel.sh")
+			if err := os.WriteFile(fixture.launchState, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(fixture.healthFile, []byte(fixture.server.URL+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			fixture.extraEnv = append(fixture.extraEnv,
+				"RELEASE_ACTIVATION_CANDIDATE="+controller,
+				"PERSONAL_MCP_GATEWAY_RELEASE_CONTROLLER_TEST_READY_BOUNDS=1:100",
+				"WRAPPER_PATH="+wrapperPath,
+			)
+			stdout, stderr, exit := fixture.dispatch(t, "verify-live", "--repo-root", fixture.repo)
+			assertCompositionResult(t, stdout, stderr, exit, "action=verify-live result=ready\n", "", 0)
+		})
+
+		t.Run("unloaded exhausts the bounded poll", func(t *testing.T) {
+			fixture := newCompositionFixture(t, controller)
+			defer fixture.server.Close()
+			wrapperPath := filepath.Join(fixture.repo, "scripts", "run-obsidian-tunnel.sh")
+			// fixture.launchState is deliberately left absent: the fake
+			// launchctl's "print" case exits 113 (not found) whenever it is
+			// missing, so launchAgentLoaded reports not-loaded rather than an
+			// error, and WaitReady's poll must run to its bound before
+			// reporting failure. The poll is set to exactly one attempt
+			// (timeout shorter than the poll interval) so the bound is
+			// reached by attempt exhaustion, deterministically, rather than
+			// racing a real wall-clock deadline against local exec overhead.
+			fixture.extraEnv = append(fixture.extraEnv,
+				"RELEASE_ACTIVATION_CANDIDATE="+controller,
+				"PERSONAL_MCP_GATEWAY_RELEASE_CONTROLLER_TEST_READY_BOUNDS=1:2000",
+				"WRAPPER_PATH="+wrapperPath,
+			)
+			stdout, stderr, exit := fixture.dispatch(t, "verify-live", "--repo-root", fixture.repo)
+			assertCompositionResult(t, stdout, stderr, exit, "", "error=host_effect_failed message=readiness: failed\n", 1)
+		})
+
+		t.Run("wrong checkout's program is reported as runtime drift", func(t *testing.T) {
+			fixture := newCompositionFixture(t, controller)
+			defer fixture.server.Close()
+			if err := os.WriteFile(fixture.launchState, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// WRAPPER_PATH intentionally stays fixture.wrapper (never equal to
+			// the --repo-root-derived path the real controller compares
+			// against), so launchctl print's reported program can never match.
+			fixture.extraEnv = append(fixture.extraEnv,
+				"RELEASE_ACTIVATION_CANDIDATE="+controller,
+				"PERSONAL_MCP_GATEWAY_RELEASE_CONTROLLER_TEST_READY_BOUNDS=1:100",
+			)
+			stdout, stderr, exit := fixture.dispatch(t, "verify-live", "--repo-root", fixture.repo)
+			assertCompositionResult(t, stdout, stderr, exit, "", "error=runtime_drift message=supervised runtime configuration changed\n", 1)
+		})
+
+		t.Run("loaded but not ready exhausts the bounded poll", func(t *testing.T) {
+			fixture := newCompositionFixture(t, controller)
+			defer fixture.server.Close()
+			wrapperPath := filepath.Join(fixture.repo, "scripts", "run-obsidian-tunnel.sh")
+			if err := os.WriteFile(fixture.launchState, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// fixture.healthFile is deliberately left absent: readyOnce cannot
+			// read a health URL, so it reports not-ready on every attempt even
+			// though the job itself is loaded. One attempt (see the unloaded
+			// case above) keeps the bound deterministic.
+			fixture.extraEnv = append(fixture.extraEnv,
+				"RELEASE_ACTIVATION_CANDIDATE="+controller,
+				"PERSONAL_MCP_GATEWAY_RELEASE_CONTROLLER_TEST_READY_BOUNDS=1:2000",
+				"WRAPPER_PATH="+wrapperPath,
+			)
+			stdout, stderr, exit := fixture.dispatch(t, "verify-live", "--repo-root", fixture.repo)
+			assertCompositionResult(t, stdout, stderr, exit, "", "error=host_effect_failed message=readiness: failed\n", 1)
+		})
 	})
 }
 
@@ -171,7 +265,7 @@ func newCompositionFixture(t *testing.T, controller string) *compositionFixture 
 		stateRoot: filepath.Join(home, "Library", "Application Support", "personal-mcp-gateway", "release", "obsidian"),
 		target:    filepath.Join(root, "installed", "gateway"), wrapper: filepath.Join(root, "bindings", "run-tunnel.sh"),
 		mcpWrapper: filepath.Join(root, "bindings", "run-mcp.sh"), plist: filepath.Join(root, "bindings", "agent.plist"),
-		environment: filepath.Join(root, "bindings", "gateway.env"), healthFile: filepath.Join(root, "runtime", "health-url"),
+		environment: filepath.Join(root, "bindings", "gateway.env"), healthFile: filepath.Join(root, "runtime", "tunnel-health.url"),
 		controller: controller, launchState: filepath.Join(root, "runtime", "loaded"), candidate: filepath.Join(root, "sources", "candidate"),
 	}
 	for _, path := range []string{fixture.target, fixture.wrapper, fixture.mcpWrapper, fixture.plist, fixture.environment, fixture.healthFile, fixture.candidate} {
@@ -228,6 +322,13 @@ esac
 	fixture.extraEnv = []string{
 		"PASSWD_HOME=" + home,
 		"PERSONAL_MCP_GATEWAY_RELEASE_CONTROLLER_TEST_PASSWD_HOME=" + home,
+		// Relocates the test-built controller's serviceTable healthURLFile
+		// entries under fixture.healthFile's directory instead of the real
+		// /tmp/personal-mcp-gateway paths, so an admin command (restart,
+		// verify-live, install-launchagent) dispatched in this test can
+		// never read or delete a real health-marker file. See
+		// cmd/release-activation main_test.go's TestMain.
+		"PERSONAL_MCP_GATEWAY_RELEASE_CONTROLLER_TEST_HEALTH_ROOT=" + filepath.Dir(fixture.healthFile),
 		"LAUNCHCTL_STATE=" + fixture.launchState,
 		"WRAPPER_PATH=" + fixture.wrapper,
 		"HEALTH_FILE=" + fixture.healthFile,

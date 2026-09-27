@@ -52,6 +52,13 @@ type Runtime interface {
 	RemoveTarget(context.Context, Manifest) error
 	InvokeInstallAdapter(context.Context, string, ...string) error
 	InvokeUninstallAdapter(context.Context, string, ...string) error
+	// ServiceLoaded observes launchd registration only. It intentionally does
+	// not treat a crashed child as absent: launchctl still reports the loaded
+	// job.
+	ServiceLoaded(context.Context, Manifest) (bool, error)
+	// ReadyOnce probes health/ready endpoints exactly once, with no polling or
+	// retry. It reports readiness only, independent of launchd registration.
+	ReadyOnce(context.Context, Manifest) bool
 }
 
 // CommandResult is captured in memory and is never written by Runtime.
@@ -121,8 +128,13 @@ func (r *OSRuntime) Observe(ctx context.Context, m Manifest, controllerPath stri
 	if observed.WrapperSHA256, err = hashRuntimeFile(m.WrapperPath, true); err != nil {
 		return Observed{}, runtimeFailure("observation", err)
 	}
-	if observed.MCPWrapperSHA256, err = hashRuntimeFile(m.MCPWrapperPath, true); err != nil {
-		return Observed{}, runtimeFailure("observation", err)
+	// HTTP services exec the gateway binary directly with no second-level MCP
+	// stdio wrapper, so their manifest leaves MCPWrapperPath empty by design;
+	// leave the fingerprint empty too rather than hash a path that never exists.
+	if m.MCPWrapperPath != "" {
+		if observed.MCPWrapperSHA256, err = hashRuntimeFile(m.MCPWrapperPath, true); err != nil {
+			return Observed{}, runtimeFailure("observation", err)
+		}
 	}
 	if observed.EnvironmentSHA256, err = hashRuntimeFile(m.EnvironmentPath, false); err != nil {
 		return Observed{}, runtimeFailure("observation", err)
@@ -150,6 +162,13 @@ func (r *OSRuntime) Observe(ctx context.Context, m Manifest, controllerPath stri
 // treat a crashed child as absent: launchctl still reports the loaded job.
 func (r *OSRuntime) ServiceLoaded(ctx context.Context, m Manifest) (bool, error) {
 	return r.launchAgentLoaded(ctx, m)
+}
+
+// ReadyOnce exposes the private single-attempt readiness probe used inside
+// WaitReady's poll loop, for callers (verify-live) that want exactly one
+// bounded check rather than bounded polling.
+func (r *OSRuntime) ReadyOnce(ctx context.Context, m Manifest) bool {
+	return r.readyOnce(ctx, m)
 }
 
 func (r *OSRuntime) InstallCandidate(ctx context.Context, m Manifest, artifacts RuntimeArtifacts) error {
@@ -533,11 +552,20 @@ func runtimeFailure(operation string, cause error) error {
 	return &runtimeError{operation: operation, cause: cause}
 }
 
+// exitStatusError carries a child's exit status so SanitizedError's cause
+// classification can extract it without formatting or relaying any child
+// output.
+type exitStatusError struct {
+	code int
+}
+
+func (e *exitStatusError) Error() string { return fmt.Sprintf("child exited with status %d", e.code) }
+
 func exitError(code int) error {
 	if code == 0 {
 		return nil
 	}
-	return fmt.Errorf("child exited with status %d", code)
+	return &exitStatusError{code: code}
 }
 
 type execRunner struct {

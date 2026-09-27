@@ -17,7 +17,7 @@ const (
 	ModeHTTP  Mode = "http"
 
 	DefaultHTTPAddr     = "127.0.0.1:8765"
-	DefaultYNABHTTPAddr = "127.0.0.1:8766"
+	DefaultYNABHTTPAddr = "127.0.0.1:8768"
 	ServerObsidian      = "obsidian"
 	ServerYNAB          = "ynab"
 
@@ -33,6 +33,7 @@ type Config struct {
 	YNABExportRoot string
 	ObsidianRoot   string
 	Addr           string
+	AllowedHost    string
 	Telemetry      string
 	TelemetryDB    string
 }
@@ -61,6 +62,7 @@ func Parse(args []string) (Config, error) {
 	fs.StringVar(&cfg.TelemetryDB, "telemetry-db", "", "absolute path to structured telemetry SQLite database")
 	if mode == ModeHTTP {
 		fs.StringVar(&cfg.Addr, "addr", "", "loopback HTTP listen address")
+		fs.StringVar(&cfg.AllowedHost, "allowed-host", "", "one exact non-loopback Host name accepted on the loopback listener")
 	}
 
 	if err := fs.Parse(args[1:]); err != nil {
@@ -156,6 +158,14 @@ func Validate(cfg Config) (Config, error) {
 		if err := ValidateLoopbackAddr(cfg.Addr); err != nil {
 			return Config{}, err
 		}
+		if cfg.AllowedHost != "" {
+			if !validDNSName(cfg.AllowedHost) {
+				return Config{}, errors.New("allowed host must be one exact DNS name")
+			}
+			cfg.AllowedHost = strings.ToLower(cfg.AllowedHost)
+		}
+	} else if cfg.AllowedHost != "" {
+		return Config{}, errors.New("allowed host is valid only in http mode")
 	}
 
 	return cfg, nil
@@ -191,6 +201,29 @@ func ValidateLoopbackAddr(addr string) error {
 		return errors.New("http address host must be loopback")
 	}
 	return nil
+}
+
+// validDNSName accepts one exact multi-label DNS name: no port, wildcard, IP
+// literal, trailing dot, or empty label.
+func validDNSName(name string) bool {
+	if len(name) > 253 || net.ParseIP(name) != nil {
+		return false
+	}
+	labels := strings.Split(name, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, label := range labels {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func RootAccessible(root string) bool {

@@ -7,7 +7,6 @@ covers:
   - scripts/release-local.sh
   - scripts/release-activation.sh
   - scripts/update-local.sh
-  - scripts/verify-live.sh
   - cmd/gateway-smoke/
   - cmd/release-activation/
   - internal/releaseactivation/
@@ -39,9 +38,6 @@ path is:
    accepted activation proof for unaffected mutation, native-document, and
    lifecycle surfaces; do not replay those journeys as general release
    ceremony.
-   A lifecycle change's installed rollback drill consumes the first pending
-   transaction; after that drill returns `clear`, rerun `make release` from the
-   same clean commit and use the second pending ID for acceptance.
 3. Run `make release-accept RELEASE_ID=<full-id>` only after the selected proof
    succeeds. If it does not complete, classify it using the dispatch
    evidence required by `docs/TESTING.md`. Roll back only when telemetry,
@@ -107,6 +103,20 @@ preserves the plist/configuration; run `make install-launchagent` before a later
 release if the job is no longer loaded. If recovery cannot be confirmed, the
 transaction and remaining evidence stay active rather than reporting success.
 
+A failed candidate whose rollback is confirmed reports the fixed
+`rolled_back` record, naming only the fixed step that failed (for example
+`launch agent installation` or `readiness`); it never restates cause detail.
+A private host-effect adapter invocation (launchctl restart/bootout/print, an
+install/uninstall adapter, or new-service cleanup) that itself fails, times
+out, or exits nonzero reports the fixed `host_effect_failed` record: the same
+kind of fixed step name plus a coarse `timeout`, `exit_status=<n>`, or
+`failed` class, never child stdout/stderr, paths, or environment data. `make
+update`'s post-fetch branch/tree/HEAD/fast-forward checks report the fixed
+`update_failed` record on any check failure. `recovery_unconfirmed` is now
+reserved for the narrower case where the transaction's outcome genuinely
+cannot be determined, such as `launchctl print` itself failing while
+confirming a rollback or an unload.
+
 The summary and status records contain only bounded state, full release ID, and
 short commit/hash identity. They do not print the vault root, target path,
 tunnel identifier, runtime key, wrapper/config fingerprints, or child command
@@ -158,9 +168,10 @@ GATEWAY_BIN="$HOME/.local/bin/personal-mcp-gateway"
 Release deliberately uses this checkout's `.env.local`, because that is the
 file the LaunchAgent wrapper consumes. It rejects another environment-file
 override and parses the file as bounded configuration data rather than shell
-code. Only the keys documented in `.env.example` plus the release readiness and
-health-file overrides are accepted; values may be unquoted or single/double
-quoted, and the only expansion is a leading `$HOME` or `${HOME}`. Commands,
+code. Only the keys documented in `.env.example` plus the release readiness
+overrides (`RELEASE_READY_TIMEOUT_SECONDS`, `RELEASE_READY_POLL_SECONDS`) are
+accepted; values may be unquoted or single/double quoted, and the only
+expansion is a leading `$HOME` or `${HOME}`. Commands,
 substitutions, escapes, continuations, duplicate or unknown keys, oversized
 files, and oversized lines fail closed with the fixed `release_config` record.
 Release strips tunnel credentials before invoking tests/builds/smokes and
@@ -204,9 +215,16 @@ runtime. `make restart`, `make install-launchagent`, and
 the same lock, require a clear transaction, and invoke private narrow host-effect
 adapters while retaining the lock. Do not invoke files under `scripts/internal/`
 directly; there are no public install/uninstall script alternatives.
-`make verify-live` checks the loaded LaunchAgent and the current loopback tunnel
-liveness/readiness endpoints without changing state. Release and rollback own
-their required readiness checks, so `make verify-live` is diagnostic and
+`make verify-live` checks the loaded LaunchAgent and the selected service's
+liveness/readiness endpoint (`SERVER=obsidian` by default; pass `SERVER=ynab`,
+`SERVER=obsidian-http`, or `SERVER=ynab-http` for the others) by polling under
+the service's own bounded readiness timeout; it never unloads or restarts the
+job and never mutates transaction state. Unlike `make restart`,
+`make install-launchagent`, and `make uninstall-launchagent`, it does not
+require a clear transaction: it always dispatches through the current
+controller, so `make release && make verify-live` also works while that
+release is still `pending`, before `make release-accept`. Release and rollback
+own their required readiness checks, so `make verify-live` is diagnostic and
 one-time evidence rather than an extra transaction transition.
 
 ## State And Authority
@@ -220,10 +238,13 @@ terminal commands select the pinned controller and revalidate its hash under the
 lock, so mutable checkout, `.build`, or environment drift cannot silently replace
 the authority that created the transaction. Wrapper/config fingerprint drift
 fails closed because the supervised runtime can no longer be proven.
-New transactions use manifest version 3 with per-service descriptors under the
-same single slot. Existing pending transactions finish with their pinned
-controller. Both services' configuration and wrapper fingerprints are checked
-before terminal operations; do not edit either during an active release.
+New transactions use manifest version 4 with per-service descriptors, in the
+fixed canonical order obsidian, ynab, obsidian-http, ynab-http, under the same
+single slot; obsidian is always present and the other three are captured only
+when already loaded. Existing pending transactions from an earlier pinned
+controller finish unchanged under their own manifest version. Every captured
+service's configuration and wrapper fingerprints are checked before terminal
+operations; do not edit any of them during an active release.
 
 ## Proof Boundary
 
@@ -236,9 +257,7 @@ deliberately ends `pending`.
 
 Acceptance requires the applicable change-scoped proof in `docs/TESTING.md`,
 followed by the exact-ID accept command. A lifecycle-only change uses the
-process/crash/concurrency suite, isolated first-install unload check, installed
-pending-to-rollback drill, then a fresh release of the same clean commit and
-`make verify-live`; it needs a fresh
+process/crash/concurrency suite and `make verify-live`; it needs a fresh
 authenticated tool call only when the connector boundary also changed. These
 checks prove process-crash recovery on the tested machine; they do not prove
 power-loss durability, sleep/wake recovery, multi-day soak behavior, every
@@ -250,7 +269,7 @@ and release store; success requires real `launchctl print` absence, target
 removal, and a clear transaction after rollback.
 
 The current accepted proof record is maintained in `docs/TESTING.md`. Repeat
-cells 1 and 2 after changing lifecycle policy, dispatcher capture,
-installed-target replacement, or supervision bindings. Add cell 3 only when
+cell 1 after changing lifecycle policy, dispatcher capture,
+installed-target replacement, or supervision bindings. Add cell 2 only when
 the connector boundary also changed. Advertised MCP changes select their
-applicable cell-3 rows.
+applicable cell-2 rows.

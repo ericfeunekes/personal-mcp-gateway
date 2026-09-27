@@ -31,7 +31,7 @@ names. Keep Obsidian tools on `obsidian`. Use the existing official Go MCP SDK
 and transport-independent composition: stdio for local clients and the existing
 private OpenAI Secure MCP Tunnel approach for ChatGPT. The gateway's loopback
 Streamable HTTP `/mcp` transport remains available. Start the built gateway with
-`stdio --server ynab` or `http --server ynab`; HTTP defaults to `127.0.0.1:8766`.
+`stdio --server ynab` or `http --server ynab`; HTTP defaults to `127.0.0.1:8768`.
 The default server remains Obsidian. YNAB startup does not open the vault.
 
 The upstream API is `https://api.ynab.com/v1`. Bind credentials through private

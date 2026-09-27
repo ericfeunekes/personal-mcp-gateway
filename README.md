@@ -17,13 +17,16 @@ live YNAB activation is not part of the local implementation proof.
 
 Run personal MCP tools locally, keep the origin private, and publish access to ChatGPT only through OpenAI's outbound Secure MCP Tunnel. The gateway should make personal data useful to external AI tools without creating a broad public API or a generic filesystem proxy.
 
-The target is an MCP server named `obsidian` with read-only agent tools over the local vault:
+The target is an MCP server named `obsidian` with agent tools over the local vault. The core read-only retrieval tools are built (see Current Implementation below for the complete current surface, including mutation and native-document tools):
 
 - `ls`
 - `resolve`
 - `read`
 - `read_many`
 - `grep`
+
+Four graph tools describe the same target but are not yet implemented:
+
 - `links`
 - `traverse`
 - `backlinks`
@@ -37,8 +40,8 @@ Tool calls should be stateless. They may accept path-like arguments and an expli
 
 ## Current Implementation
 
-The accepted Obsidian server implements the five-tool core-retrieval slice plus
-the five-tool mutation delta:
+The accepted Obsidian server implements the five-tool core-retrieval slice, the
+five-tool mutation delta, and an activation-gated native-document tool:
 
 - `resolve`
 - shallow `ls`
@@ -50,13 +53,17 @@ the five-tool mutation delta:
 - structured exact-context `edit`
 - absent-destination `move`
 - permanent `delete`
+- `read_document`: activation-gated PDF capture; present only in builds compiled
+  with the `documentReadingBuild=pdf_candidate` flag (`make build`/`make
+  release`), not in a plain `go run ./cmd/gateway` dev build
 - stdio mode
 - loopback HTTP mode with `/mcp`, `/healthz`, and `/readyz`
 - SQLite-backed structured telemetry for MCP calls, HTTP requests, and gateway lifecycle events
 - local request, argument, path, telemetry-event, and tool-operation budgets
-- explicit MCP impact annotations: the original five tools and `stat` are
-  read-only, while `write`, `edit`, `move`, and `delete` are destructive; all
-  ten tools are closed-world and the mutation delta is precondition-idempotent
+- explicit MCP impact annotations: the original five tools, `stat`, and
+  `read_document` are read-only, while `write`, `edit`, `move`, and `delete`
+  are destructive; every advertised tool is closed-world and the mutation
+  delta is precondition-idempotent
 - `launchd` supervision with a measured idle footprint and automatic recovery
   after a forced tunnel-process exit
 
@@ -141,7 +148,12 @@ resources, and the authenticated journey covers live grouped retrieval.
 
 - OpenAI Secure MCP Tunnel is the external transport boundary for ChatGPT access.
 - Local services should not listen on a public interface.
-- Read-only tools are the default until write paths are explicitly designed.
+- Optional tailnet HTTP services expose Obsidian and YNAB to Eric's own
+  tailnet devices through `tailscale serve`. Tailscale policy is their only
+  access control: any admitted device gets full tool access, including writes.
+  See [tailnet HTTP services](docs/gateway.md#tailnet-http-services).
+- Reads are designed first; writes are added only through explicitly
+  designed, named tools with exact preconditions, never a generic write path.
 - Each integration should have its own MCP server name and narrow capabilities instead of generic file or API access.
 - Secrets stay local and out of the repo.
 - Logs should prove what was accessed without storing sensitive content by default.
@@ -149,11 +161,16 @@ resources, and the authenticated journey covers live grouped retrieval.
 
 ## Remaining Design And Proof Gaps
 
-- Tool compatibility: ChatGPT accepts the `obsidian` server and displays
-  exactly `resolve`, `ls`, `read`, `read_many`, and `grep` as read-only.
-  Representative `ls` and core-retrieval execution is proven. Codex
-  model-driven `resolve` is historical two-tool evidence; graph tools and
-  current five-tool Codex/ChatGPT-web `resolve` invocations remain unproven.
+- Tool compatibility: ChatGPT accepts the `obsidian` server and displays the
+  five-tool core-retrieval surface (`resolve`, `ls`, `read`, `read_many`,
+  `grep`) plus the five-tool mutation delta (`stat`, `write`, `edit`, `move`,
+  `delete`); the mutation delta's annotations and an authenticated
+  installed-connector journey are proven. The activation-gated `read_document`
+  PDF tool has authenticated ChatGPT proof for a small text/visual PDF, a
+  scanned/OCR PDF, and an exact 7,000,000-byte PDF. Graph tools (`links`,
+  `traverse`, `backlinks`, `path_between`) are not implemented and remain
+  unproven. See [Testing](docs/TESTING.md) and
+  [Testing History](docs/testing-history.md) for the full proof record.
 - Auth mapping: how OpenAI connector identity maps to allowed MCP capabilities.
 - Deployment: the current `launchd` runtime has passed bounded idle-impact and
   automatic crash-recovery proof; a multi-day soak and sleep/wake cycle are not

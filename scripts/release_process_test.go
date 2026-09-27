@@ -3,14 +3,11 @@ package scripts_test
 import (
 	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -151,7 +148,7 @@ exit 1
 	fakeGo := filepath.Join(repo, "fake-go")
 	writeExecutable(t, fakeGo, "#!/bin/sh\nexit 0\n")
 	sentinel := filepath.Join(repo, "restart-env-executed")
-	if err := os.WriteFile(filepath.Join(repo, ".env.local"), []byte("TUNNEL_HEALTH_URL_FILE=$(touch "+sentinel+")\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, ".env.local"), []byte("GATEWAY_BIN=$(touch "+sentinel+")\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	stdout, stderr, exit = run("restart", "GO="+fakeGo)
@@ -167,136 +164,6 @@ exit 1
 	}
 	if _, err := os.Stat(filepath.Join(repo, "adapter.log")); !os.IsNotExist(err) {
 		t.Fatalf("invalid install configuration reached adapter: %v", err)
-	}
-}
-
-func TestVerifyLiveChecksLaunchAgentLivenessAndReadiness(t *testing.T) {
-	var paths []string
-	var pathsMu sync.Mutex
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		pathsMu.Lock()
-		paths = append(paths, r.URL.Path)
-		pathsMu.Unlock()
-		switch r.URL.Path {
-		case "/healthz", "/readyz":
-			w.WriteHeader(http.StatusOK)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-
-	repo := newScriptRepo(t, "verify-live.sh")
-	binDir := filepath.Join(repo, "bin")
-	launchctlLog := filepath.Join(repo, "launchctl.log")
-	writeExecutable(t, filepath.Join(binDir, "launchctl"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$LAUNCHCTL_LOG\"\nprintf 'program = %s/scripts/run-obsidian-tunnel.sh\\n' \"$TEST_REPO\"\nexit 0\n")
-	healthFile := filepath.Join(t.TempDir(), "health.url")
-	if err := os.WriteFile(healthFile, []byte(server.URL+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := exec.Command(filepath.Join(repo, "scripts", "verify-live.sh"))
-	cmd.Env = append(testEnv(binDir),
-		"MCP_GATEWAY_ENV_FILE="+filepath.Join(t.TempDir(), "missing.env"),
-		"TUNNEL_HEALTH_URL_FILE="+healthFile,
-		"RELEASE_READY_TIMEOUT_SECONDS=2",
-		"RELEASE_READY_POLL_SECONDS=0.01",
-		"LAUNCHCTL_LOG="+launchctlLog,
-		"TEST_REPO="+repo,
-	)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("live verification failed: %v\n%s", err, output)
-	}
-	pathsMu.Lock()
-	got := strings.Join(paths, ",")
-	pathsMu.Unlock()
-	if got != "/healthz,/readyz" {
-		t.Fatalf("probed paths = %q, want healthz and readyz", got)
-	}
-	assertFileContains(t, launchctlLog, "print gui/")
-}
-
-func TestVerifyLiveTreatsEnvironmentFileAsData(t *testing.T) {
-	repo := newScriptRepo(t, "verify-live.sh")
-	envFile := filepath.Join(repo, ".env.local")
-	sentinel := filepath.Join(repo, "verify-env-executed")
-	if err := os.WriteFile(envFile, []byte("TUNNEL_HEALTH_URL_FILE=$(touch "+sentinel+")\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command(filepath.Join(repo, "scripts", "verify-live.sh"))
-	cmd.Env = append(testEnv(filepath.Join(repo, "bin")), "MCP_GATEWAY_ENV_FILE="+envFile)
-	output, err := cmd.CombinedOutput()
-	if err == nil || string(output) != "personal-mcp-gateway verification: local environment configuration is invalid.\n" {
-		t.Fatalf("verify hostile config err=%v output=%q", err, output)
-	}
-	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
-		t.Fatalf("verify-live executed environment-file content: %v", err)
-	}
-}
-
-func TestVerifyLiveRejectsDegradedReadiness(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/healthz" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		http.Error(w, "not ready", http.StatusServiceUnavailable)
-	}))
-	defer server.Close()
-
-	repo := newScriptRepo(t, "verify-live.sh")
-	binDir := filepath.Join(repo, "bin")
-	writeExecutable(t, filepath.Join(binDir, "launchctl"), "#!/bin/sh\nprintf 'program = %s/scripts/run-obsidian-tunnel.sh\\n' \"$TEST_REPO\"\nexit 0\n")
-	healthFile := filepath.Join(t.TempDir(), "health.url")
-	if err := os.WriteFile(healthFile, []byte(server.URL+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	cmd := exec.Command(filepath.Join(repo, "scripts", "verify-live.sh"))
-	cmd.Env = append(testEnv(binDir),
-		"MCP_GATEWAY_ENV_FILE="+filepath.Join(t.TempDir(), "missing.env"),
-		"TUNNEL_HEALTH_URL_FILE="+healthFile,
-		"RELEASE_READY_TIMEOUT_SECONDS=1",
-		"RELEASE_READY_POLL_SECONDS=0.01",
-		"TEST_REPO="+repo,
-	)
-	output, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Fatalf("verification accepted degraded readiness: %s", output)
-	}
-	if !strings.Contains(string(output), "did not become live and ready") {
-		t.Fatalf("degraded verification output = %q", output)
-	}
-}
-
-func TestVerifyLiveRejectsUnloadedLaunchAgent(t *testing.T) {
-	repo := newScriptRepo(t, "verify-live.sh")
-	binDir := filepath.Join(repo, "bin")
-	writeExecutable(t, filepath.Join(binDir, "launchctl"), "#!/bin/sh\nexit 3\n")
-	cmd := exec.Command(filepath.Join(repo, "scripts", "verify-live.sh"))
-	cmd.Env = append(testEnv(binDir),
-		"MCP_GATEWAY_ENV_FILE="+filepath.Join(t.TempDir(), "missing.env"),
-		"RELEASE_READY_TIMEOUT_SECONDS=1",
-	)
-	output, err := cmd.CombinedOutput()
-	if err == nil || !strings.Contains(string(output), "LaunchAgent is not loaded") {
-		t.Fatalf("unloaded verification err=%v output=%q", err, output)
-	}
-}
-
-func TestVerifyLiveRejectsLaunchAgentFromAnotherCheckout(t *testing.T) {
-	repo := newScriptRepo(t, "verify-live.sh")
-	binDir := filepath.Join(repo, "bin")
-	writeExecutable(t, filepath.Join(binDir, "launchctl"), "#!/bin/sh\nprintf 'program = /tmp/other-checkout/scripts/run-obsidian-tunnel.sh\\n'\n")
-	cmd := exec.Command(filepath.Join(repo, "scripts", "verify-live.sh"))
-	cmd.Env = append(testEnv(binDir),
-		"MCP_GATEWAY_ENV_FILE="+filepath.Join(t.TempDir(), "missing.env"),
-		"RELEASE_READY_TIMEOUT_SECONDS=1",
-	)
-	output, err := cmd.CombinedOutput()
-	if err == nil || !strings.Contains(string(output), "does not use this repo's tunnel wrapper") {
-		t.Fatalf("wrong-checkout verification err=%v output=%q", err, output)
 	}
 }
 
@@ -406,26 +273,28 @@ func TestLocalReleaseStopsOversizedReportProducerAtCaptureBound(t *testing.T) {
 	}
 }
 
-func TestLocalReleasePinsDefaultHealthMarkerOutsideCallerTMPDIR(t *testing.T) {
+// TestLocalReleaseLeavesCallerTMPDIRUntouched proves release-local.sh's own
+// report-capture directory (report_dir, cleaned by its EXIT trap) never
+// resolves under the caller's $TMPDIR: it is created via a literal
+// "/tmp/personal-mcp-gateway-release-reports.XXXXXX" mktemp template, not
+// "${TMPDIR:-/tmp}/...", so a caller-provided TMPDIR is never written to and
+// needs no cleanup of its own.
+func TestLocalReleaseLeavesCallerTMPDIRUntouched(t *testing.T) {
 	harness := newLocalReleaseHarness(t, releaseOptions{previous: true})
 	callerTMP := filepath.Join(harness.repo, "caller-tmp")
 	if err := os.MkdirAll(callerTMP, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	stdout, stderr, exit := harness.runChannels(
-		"TUNNEL_HEALTH_URL_FILE=",
-		"TMPDIR="+callerTMP,
-	)
+	stdout, stderr, exit := harness.runChannels("TMPDIR=" + callerTMP)
 	if exit != 0 || stderr != "" || !strings.HasPrefix(stdout, "state=pending id=release-0001") {
 		t.Fatalf("release exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
 	}
-	assertFileContains(t, harness.logFile, "health:/tmp/personal-mcp-gateway/tunnel-health.url\n")
 	entries, err := os.ReadDir(callerTMP)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(entries) != 0 {
-		t.Fatalf("private report capture was not cleaned: %v", entries)
+		t.Fatalf("release wrote into caller TMPDIR: %v", entries)
 	}
 }
 
@@ -914,8 +783,8 @@ func TestRuntimeWrappersParseQuotedAndHomePrefixedValues(t *testing.T) {
 		cmd := exec.Command(filepath.Join(repo, "scripts", "run-obsidian-mcp-stdio.sh"))
 		cmd.Env = envWithOverrides(testEnv(filepath.Join(repo, "bin")),
 			"HOME="+home,
-			"MCP_GATEWAY_ENV_FILE="+envFile,
 			"WRAPPER_LOG="+logFile,
+			"MCP_GATEWAY_ENV_FILE="+envFile,
 			"OBSIDIAN_ROOT=",
 			"GATEWAY_BIN=",
 			"MCP_GATEWAY_TELEMETRY_DB=",
@@ -935,16 +804,15 @@ func TestRuntimeWrappersParseQuotedAndHomePrefixedValues(t *testing.T) {
 		envFile := filepath.Join(repo, ".env.local")
 		config := "CONTROL_PLANE_TUNNEL_ID=\"tunnel-quoted\"\n" +
 			"CONTROL_PLANE_API_KEY='key with spaces'\n" +
-			"OBSIDIAN_ROOT=\"$HOME/vault\"\n" +
-			"TUNNEL_HEALTH_URL_FILE=\"${HOME}/state/health.url\"\n"
+			"OBSIDIAN_ROOT=\"$HOME/vault\"\n"
 		if err := os.WriteFile(envFile, []byte(config), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		cmd := exec.Command(filepath.Join(repo, "scripts", "run-obsidian-tunnel.sh"))
 		cmd.Env = envWithOverrides(testEnv(filepath.Join(repo, "bin")),
 			"HOME="+home,
-			"MCP_GATEWAY_ENV_FILE="+envFile,
 			"WRAPPER_LOG="+logFile,
+			"MCP_GATEWAY_ENV_FILE="+envFile,
 			"CONTROL_PLANE_TUNNEL_ID=",
 			"CONTROL_PLANE_API_KEY=",
 			"OBSIDIAN_ROOT=",
@@ -1244,16 +1112,6 @@ func newLocalReleaseHarness(t *testing.T, options releaseOptions) *localReleaseH
 	controllerReplacement := filepath.Join(repo, "fake-release-controller-b")
 	writeExecutable(t, controllerReplacement, "#!/bin/sh\nprintf '%s\\n' controller-b\n")
 	controllerRaceRecord := filepath.Join(repo, "controller-race-record")
-	verifyScript := `#!/bin/sh
-count=0
-if [ -f "$VERIFY_COUNT" ]; then count=$(cat "$VERIFY_COUNT"); fi
-count=$((count + 1))
-printf '%s' "$count" >"$VERIFY_COUNT"
-if [ "${FAIL_ALL_VERIFY:-0}" = 1 ]; then exit 1; fi
-if [ "${FAIL_FIRST_VERIFY:-0}" = 1 ] && [ "$count" = 1 ]; then exit 1; fi
-exit 0
-`
-	writeExecutable(t, filepath.Join(repo, "scripts", "verify-live.sh"), verifyScript)
 	writeExecutable(t, filepath.Join(binDir, "launchctl"), "#!/bin/sh\nprintf 'launchctl:%s\\n' \"$*\" >>\"$CALL_LOG\"\nexit 0\n")
 	writeExecutable(t, filepath.Join(binDir, "git"), `#!/bin/sh
 case "$*" in
@@ -1541,7 +1399,6 @@ exec "$REAL_INSTALL" "$@"
 		"TEST_REPO="+repo,
 		"MAKE=make",
 		"GO=go",
-		"TUNNEL_HEALTH_URL_FILE="+filepath.Join(repo, "health.url"),
 	)
 	return &localReleaseHarness{t: t, repo: repo, target: target, vault: vault, logFile: logFile, verifyCount: verifyCount,
 		smokeCandidateRecord: filepath.Join(repo, "smoke-candidate-path"), controllerRaceRecord: controllerRaceRecord,
@@ -1637,6 +1494,16 @@ clear_active() {
   rm -rf -- "$active"
 }
 
+readiness_check() {
+  local count=0
+  if [[ -f "$VERIFY_COUNT" ]]; then count=$(cat "$VERIFY_COUNT"); fi
+  count=$((count + 1))
+  printf '%s' "$count" >"$VERIFY_COUNT"
+  if [[ "${FAIL_ALL_VERIFY:-0}" == 1 ]]; then return 1; fi
+  if [[ "${FAIL_FIRST_VERIFY:-0}" == 1 && "$count" == 1 ]]; then return 1; fi
+  return 0
+}
+
 recover() {
   printf '%s' rolling_back >"$active/state"
   local target
@@ -1646,7 +1513,7 @@ recover() {
       error_line recovery_unconfirmed 'automatic binary restoration failed'
     fi
     launchctl kickstart -k "gui/$(id -u)/test-label" >/dev/null
-    if ! "$TEST_REPO/scripts/verify-live.sh"; then
+    if ! readiness_check; then
       error_line recovery_unconfirmed 'runtime recovery is unconfirmed'
     fi
     clear_active
@@ -1715,7 +1582,6 @@ case "${1:-status}" in
 	    target="$(argument --target "$@")"
 	    commit="$(argument --commit "$@")"
 	    dependency_sha256="$(argument --dependency-sha256 "$@")"
-	    printf 'health:%s\n' "$(argument --health-url-file "$@")" >>"$CALL_LOG"
     mkdir -p -- "$active"
     install -m 755 "$candidate" "$active/candidate"
     install -m 755 "$authority" "$active/authority"
@@ -1742,7 +1608,7 @@ case "${1:-status}" in
     fi
     mv -f -- "$next" "$target"
     launchctl kickstart -k "gui/$(id -u)/test-label" >/dev/null
-    if ! "$TEST_REPO/scripts/verify-live.sh"; then
+    if ! readiness_check; then
       recover >/dev/null
       error_line deployment_failed 'candidate readiness failed; previous runtime restored'
     fi

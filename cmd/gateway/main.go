@@ -79,7 +79,7 @@ func runWithContext(ctx context.Context, args []string, stderr io.Writer, auditF
 		activity = probe.Activity()
 		grepActivity = probe.GrepActivity()
 	}
-	application, err := app.NewWithActivities(cfg, log, activity, grepActivity)
+	application, err := app.New(cfg, log, app.Options{Activity: activity, GrepActivity: grepActivity})
 	if err != nil {
 		log.Event("gateway.start_failed", map[string]any{
 			"transport":  string(cfg.Mode),

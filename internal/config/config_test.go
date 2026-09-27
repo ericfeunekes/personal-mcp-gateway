@@ -76,3 +76,25 @@ func TestConfigErrorsDoNotLeakRoot(t *testing.T) {
 		t.Fatalf("Parse() error leaked host path: %v", err)
 	}
 }
+
+func TestAllowedHostIsOneExactDNSNameInHTTPMode(t *testing.T) {
+	root := t.TempDir()
+	valid, err := Parse([]string{"http", "--obsidian-root", root, "--telemetry", "off", "--allowed-host", "Mac.Example.ts.net"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if valid.AllowedHost != "mac.example.ts.net" {
+		t.Fatalf("allowed host = %q, want lower-cased exact name", valid.AllowedHost)
+	}
+	for _, host := range []string{"*.example.ts.net", "mac.example.ts.net:443", "100.64.0.1", "::1", "localhost", "mac.example.ts.net.", "a..b", "-bad.example", "bad_.example", "https://mac.example.ts.net"} {
+		if _, err := Parse([]string{"http", "--obsidian-root", root, "--telemetry", "off", "--allowed-host", host}); err == nil {
+			t.Fatalf("allowed host %q was accepted", host)
+		}
+	}
+	if _, err := Parse([]string{"stdio", "--obsidian-root", root, "--telemetry", "off", "--allowed-host", "mac.example.ts.net"}); err == nil {
+		t.Fatal("stdio mode accepted --allowed-host")
+	}
+	if _, err := Validate(Config{Mode: ModeStdio, ObsidianRoot: root, Telemetry: TelemetryOff, AllowedHost: "mac.example.ts.net"}); err == nil {
+		t.Fatal("stdio config accepted an allowed host")
+	}
+}

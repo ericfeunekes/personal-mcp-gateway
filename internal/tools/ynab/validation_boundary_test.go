@@ -66,7 +66,7 @@ func TestMCPCrossFieldValidationPreventsAllProviderEffects(t *testing.T) {
 			req.Header.Set("Mcp-Method", "tools/call")
 			req.Header.Set("Mcp-Name", c.verb)
 			response := httptest.NewRecorder()
-			localmcp.StreamableHTTPHandler(server).ServeHTTP(response, req)
+			localmcp.StreamableHTTPHandlerWithNativeDocuments(server, nil, "").ServeHTTP(response, req)
 			var wire struct {
 				Result struct {
 					IsError bool   `json:"isError"`

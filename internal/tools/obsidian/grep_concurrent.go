@@ -92,24 +92,12 @@ type grepConcurrentState struct {
 
 // grepConcurrentHooks is deliberately request-scoped and unexported. Tests
 // may gate a sequence and observe aggregate activity; normal calls pass nil.
+// It stays unexported so it is not reachable from production code outside
+// this package; tests that need it live in this package.
 type grepConcurrentHooks struct {
 	gate          func(context.Context, int) error
 	terminalEvent func(int)
 	observe       func(grepConcurrentSnapshot)
-}
-
-// GrepTestHooks is an internal-package test seam. It is never exposed through
-// MCP and normal descriptor construction passes nil.
-type GrepTestHooks struct {
-	Gate          func(context.Context, int) error
-	TerminalEvent func(sequence int)
-}
-
-func (h *GrepTestHooks) concurrentHooks() *grepConcurrentHooks {
-	if h == nil {
-		return nil
-	}
-	return &grepConcurrentHooks{gate: h.Gate, terminalEvent: h.TerminalEvent}
 }
 
 type grepConcurrentSnapshot struct {

@@ -3,9 +3,11 @@ package releaseactivation
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 // Manager is the sole persistence-facing lifecycle interpreter. ControllerPath
@@ -267,6 +269,24 @@ func (m *Manager) WithClear(ctx context.Context, effect func(context.Context, Ru
 	return effect(ctx, m.Runtime)
 }
 
+// Probe runs a read-only administrative effect under the same advisory lock
+// as every other transition, but without WithClear's clear-state requirement
+// or orphan cleanup. verify-live must succeed while a release is pending
+// (docs/runbooks/local-release.md requires checking liveness before accept),
+// and it never mutates recovery bookkeeping, so it does not need either
+// WithClear guard.
+func (m *Manager) Probe(ctx context.Context, effect func(context.Context, Runtime) error) error {
+	locked, err := m.acquire()
+	if err != nil {
+		return err
+	}
+	defer locked.Close()
+	if effect == nil {
+		return lifecycleError(ErrorStateConflict)
+	}
+	return effect(ctx, m.Runtime)
+}
+
 func (m *Manager) run(ctx context.Context, event Event, id ReleaseID, allowCurrentID bool) (*Manifest, error) {
 	locked, err := m.acquire()
 	if err != nil {
@@ -398,7 +418,7 @@ func (m *Manager) rollbackDeploymentFailure(ctx context.Context, locked *LockedS
 	if _, err := m.finishRollback(ctx, locked, decision.Next.Manifest, observed); err != nil {
 		return lifecycleError(ErrorRecoveryUnconfirmed)
 	}
-	return SanitizedError(cause)
+	return rolledBackFailure(causeOperation(cause))
 }
 
 func (m *Manager) finishAccept(ctx context.Context, locked *LockedStore, manifest *Manifest, id ReleaseID) (*Manifest, error) {
@@ -555,27 +575,24 @@ func (m *Manager) artifacts() RuntimeArtifacts {
 	}
 }
 
-type serviceLoadedRuntime interface {
-	ServiceLoaded(context.Context, Manifest) (bool, error)
-}
-
 // captureService keeps service discovery inside Prepare's lifecycle lock. A
 // loaded LaunchAgent is included even if its child has crashed; a missing job
 // is deliberately not installed as a side effect of release.
 func (m *Manager) captureService(ctx context.Context, base Manifest, candidate ServiceCandidate) (ServiceDescriptor, bool, error) {
-	if candidate.Server != "ynab" || !ValidLaunchAgentLabel(candidate.LaunchAgentLabel) ||
-		!absolutePaths(candidate.PlistPath, candidate.WrapperPath, candidate.MCPWrapperPath, candidate.StdoutPath, candidate.StderrPath, candidate.EnvironmentPath, candidate.HealthURLFile) {
+	// ynab is a tunnel service: it runs behind a second-level MCP stdio wrapper
+	// and must record it. obsidian-http/ynab-http exec the gateway binary
+	// directly over loopback HTTP with no such wrapper, so their candidate must
+	// leave MCPWrapperPath empty rather than alias the process wrapper.
+	tunnel := candidate.Server == "ynab"
+	http := candidate.Server == "obsidian-http" || candidate.Server == "ynab-http"
+	if (!tunnel && !http) || !ValidLaunchAgentLabel(candidate.LaunchAgentLabel) ||
+		!absolutePaths(candidate.PlistPath, candidate.WrapperPath, candidate.StdoutPath, candidate.StderrPath, candidate.EnvironmentPath, candidate.HealthURLFile) ||
+		(tunnel && !filepath.IsAbs(candidate.MCPWrapperPath)) || (http && candidate.MCPWrapperPath != "") {
 		return ServiceDescriptor{}, false, lifecycleError(ErrorStateMalformed)
 	}
 	probe := base
 	probe.LaunchAgentLabel, probe.PlistPath, probe.WrapperPath, probe.MCPWrapperPath = candidate.LaunchAgentLabel, candidate.PlistPath, candidate.WrapperPath, candidate.MCPWrapperPath
-	loadedRuntime, ok := m.Runtime.(serviceLoadedRuntime)
-	if !ok {
-		// Isolated lifecycle fakes that predate the optional second service have
-		// no launchd surface; they model the service as absent.
-		return ServiceDescriptor{}, false, nil
-	}
-	loaded, err := loadedRuntime.ServiceLoaded(ctx, probe)
+	loaded, err := m.Runtime.ServiceLoaded(ctx, probe)
 	if err != nil {
 		return ServiceDescriptor{}, false, err
 	}
@@ -595,8 +612,10 @@ func (m *Manager) captureService(ctx context.Context, base Manifest, candidate S
 	if descriptor.WrapperSHA256, hashErr = HashRegular(descriptor.WrapperPath); hashErr != nil {
 		return ServiceDescriptor{}, false, hashErr
 	}
-	if descriptor.MCPWrapperSHA256, hashErr = HashRegular(descriptor.MCPWrapperPath); hashErr != nil {
-		return ServiceDescriptor{}, false, hashErr
+	if tunnel {
+		if descriptor.MCPWrapperSHA256, hashErr = HashRegular(descriptor.MCPWrapperPath); hashErr != nil {
+			return ServiceDescriptor{}, false, hashErr
+		}
 	}
 	if descriptor.EnvironmentSHA256, hashErr = HashRegular(descriptor.EnvironmentPath); hashErr != nil {
 		return ServiceDescriptor{}, false, hashErr
@@ -629,22 +648,87 @@ func validateServiceGatewayBinding(environmentPath, plistPath, targetPath string
 		if value != "" {
 			return lifecycleError(ErrorStateMalformed)
 		}
-		if len(rawValue) >= 2 && ((rawValue[0] == '"' && rawValue[len(rawValue)-1] == '"') || (rawValue[0] == '\'' && rawValue[len(rawValue)-1] == '\'')) {
-			rawValue = rawValue[1 : len(rawValue)-1]
-		}
-		if strings.ContainsAny(rawValue, "`\\\"'") {
+		expanded, ok := parseGatewayBinValue(rawValue, home)
+		if !ok {
 			return lifecycleError(ErrorStateMalformed)
 		}
-		rawValue = strings.Replace(rawValue, "$HOME", home, 1)
-		if strings.Contains(rawValue, "$") || !filepath.IsAbs(rawValue) {
-			return lifecycleError(ErrorStateMalformed)
-		}
-		value = filepath.Clean(rawValue)
+		value = expanded
 	}
 	if value == "" || value != filepath.Clean(targetPath) {
 		return lifecycleError(ErrorStateMalformed)
 	}
 	return nil
+}
+
+// parseGatewayBinValue mirrors scripts/internal/release-config.sh's
+// load_release_config handling of one already-cut-at-"=" GATEWAY_BIN value:
+// it strips one matching pair of quotes and expands a leading $HOME/${HOME}
+// for a double-quoted or bare value only. A single-quoted value is bash
+// literal text with no expansion at all (release_config_expand_home_prefix is
+// never called for it in the shell loader), so it must stay literal here too.
+// The shell loader's disallowed-metacharacter set differs by quoting mode
+// (see load_release_config), so each mode is checked against exactly the
+// shell's set for that mode rather than one shared set for all three:
+//   - single-quoted: only an embedded "'" is disallowed (backtick, backslash,
+//     and '"' are ordinary characters inside single quotes in the shell).
+//   - double-quoted: an embedded "`", "\", or '"' is disallowed; an embedded
+//     "'" is allowed.
+//   - bare (unquoted): an embedded "`", "\", '"', "'", "#", or whitespace is
+//     disallowed.
+func parseGatewayBinValue(rawValue, home string) (string, bool) {
+	singleQuoted := len(rawValue) >= 2 && rawValue[0] == '\'' && rawValue[len(rawValue)-1] == '\''
+	doubleQuoted := len(rawValue) >= 2 && rawValue[0] == '"' && rawValue[len(rawValue)-1] == '"'
+	if singleQuoted || doubleQuoted {
+		rawValue = rawValue[1 : len(rawValue)-1]
+	}
+	switch {
+	case singleQuoted:
+		if strings.Contains(rawValue, "'") {
+			return "", false
+		}
+	case doubleQuoted:
+		if strings.ContainsAny(rawValue, "`\\\"") {
+			return "", false
+		}
+	default:
+		if strings.ContainsAny(rawValue, "`\\\"'#") || strings.ContainsFunc(rawValue, unicode.IsSpace) {
+			return "", false
+		}
+	}
+	expanded := rawValue
+	if !singleQuoted {
+		var ok bool
+		expanded, ok = expandHomePrefix(rawValue, home)
+		if !ok {
+			return "", false
+		}
+	}
+	if !filepath.IsAbs(expanded) {
+		return "", false
+	}
+	return filepath.Clean(expanded), true
+}
+
+// expandHomePrefix mirrors scripts/internal/release-config.sh's
+// release_config_expand_home_prefix exactly: only a leading $HOME or ${HOME}
+// expands, and any other "$" anywhere in the value is rejected rather than
+// substituted. The shell loader and this parser must accept and reject the
+// same values for GATEWAY_BIN.
+func expandHomePrefix(value, home string) (string, bool) {
+	switch {
+	case value == "$HOME":
+		return home, true
+	case strings.HasPrefix(value, "$HOME/"):
+		return home + "/" + strings.TrimPrefix(value, "$HOME/"), true
+	case value == "${HOME}":
+		return home, true
+	case strings.HasPrefix(value, "${HOME}/"):
+		return home + "/" + strings.TrimPrefix(value, "${HOME}/"), true
+	case strings.Contains(value, "$"):
+		return "", false
+	default:
+		return value, true
+	}
 }
 
 func (m *Manager) acquire() (*LockedStore, error) {
@@ -669,6 +753,46 @@ func pathExists(path string) (bool, error) {
 	return true, nil
 }
 
+// rollbackRecoveredError marks a deployment failure whose rollback was
+// confirmed. operation is the fixed, non-sensitive step that failed; it never
+// carries the underlying cause so SanitizedError cannot leak it.
+type rollbackRecoveredError struct {
+	operation string
+}
+
+func (e *rollbackRecoveredError) Error() string {
+	return "release " + e.operation + " failed; rollback confirmed"
+}
+
+func rolledBackFailure(operation string) error {
+	return &rollbackRecoveredError{operation: operation}
+}
+
+// causeOperation extracts the fixed operation string a runtimeError carries,
+// falling back to a generic step name when cause is not one (for example a
+// lifecycle decision rejection observed while rolling back).
+func causeOperation(cause error) string {
+	var re *runtimeError
+	if errors.As(cause, &re) {
+		return re.operation
+	}
+	return "deployment"
+}
+
+// causeClass reduces a host-effect cause to one of a fixed set of coarse,
+// non-sensitive classes. It never returns child stdout/stderr, paths, or
+// environment data.
+func causeClass(cause error) string {
+	if errors.Is(cause, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	var exit *exitStatusError
+	if errors.As(cause, &exit) {
+		return fmt.Sprintf("exit_status=%d", exit.code)
+	}
+	return "failed"
+}
+
 // SanitizedError maps internal/store/runtime failures to the stable public
 // taxonomy without preserving causes, paths, child output, or environment data.
 func SanitizedError(err error) *Error {
@@ -678,6 +802,14 @@ func SanitizedError(err error) *Error {
 	var lifecycle *Error
 	if errors.As(err, &lifecycle) {
 		return lifecycleError(lifecycle.Code)
+	}
+	var recovered *rollbackRecoveredError
+	if errors.As(err, &recovered) {
+		return &Error{Code: ErrorRolledBack, Message: fmt.Sprintf("candidate failed at %s; previous runtime restored", recovered.operation)}
+	}
+	var hostEffect *runtimeError
+	if errors.As(err, &hostEffect) {
+		return &Error{Code: ErrorHostEffectFailed, Message: fmt.Sprintf("%s: %s", hostEffect.operation, causeClass(hostEffect.cause))}
 	}
 	var topology *PathTopologyError
 	switch {
@@ -689,9 +821,21 @@ func SanitizedError(err error) *Error {
 		return lifecycleError(ErrorStateConflict)
 	case errors.Is(err, ErrStateMalformed):
 		return lifecycleError(ErrorStateMalformed)
+	case errors.Is(err, ErrUpdateCheckFailed):
+		return lifecycleError(ErrorUpdateFailed)
 	case errors.As(err, &topology):
 		return lifecycleError(ErrorStateMalformed)
 	default:
 		return lifecycleError(ErrorRecoveryUnconfirmed)
 	}
+}
+
+// HostEffectFailure sanitizes a private host-effect adapter's cause into the
+// stable host_effect_failed record. operation must be a fixed, non-sensitive
+// string; cause classification never surfaces child output, paths, or
+// environment data. Command adapters outside this package (for example
+// cmd/release-activation) use this to report launchctl/adapter failures
+// instead of collapsing them into recovery_unconfirmed.
+func HostEffectFailure(operation string, cause error) error {
+	return runtimeFailure(operation, cause)
 }

@@ -62,6 +62,31 @@ func TestReleaseActivationDispatcherExecsPinnedResume(t *testing.T) {
 	}
 }
 
+// TestReleaseActivationDispatcherVerifyLiveBypassesActiveAuthority proves
+// verify-live is the one command that never routes through a pinned active
+// authority: it must keep working as a read-only liveness probe while a
+// release is pending, so it always dispatches through the current
+// checked-out controller. Every other command still routes through the
+// pinned authority while the slot is active.
+func TestReleaseActivationDispatcherVerifyLiveBypassesActiveAuthority(t *testing.T) {
+	repo, binDir, home := newDispatcherRepo(t)
+	authority := filepath.Join(home, "Library", "Application Support", "personal-mcp-gateway", "release", "obsidian", "active", "authority")
+	writeExecutable(t, authority, "#!/bin/sh\nprintf 'pinned:%s\\n' \"$*\"\n")
+	current := filepath.Join(repo, "current-controller")
+	writeExecutable(t, current, "#!/bin/sh\nprintf 'current:%s\\n' \"$*\"\n")
+	extraEnv := []string{"RELEASE_ACTIVATION_CANDIDATE=" + current}
+
+	stdout, stderr, exit := runDispatcherEnv(t, repo, binDir, extraEnv, "verify-live", "--server", "obsidian")
+	if exit != 0 || stdout != "current:verify-live --server obsidian\n" || stderr != "" {
+		t.Fatalf("verify-live exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+
+	stdout, stderr, exit = runDispatcherEnv(t, repo, binDir, extraEnv, "restart", "--server", "obsidian")
+	if exit != 0 || stdout != "pinned:restart --server obsidian\n" || stderr != "" {
+		t.Fatalf("restart exit=%d stdout=%q stderr=%q", exit, stdout, stderr)
+	}
+}
+
 func TestReleaseActivationDispatcherExecutesPrivateReadOnlySnapshotAndRewritesAuthority(t *testing.T) {
 	repo, binDir, _ := newDispatcherRepo(t)
 	controller := filepath.Join(repo, "controller")

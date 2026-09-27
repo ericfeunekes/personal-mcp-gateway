@@ -837,6 +837,14 @@ func (r *crashRuntime) RemoveTarget(ctx context.Context, manifest Manifest) erro
 func (*crashRuntime) InvokeInstallAdapter(context.Context, string, ...string) error   { return nil }
 func (*crashRuntime) InvokeUninstallAdapter(context.Context, string, ...string) error { return nil }
 
+func (r *crashRuntime) ServiceLoaded(ctx context.Context, manifest Manifest) (bool, error) {
+	return r.osRuntime().ServiceLoaded(ctx, manifest)
+}
+
+func (r *crashRuntime) ReadyOnce(ctx context.Context, manifest Manifest) bool {
+	return r.osRuntime().ReadyOnce(ctx, manifest)
+}
+
 func (r *crashRuntime) osRuntime() *OSRuntime {
 	return &OSRuntime{
 		Runner:     crashLaunchctl{runtime: r},

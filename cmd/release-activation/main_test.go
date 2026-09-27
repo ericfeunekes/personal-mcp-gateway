@@ -5,8 +5,11 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,10 +18,12 @@ import (
 )
 
 const (
-	testID            = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	testHash          = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
-	testDependency    = "9999999999999999999999999999999999999999999999999999999999999999"
-	testPasswdHomeEnv = "PERSONAL_MCP_GATEWAY_RELEASE_CONTROLLER_TEST_PASSWD_HOME"
+	testID             = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	testHash           = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	testDependency     = "9999999999999999999999999999999999999999999999999999999999999999"
+	testPasswdHomeEnv  = "PERSONAL_MCP_GATEWAY_RELEASE_CONTROLLER_TEST_PASSWD_HOME"
+	testHealthRootEnv  = "PERSONAL_MCP_GATEWAY_RELEASE_CONTROLLER_TEST_HEALTH_ROOT"
+	testReadyBoundsEnv = "PERSONAL_MCP_GATEWAY_RELEASE_CONTROLLER_TEST_READY_BOUNDS"
 )
 
 func TestMain(m *testing.M) {
@@ -29,6 +34,33 @@ func TestMain(m *testing.M) {
 	_ = os.Unsetenv(testPasswdHomeEnv)
 	_ = os.Unsetenv("CONTROL_PLANE_API_KEY")
 	_ = os.Unsetenv("OPENAI_API_KEY")
+	// Test-binary-only seam: serviceTable's healthURLFile entries are fixed
+	// absolute /tmp/personal-mcp-gateway paths shared with the real gateway,
+	// so a composition test that dispatches a real "restart"/"verify-live"/
+	// "install-launchagent" through this test-built controller (see
+	// scripts/release_activation_integration_test.go) must never resolve
+	// them for real. This env var is read only here, never from production
+	// main(), and only relocates the leaf file name under a caller-chosen
+	// test root.
+	if healthRoot := os.Getenv(testHealthRootEnv); healthRoot != "" {
+		_ = os.Unsetenv(testHealthRootEnv)
+		relocateServiceTableHealthURLFiles(healthRoot)
+	}
+	// Test-binary-only seam: readyTimeoutSeconds/readyPollMilliseconds are
+	// fixed at 45s/1000ms for every server (decision #2's uniform semantics
+	// leaves no per-call override), which makes an "unloaded" or "not-ready"
+	// verify-live composition test take the full bound before it can observe
+	// the expected failure. This env var (format "<timeoutSeconds>:
+	// <pollMilliseconds>", read only here, never from production main())
+	// shrinks every entry's readiness bounds so that composition coverage
+	// stays fast and local instead of sleeping through the production bound.
+	if readyBounds := os.Getenv(testReadyBoundsEnv); readyBounds != "" {
+		_ = os.Unsetenv(testReadyBoundsEnv)
+		if err := relocateServiceTableReadyBounds(readyBounds); err != nil {
+			writeFailure(os.Stderr, releaseactivation.SanitizedError(err))
+			os.Exit(1)
+		}
+	}
 	store, err := releaseactivation.NewStoreAt(filepath.Join(home, "Library", "Application Support", "personal-mcp-gateway", "release", "obsidian"), os.Geteuid())
 	if err != nil {
 		writeFailure(os.Stderr, releaseactivation.SanitizedError(err))
@@ -40,6 +72,35 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	os.Exit(runWithDependencies(context.Background(), os.Args[1:], os.Stdout, os.Stderr, deps))
+}
+
+// relocateServiceTableHealthURLFiles rewrites every serviceTable entry's
+// healthURLFile to <root>/<original base name>, preserving the table's
+// per-server file names while moving them off the real /tmp health-marker
+// path. Only TestMain calls this.
+func relocateServiceTableHealthURLFiles(root string) {
+	for server, spec := range serviceTable {
+		spec.healthURLFile = filepath.Join(root, filepath.Base(spec.healthURLFile))
+		serviceTable[server] = spec
+	}
+}
+
+// relocateServiceTableReadyBounds rewrites every serviceTable entry's
+// readyTimeoutSeconds/readyPollMilliseconds to the given "<seconds>:
+// <milliseconds>" pair. Only TestMain calls this.
+func relocateServiceTableReadyBounds(raw string) error {
+	seconds, milliseconds, ok := strings.Cut(raw, ":")
+	timeoutSeconds, err1 := strconv.Atoi(seconds)
+	pollMilliseconds, err2 := strconv.Atoi(milliseconds)
+	if !ok || err1 != nil || err2 != nil || timeoutSeconds <= 0 || pollMilliseconds <= 0 {
+		return errors.New("malformed test ready bounds")
+	}
+	for server, spec := range serviceTable {
+		spec.readyTimeoutSeconds = timeoutSeconds
+		spec.readyPollMilliseconds = pollMilliseconds
+		serviceTable[server] = spec
+	}
+	return nil
 }
 
 func testControllerDependencies(store *releaseactivation.Store, uid int, home string) (dependencies, error) {
@@ -95,7 +156,10 @@ type fakeManager struct {
 	runtime        releaseactivation.Runtime
 	prepareCalls   int
 	resumeCalls    int
+	withClearCalls int
+	probeCalls     int
 	withClear      func(context.Context, func(context.Context, releaseactivation.Runtime) error) error
+	probe          func(context.Context, func(context.Context, releaseactivation.Runtime) error) error
 }
 
 func (f *fakeManager) Status(context.Context) (*releaseactivation.Manifest, error) {
@@ -134,8 +198,25 @@ func (f *fakeManager) Rollback(context.Context, releaseactivation.ReleaseID) (*r
 	return f.manifest, f.err
 }
 func (f *fakeManager) WithClear(ctx context.Context, effect func(context.Context, releaseactivation.Runtime) error) error {
+	f.withClearCalls++
 	if f.withClear != nil {
 		return f.withClear(ctx, effect)
+	}
+	if f.err != nil {
+		return f.err
+	}
+	return effect(ctx, f.runtime)
+}
+
+// Probe never gates on a clear transaction and never prunes orphans; unlike
+// WithClear, it is expected to run even while a release is pending, which is
+// why verify-live dispatches through it instead. withClearCalls stays 0 for
+// every Probe call so a regression that routes verify-live back through
+// WithClear is caught here rather than only against a live LaunchAgent.
+func (f *fakeManager) Probe(ctx context.Context, effect func(context.Context, releaseactivation.Runtime) error) error {
+	f.probeCalls++
+	if f.probe != nil {
+		return f.probe(ctx, effect)
 	}
 	if f.err != nil {
 		return f.err
@@ -174,6 +255,49 @@ func TestUpdateLockScopeHonorsCallerDeadline(t *testing.T) {
 	}
 }
 
+func TestUpdateAfterFetchGitCheckFailuresAreUpdateFailed(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRepo := func(t *testing.T, branch string) (repo, head string) {
+		t.Helper()
+		repo = t.TempDir()
+		runGit(t, git, "init", "-b", branch, repo)
+		runGit(t, git, "-C", repo, "config", "user.email", "test@example.invalid")
+		runGit(t, git, "-C", repo, "config", "user.name", "Release Test")
+		writeRaceFile(t, filepath.Join(repo, "payload.txt"), "initial\n", 0o600)
+		runGit(t, git, "-C", repo, "add", "payload.txt")
+		runGit(t, git, "-C", repo, "commit", "-m", "initial")
+		return repo, strings.TrimSpace(runGit(t, git, "-C", repo, "rev-parse", "HEAD"))
+	}
+
+	t.Run("wrong branch", func(t *testing.T) {
+		repo, head := newRepo(t, "not-main")
+		err := updateAfterFetch(context.Background(), updateRequest{repo: repo, expectedHead: head, expectedRemoteOID: strings.Repeat("b", 40)}, gitChildTimeout)
+		if got := releaseactivation.SanitizedError(err); got == nil || got.Code != releaseactivation.ErrorUpdateFailed {
+			t.Fatalf("update error = %#v, %v", got, err)
+		}
+	})
+
+	t.Run("dirty tree", func(t *testing.T) {
+		repo, head := newRepo(t, "main")
+		writeRaceFile(t, filepath.Join(repo, "untracked.txt"), "dirty\n", 0o600)
+		err := updateAfterFetch(context.Background(), updateRequest{repo: repo, expectedHead: head, expectedRemoteOID: strings.Repeat("b", 40)}, gitChildTimeout)
+		if got := releaseactivation.SanitizedError(err); got == nil || got.Code != releaseactivation.ErrorUpdateFailed {
+			t.Fatalf("update error = %#v, %v", got, err)
+		}
+	})
+
+	t.Run("remote object unreachable", func(t *testing.T) {
+		repo, head := newRepo(t, "main")
+		err := updateAfterFetch(context.Background(), updateRequest{repo: repo, expectedHead: head, expectedRemoteOID: strings.Repeat("b", 40)}, gitChildTimeout)
+		if got := releaseactivation.SanitizedError(err); got == nil || got.Code != releaseactivation.ErrorUpdateFailed {
+			t.Fatalf("update error = %#v, %v", got, err)
+		}
+	})
+}
+
 func TestGitChildHonorsEarlierContextDeadline(t *testing.T) {
 	bin := t.TempDir()
 	git := filepath.Join(bin, "git")
@@ -184,11 +308,56 @@ func TestGitChildHonorsEarlierContextDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
 	defer cancel()
 	started := time.Now()
-	if _, err := gitOutput(ctx, t.TempDir(), "status"); err == nil {
+	if _, err := gitOutputWithTimeout(ctx, gitChildTimeout, t.TempDir(), "status"); err == nil {
 		t.Fatal("blocking git unexpectedly succeeded")
 	}
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("git child exceeded parent deadline: %v", elapsed)
+	}
+}
+
+func TestInstallAdapterTimeoutIsHostEffectFailed(t *testing.T) {
+	repoRoot := t.TempDir()
+	adapterDir := filepath.Join(repoRoot, "scripts", "internal")
+	if err := os.MkdirAll(adapterDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	adapter := filepath.Join(adapterDir, "install-launchagent.sh")
+	if err := os.WriteFile(adapter, []byte("#!/bin/sh\nexec sleep 10\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// install-launchagent must never shell out to launchctl itself; only the
+	// adapter it execs may, and this fake adapter never does. PATH-shim
+	// launchctl with a sentinel file and a failing exit so a future
+	// regression that reintroduces a launchctl call from runAdmin's own
+	// install path is caught here, instead of silently reaching the real
+	// host under the real LaunchAgent label.
+	shimDir := t.TempDir()
+	sentinel := filepath.Join(shimDir, "launchctl-invoked")
+	shim := filepath.Join(shimDir, "launchctl")
+	shimScript := "#!/bin/sh\n: >\"" + sentinel + "\"\nexit 1\n"
+	if err := os.WriteFile(shim, []byte(shimScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", shimDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// A real OSRuntime bounds every child to a fixed maximum, but also honors
+	// an earlier caller deadline; a short deadline here exercises the same
+	// bounded-child-time mechanism as the production 30-second bound without
+	// waiting for it.
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	request := adminRequest{command: "install-launchagent", server: "obsidian", repoRoot: repoRoot, home: t.TempDir(), uid: 501}
+	err := runAdmin(ctx, releaseactivation.NewOSRuntime(), request)
+	got := releaseactivation.SanitizedError(err)
+	// Install never runs a cleanup/unload cascade on failure: the adapter's
+	// own timeout is reported directly.
+	if got == nil || got.Code != releaseactivation.ErrorHostEffectFailed || got.Message != "launch agent installation: timeout" {
+		t.Fatalf("install error = %#v, %v; want host_effect_failed launch-agent-installation timeout", got, err)
+	}
+	if _, statErr := os.Stat(sentinel); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("install invoked launchctl directly instead of only the adapter (sentinel stat err = %v)", statErr)
 	}
 }
 
@@ -197,12 +366,15 @@ type fakeRuntime struct {
 	installPath string
 	installArgs []string
 	restart     releaseactivation.Manifest
-	bootout     releaseactivation.Manifest
-	readyErr    error
-	adapterErr  error
-	bootoutErr  error
-	confirmed   bool
-	loaded      bool
+	restartErr  error
+	// bootout records whether install/restart/verify-live ever unloaded the
+	// job. Install must never do this (not even on adapter failure); keeping
+	// Bootout wired up, rather than deleting it along with the other now-dead
+	// ServiceLoaded/ReadyOnce/ConfirmUnloaded fakes, lets tests assert that
+	// directly instead of only inferring it from a lack of coverage.
+	bootout    releaseactivation.Manifest
+	readyErr   error
+	adapterErr error
 }
 
 func (f *fakeRuntime) InvokeInstallAdapter(_ context.Context, path string, args ...string) error {
@@ -213,18 +385,12 @@ func (f *fakeRuntime) InvokeInstallAdapter(_ context.Context, path string, args 
 
 func (f *fakeRuntime) Restart(_ context.Context, manifest releaseactivation.Manifest) error {
 	f.restart = manifest
-	return f.bootoutErr
-}
-func (f *fakeRuntime) ServiceLoaded(context.Context, releaseactivation.Manifest) (bool, error) {
-	return f.loaded, nil
+	return f.restartErr
 }
 func (f *fakeRuntime) WaitReady(context.Context, releaseactivation.Manifest) error { return f.readyErr }
 func (f *fakeRuntime) Bootout(_ context.Context, manifest releaseactivation.Manifest) error {
 	f.bootout = manifest
 	return nil
-}
-func (f *fakeRuntime) ConfirmUnloaded(context.Context, releaseactivation.Manifest) (bool, error) {
-	return f.confirmed, nil
 }
 
 func TestRunFormatsPendingRecords(t *testing.T) {
@@ -408,24 +574,6 @@ func TestRunRejectsMissingReleaseIDAsUsage(t *testing.T) {
 	}
 }
 
-func TestRollbackOnlyBuildRefusesAcceptAndPrintsOnlyRollbackGuidance(t *testing.T) {
-	original := rollbackOnlyBuild
-	rollbackOnlyBuild = "enabled"
-	t.Cleanup(func() { rollbackOnlyBuild = original })
-
-	manager := &fakeManager{manifest: &releaseactivation.Manifest{State: releaseactivation.StatePending, ID: testID}}
-	var stdout, stderr bytes.Buffer
-	exit := runWithDependencies(context.Background(), []string{"accept", "--release-id", testID}, &stdout, &stderr, dependencies{manager: manager})
-	if exit != 1 || stdout.Len() != 0 || stderr.String() != "error=rollback_only message=candidate must be rolled back\n" {
-		t.Fatalf("exit=%d stdout=%q stderr=%q", exit, stdout.String(), stderr.String())
-	}
-	records := manifestRecords(manager.manifest)
-	if len(records) != 2 || strings.Contains(strings.Join(records, "\n"), "accept=") ||
-		records[1] != "rollback=make release-rollback RELEASE_ID="+testID {
-		t.Fatalf("rollback-only guidance = %#v", records)
-	}
-}
-
 func TestRunRejectsUnknownCommandAsExactUsage(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	exit := runWithDependencies(context.Background(), []string{"unknown-private-command", "/private/sentinel"}, &stdout, &stderr, dependencies{manager: &fakeManager{}})
@@ -434,44 +582,57 @@ func TestRunRejectsUnknownCommandAsExactUsage(t *testing.T) {
 	}
 }
 
-func TestPrepareAndAdminRejectUnsafeLaunchAgentLabels(t *testing.T) {
+func TestPrepareAndAdminRejectUnknownServer(t *testing.T) {
 	home := t.TempDir()
 	repo := filepath.Join(home, "repo")
-	args := validPrepareArgs(home, repo)
-	for i := range args {
-		if args[i] == "--label" {
-			args[i+1] = "../private/sentinel"
-		}
-	}
-	if _, err := execute(context.Background(), append([]string{"prepare"}, args...), dependencies{manager: &fakeManager{}, uid: 501, home: home}); err == nil {
-		t.Fatal("prepare accepted an unsafe LaunchAgent label")
-	}
-	if _, err := execute(context.Background(), []string{"install-launchagent", "--repo-root", repo, "--label", "a/b"}, dependencies{manager: &fakeManager{}, uid: 501, home: home}); err == nil {
-		t.Fatal("admin command accepted an unsafe LaunchAgent label")
+	if _, err := execute(context.Background(), []string{"install-launchagent", "--repo-root", repo, "--server", "../private/sentinel"}, dependencies{manager: &fakeManager{}, uid: 501, home: home}); err == nil {
+		t.Fatal("admin command accepted an unknown server")
 	}
 }
 
-func TestParsePrepareDerivesFixedYNABServiceCandidate(t *testing.T) {
+func TestParsePrepareDerivesFixedAdditionalServiceCandidatesInCanonicalOrder(t *testing.T) {
 	home := t.TempDir()
 	repo := t.TempDir()
+	envPath := filepath.Join(repo, ".env.local")
 	request, err := parsePrepare([]string{
 		"--commit", strings.Repeat("a", 40), "--candidate-sha256", strings.Repeat("b", 64),
 		"--authority-sha256", strings.Repeat("c", 64), "--dependency-sha256", strings.Repeat("d", 64),
 		"--candidate", filepath.Join(repo, "candidate"), "--authority", filepath.Join(repo, "authority"),
-		"--target", filepath.Join(home, "bin", "gateway"), "--label", "com.example.obsidian",
-		"--repo-root", repo, "--environment", filepath.Join(repo, ".env.local"), "--health-url-file", "/tmp/obsidian-health.url",
+		"--target", filepath.Join(home, "bin", "gateway"),
+		"--repo-root", repo, "--environment", envPath,
 	}, dependencies{uid: 501, home: home})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(request.ServiceCandidates) != 1 {
+	if len(request.ServiceCandidates) != 3 {
 		t.Fatalf("service candidates = %#v", request.ServiceCandidates)
 	}
-	got := request.ServiceCandidates[0]
-	if got.Server != "ynab" || got.LaunchAgentLabel != "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel" ||
-		got.WrapperPath != filepath.Join(repo, "scripts", "run-ynab-tunnel.sh") || got.EnvironmentPath != filepath.Join(repo, ".env.ynab.local") ||
-		got.HealthURLFile != "/tmp/personal-mcp-gateway/ynab-tunnel-health.url" {
-		t.Fatalf("YNAB candidate = %#v", got)
+	ynab := request.ServiceCandidates[0]
+	if ynab.Server != "ynab" || ynab.LaunchAgentLabel != "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel" ||
+		ynab.WrapperPath != filepath.Join(repo, "scripts", "run-ynab-tunnel.sh") ||
+		ynab.MCPWrapperPath != filepath.Join(repo, "scripts", "run-ynab-mcp-stdio.sh") ||
+		ynab.EnvironmentPath != filepath.Join(repo, ".env.ynab.local") ||
+		ynab.HealthURLFile != "/tmp/personal-mcp-gateway/ynab-tunnel-health.url" {
+		t.Fatalf("ynab candidate = %#v", ynab)
+	}
+	// obsidian-http execs the gateway binary directly: no MCP wrapper, and it
+	// shares the obsidian tunnel's own environment file rather than a copy.
+	obsidianHTTP := request.ServiceCandidates[1]
+	if obsidianHTTP.Server != "obsidian-http" || obsidianHTTP.LaunchAgentLabel != "com.ericfeunekes.personal-mcp-gateway.obsidian-http" ||
+		obsidianHTTP.WrapperPath != filepath.Join(repo, "scripts", "run-obsidian-http.sh") ||
+		obsidianHTTP.MCPWrapperPath != "" ||
+		obsidianHTTP.EnvironmentPath != envPath ||
+		obsidianHTTP.HealthURLFile != "/tmp/personal-mcp-gateway/obsidian-http-health.url" {
+		t.Fatalf("obsidian-http candidate = %#v", obsidianHTTP)
+	}
+	// ynab-http shares the ynab tunnel's own environment file for the same reason.
+	ynabHTTP := request.ServiceCandidates[2]
+	if ynabHTTP.Server != "ynab-http" || ynabHTTP.LaunchAgentLabel != "com.ericfeunekes.personal-mcp-gateway.ynab-http" ||
+		ynabHTTP.WrapperPath != filepath.Join(repo, "scripts", "run-ynab-http.sh") ||
+		ynabHTTP.MCPWrapperPath != "" ||
+		ynabHTTP.EnvironmentPath != filepath.Join(repo, ".env.ynab.local") ||
+		ynabHTTP.HealthURLFile != "/tmp/personal-mcp-gateway/ynab-http-health.url" {
+		t.Fatalf("ynab-http candidate = %#v", ynabHTTP)
 	}
 }
 
@@ -482,16 +643,19 @@ func TestPrepareDerivesPrivateBinding(t *testing.T) {
 	args := []string{
 		"prepare", "--commit", strings.Repeat("a", 40), "--candidate-sha256", testHash, "--authority-sha256", testHash, "--dependency-sha256", testDependency, "--candidate", filepath.Join(repo, "candidate"),
 		"--authority", filepath.Join(repo, "authority"), "--target", filepath.Join(home, "bin", "gateway"),
-		"--label", "test.label", "--repo-root", repo, "--environment", filepath.Join(repo, ".env.local"),
-		"--health-url-file", filepath.Join(home, "health.url"),
+		"--repo-root", repo, "--environment", filepath.Join(repo, ".env.local"),
 	}
 	if _, err := execute(context.Background(), args, dependencies{manager: manager, uid: 501, home: home}); err != nil {
 		t.Fatal(err)
 	}
 	got := manager.prepared
-	if got.CandidateSHA256 != testHash || got.AuthoritySHA256 != testHash || got.EffectiveUID != 501 || got.PlistPath != filepath.Join(home, "Library", "LaunchAgents", "test.label.plist") ||
+	obsidian := serviceTable["obsidian"]
+	if got.CandidateSHA256 != testHash || got.AuthoritySHA256 != testHash || got.EffectiveUID != 501 ||
+		got.LaunchAgentLabel != obsidian.label ||
+		got.PlistPath != filepath.Join(home, "Library", "LaunchAgents", obsidian.label+".plist") ||
 		got.WrapperPath != filepath.Join(repo, "scripts", "run-obsidian-tunnel.sh") ||
-		got.MCPWrapperPath != filepath.Join(repo, "scripts", "run-obsidian-mcp-stdio.sh") {
+		got.MCPWrapperPath != filepath.Join(repo, "scripts", "run-obsidian-mcp-stdio.sh") ||
+		got.HealthURLFile != obsidian.healthURLFile {
 		t.Fatalf("derived request = %+v", got)
 	}
 }
@@ -579,87 +743,156 @@ func validPrepareArgs(home, repo string) []string {
 		"--candidate", filepath.Join(repo, "candidate"),
 		"--authority", filepath.Join(repo, "authority"),
 		"--target", filepath.Join(home, "bin", "gateway"),
-		"--label", "test.label", "--repo-root", repo,
+		"--repo-root", repo,
 		"--environment", filepath.Join(repo, ".env.local"),
-		"--health-url-file", filepath.Join(home, "health.url"),
 	}
 }
 
-func TestInstallLaunchAgentUsesPrivateAdapter(t *testing.T) {
+// TestInstallLaunchAgentUsesPrivateAdapterForEveryServer covers decision #6's
+// restored per-server coverage: the adapter round-trip's literal runner path
+// and log file names for all four servers, and that a successful install
+// never unloads the job (install must never bootout, per decision #2).
+func TestInstallLaunchAgentUsesPrivateAdapterForEveryServer(t *testing.T) {
+	home := t.TempDir()
+	repo := filepath.Join(home, "repo")
+	for server, spec := range serviceTable {
+		t.Run(server, func(t *testing.T) {
+			runtime := &fakeRuntime{}
+			manager := &fakeManager{runtime: runtime}
+			_, err := execute(context.Background(), []string{"install-launchagent", "--server", server, "--repo-root", repo}, dependencies{
+				manager: manager, uid: 501, home: home,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantPath := filepath.Join(repo, "scripts", "internal", "install-launchagent.sh")
+			wantArgs := []string{
+				home, "501", spec.label, spec.wrapperPath(repo),
+				spec.stdoutPath(home), spec.stderrPath(home), repo,
+			}
+			if runtime.installPath != wantPath || !reflect.DeepEqual(runtime.installArgs, wantArgs) {
+				t.Fatalf("path=%q args=%q, want path=%q args=%q", runtime.installPath, runtime.installArgs, wantPath, wantArgs)
+			}
+			if runtime.bootout.LaunchAgentLabel != "" {
+				t.Fatalf("successful install unexpectedly unloaded the job: %+v", runtime.bootout)
+			}
+		})
+	}
+}
+
+// TestWrapperScriptsAgreeWithServiceTableHealthURLFiles covers decision #6's
+// fourth restored-coverage item: each run-*.sh wrapper hardcodes its own
+// health_url_file literal (it has to, since it also writes/serves that file
+// at runtime), and serviceTable is the only other place that path is
+// written. Nothing enforces agreement between the two at compile time, so
+// this reads the real repository's wrapper scripts and asserts each one's
+// literal matches its serviceTable entry exactly.
+func TestWrapperScriptsAgreeWithServiceTableHealthURLFiles(t *testing.T) {
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	// currentFile is <repo>/cmd/release-activation/main_test.go.
+	repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(currentFile)))
+	for server, spec := range serviceTable {
+		t.Run(server, func(t *testing.T) {
+			wrapperPath := filepath.Join(repoRoot, "scripts", spec.wrapperName)
+			data, err := os.ReadFile(wrapperPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := `health_url_file="` + spec.healthURLFile + `"`
+			if !strings.Contains(string(data), want) {
+				t.Fatalf("%s does not contain %q from the service table", wrapperPath, want)
+			}
+		})
+	}
+}
+
+// TestInstallLaunchAgentNeverUnloadsOnAdapterFailure covers decision #2: an
+// adapter failure (for example because GATEWAY_BIN does not exist yet) must
+// leave any already-running job alone, for every server.
+func TestInstallLaunchAgentNeverUnloadsOnAdapterFailure(t *testing.T) {
+	home := t.TempDir()
+	repo := filepath.Join(home, "repo")
+	for server := range serviceTable {
+		t.Run(server, func(t *testing.T) {
+			runtime := &fakeRuntime{adapterErr: errors.New("adapter failed")}
+			manager := &fakeManager{runtime: runtime}
+			_, err := execute(context.Background(), []string{"install-launchagent", "--server", server, "--repo-root", repo}, dependencies{
+				manager: manager, uid: 501, home: home,
+			})
+			if err == nil {
+				t.Fatal("adapter failure unexpectedly succeeded")
+			}
+			if runtime.bootout.LaunchAgentLabel != "" {
+				t.Fatalf("adapter failure unexpectedly unloaded the job: %+v", runtime.bootout)
+			}
+		})
+	}
+}
+
+// TestRestartHealthURLFileDefaultsFromTable covers decision #3's second
+// bullet indirectly: --health-url-file no longer exists as an admin flag, so
+// restart's manifest health URL file always comes from the service table.
+func TestRestartHealthURLFileDefaultsFromTable(t *testing.T) {
 	runtime := &fakeRuntime{}
 	manager := &fakeManager{runtime: runtime}
 	home := t.TempDir()
 	repo := filepath.Join(home, "repo")
-	_, err := execute(context.Background(), []string{"install-launchagent", "--repo-root", repo, "--label", "test.label"}, dependencies{
-		manager: manager, uid: 501, home: home,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantPath := filepath.Join(repo, "scripts", "internal", "install-obsidian-tunnel-launchagent.sh")
-	wantArgs := []string{repo, home, "501", "test.label"}
-	if runtime.installPath != wantPath || !reflect.DeepEqual(runtime.installArgs, wantArgs) {
-		t.Fatalf("path=%q args=%q", runtime.installPath, runtime.installArgs)
-	}
-}
+	obsidian := serviceTable["obsidian"]
 
-func TestYNABFirstInstallUnloadsUnreadyService(t *testing.T) {
-	runtime := &fakeRuntime{readyErr: errors.New("not ready"), confirmed: true}
-	manager := &fakeManager{runtime: runtime}
-	home := t.TempDir()
-	repo := filepath.Join(home, "repo")
-	_, err := execute(context.Background(), []string{"install-launchagent", "--server", "ynab", "--repo-root", repo, "--label", "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel"}, dependencies{manager: manager, uid: 501, home: home})
-	if err == nil {
-		t.Fatal("unready YNAB install succeeded")
-	}
-	if runtime.bootout.LaunchAgentLabel != "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel" || runtime.bootout.HealthURLFile != "/tmp/personal-mcp-gateway/ynab-tunnel-health.url" {
-		t.Fatalf("cleanup manifest = %+v", runtime.bootout)
-	}
-	if runtime.bootout.WrapperPath != filepath.Join(repo, "scripts", "run-ynab-tunnel.sh") || runtime.bootout.ReadyTimeoutSeconds != 45 || runtime.bootout.ReadyPollMilliseconds != 1000 {
-		t.Fatalf("YNAB readiness manifest = %+v", runtime.bootout)
-	}
-}
-
-func TestYNABInstallAdapterFailureStillConfirmsCleanup(t *testing.T) {
-	runtime := &fakeRuntime{adapterErr: errors.New("post-bootstrap failure"), confirmed: true}
-	request := adminRequest{command: "install-launchagent", server: "ynab", repoRoot: t.TempDir(), home: t.TempDir(), uid: 501, label: "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel", healthURLFile: "/tmp/personal-mcp-gateway/ynab-tunnel-health.url"}
-	if err := runAdmin(context.Background(), runtime, request); err == nil {
-		t.Fatal("adapter failure succeeded")
-	}
-	if runtime.bootout.LaunchAgentLabel == "" {
-		t.Fatal("post-bootstrap adapter failure did not cleanup")
-	}
-}
-
-func TestYNABCleanupFailureIsRecoveryUnconfirmed(t *testing.T) {
-	runtime := &fakeRuntime{readyErr: errors.New("not ready"), bootoutErr: errors.New("bootout failed"), confirmed: true}
-	request := adminRequest{command: "install-launchagent", server: "ynab", repoRoot: t.TempDir(), home: t.TempDir(), uid: 501, label: "com.ericfeunekes.personal-mcp-gateway.ynab-tunnel", healthURLFile: "/tmp/personal-mcp-gateway/ynab-tunnel-health.url"}
-	err := runAdmin(context.Background(), runtime, request)
-	if got := releaseactivation.SanitizedError(err); got.Code != releaseactivation.ErrorRecoveryUnconfirmed {
-		t.Fatalf("cleanup error = %#v", got)
-	}
-}
-
-func TestRestartRequiresAndPassesAbsoluteHealthURLFile(t *testing.T) {
-	runtime := &fakeRuntime{}
-	manager := &fakeManager{runtime: runtime}
-	home := t.TempDir()
-	repo := filepath.Join(home, "repo")
-	healthURLFile := filepath.Join(home, "health.url")
-	_, err := execute(context.Background(), []string{
-		"restart", "--repo-root", repo, "--label", "test.label", "--health-url-file", healthURLFile,
-	}, dependencies{manager: manager, uid: 501, home: home})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if runtime.restart.EffectiveUID != 501 || runtime.restart.LaunchAgentLabel != "test.label" || runtime.restart.HealthURLFile != healthURLFile {
-		t.Fatalf("restart manifest = %+v", runtime.restart)
-	}
 	if _, err := execute(context.Background(), []string{
-		"restart", "--repo-root", repo, "--label", "test.label",
-	}, dependencies{manager: manager, uid: 501, home: home}); err == nil {
-		t.Fatal("restart accepted a missing health URL file")
+		"restart", "--repo-root", repo,
+	}, dependencies{manager: manager, uid: 501, home: home}); err != nil {
+		t.Fatal(err)
 	}
+	if runtime.restart.EffectiveUID != 501 || runtime.restart.LaunchAgentLabel != obsidian.label || runtime.restart.HealthURLFile != obsidian.healthURLFile {
+		t.Fatalf("restart manifest with default health URL file = %+v", runtime.restart)
+	}
+
+	if _, err := execute(context.Background(), []string{
+		"restart", "--repo-root", repo, "--health-url-file", filepath.Join(home, "custom-health.url"),
+	}, dependencies{manager: manager, uid: 501, home: home}); err == nil {
+		t.Fatal("restart accepted the removed --health-url-file flag instead of rejecting it as usage")
+	}
+}
+
+// TestVerifyLiveRunsUnderProbeAndReportsWaitReadyResult covers decisions #1
+// and #2: verify-live is a read-only probe (Probe, never WithClear) whose
+// result is exactly runAdmin's WaitReady call on the current controller.
+func TestVerifyLiveRunsUnderProbeAndReportsWaitReadyResult(t *testing.T) {
+	home := t.TempDir()
+	repo := filepath.Join(home, "repo")
+
+	t.Run("ready succeeds and dispatches through Probe, not WithClear", func(t *testing.T) {
+		runtime := &fakeRuntime{}
+		manager := &fakeManager{runtime: runtime}
+		records, err := execute(context.Background(), []string{"verify-live", "--repo-root", repo}, dependencies{manager: manager, uid: 501, home: home})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if manager.probeCalls != 1 || manager.withClearCalls != 0 {
+			t.Fatalf("probeCalls=%d withClearCalls=%d, want verify-live to run only under Probe", manager.probeCalls, manager.withClearCalls)
+		}
+		want := []string{"action=verify-live result=ready"}
+		if !reflect.DeepEqual(records, want) {
+			t.Fatalf("records = %#v, want %#v", records, want)
+		}
+	})
+
+	t.Run("WaitReady failure propagates as host_effect_failed", func(t *testing.T) {
+		runtime := &fakeRuntime{readyErr: releaseactivation.HostEffectFailure("readiness", errors.New("bounded readiness exhausted"))}
+		manager := &fakeManager{runtime: runtime}
+		_, err := execute(context.Background(), []string{"verify-live", "--repo-root", repo}, dependencies{manager: manager, uid: 501, home: home})
+		got := releaseactivation.SanitizedError(err)
+		if got == nil || got.Code != releaseactivation.ErrorHostEffectFailed || got.Message != "readiness: failed" {
+			t.Fatalf("verify-live error = %#v, %v", got, err)
+		}
+		if manager.probeCalls != 1 || manager.withClearCalls != 0 {
+			t.Fatalf("probeCalls=%d withClearCalls=%d, want verify-live to run only under Probe even on failure", manager.probeCalls, manager.withClearCalls)
+		}
+	})
 }
 
 func TestBoundedBufferCapsHostileChildOutput(t *testing.T) {

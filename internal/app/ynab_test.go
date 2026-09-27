@@ -23,7 +23,7 @@ func newYNABTestApp(t *testing.T) *App {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := New(cfg, audit.Disabled())
+	a, err := New(cfg, audit.Disabled(), Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

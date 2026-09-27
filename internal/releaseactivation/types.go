@@ -1,12 +1,23 @@
 // Package releaseactivation owns the local release transaction lifecycle.
 package releaseactivation
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
-const ManifestVersion = 3
+// ErrUpdateCheckFailed means one of the update path's post-fetch git
+// preconditions or the fast-forward itself failed. It carries no repo path,
+// commit, or git output; SanitizedError maps it to the fixed update_failed
+// record.
+var ErrUpdateCheckFailed = errors.New("release activation update check failed")
 
-// ServiceDescriptor is one already-installed local tunnel service captured at
-// prepare time. It deliberately contains no credentials.
+const ManifestVersion = 4
+
+// ServiceDescriptor is one already-installed local launchd-supervised service
+// captured at prepare time, whether it fronts the OpenAI tunnel (`obsidian`,
+// `ynab`) or serves loopback HTTP directly (`obsidian-http`, `ynab-http`). It
+// deliberately contains no credentials.
 type ServiceDescriptor struct {
 	Server            string `json:"server"`
 	LaunchAgentLabel  string `json:"launch_agent_label"`
@@ -110,14 +121,6 @@ type Snapshot struct {
 	Manifest *Manifest
 }
 
-// State returns the snapshot's effective durable state.
-func (s Snapshot) State() State {
-	if s.Manifest == nil {
-		return StateClear
-	}
-	return s.Manifest.State
-}
-
 // Observed contains facts gathered by the Manager before calling Decide. The
 // pure model deliberately cannot discover any of these facts itself.
 type Observed struct {
@@ -191,6 +194,9 @@ const (
 	ErrorRuntimeDrift        ErrorCode = "runtime_drift"
 	ErrorStateConflict       ErrorCode = "state_conflict"
 	ErrorRecoveryUnconfirmed ErrorCode = "recovery_unconfirmed"
+	ErrorHostEffectFailed    ErrorCode = "host_effect_failed"
+	ErrorRolledBack          ErrorCode = "rolled_back"
+	ErrorUpdateFailed        ErrorCode = "update_failed"
 )
 
 // Error is a sanitized lifecycle error. Message is fixed per code and must not
@@ -233,6 +239,12 @@ func errorMessage(code ErrorCode) string {
 		return "event conflicts with release state"
 	case ErrorRecoveryUnconfirmed:
 		return "recovery could not be confirmed"
+	case ErrorHostEffectFailed:
+		return "a host effect failed"
+	case ErrorRolledBack:
+		return "candidate failed; previous runtime restored"
+	case ErrorUpdateFailed:
+		return "update precondition or fast-forward check failed"
 	default:
 		return "release operation failed"
 	}
