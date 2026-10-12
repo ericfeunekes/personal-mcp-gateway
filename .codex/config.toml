@@ -1,2 +1,17 @@
 [mcp_servers.openaiDeveloperDocs]
 url = "https://developers.openai.com/mcp"
+
+[plugins."software-development@ai-marketplace-plugins"]
+enabled = true
+
+[plugins."dev-planning@ai-marketplace-plugins"]
+enabled = true
+
+[plugins."codex-security@openai-curated-remote"]
+enabled = true
+
+[plugins."code-review@openai-bundled"]
+enabled = true
+
+[plugins."design-patterns@ai-marketplace-plugins"]
+enabled = true
